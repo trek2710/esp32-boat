@@ -101,6 +101,38 @@ std::array<AisTarget, 32> BoatState::aisSnapshot() {
     return ais_;
 }
 
+void BoatState::logPgn(uint32_t pgn, uint8_t src, const char* summary) {
+    Lock l(mutex_);
+    PgnEvent& slot = pgn_log_[pgn_log_head_];
+    slot.pgn   = pgn;
+    slot.src   = src;
+    slot.t_ms  = millis();
+    if (summary) {
+        std::strncpy(slot.summary, summary, sizeof(slot.summary) - 1);
+        slot.summary[sizeof(slot.summary) - 1] = '\0';
+    } else {
+        slot.summary[0] = '\0';
+    }
+    pgn_log_head_ = (pgn_log_head_ + 1) % kPgnLogSize;
+    pgn_log_total_++;
+}
+
+std::array<PgnEvent, BoatState::kPgnLogSize> BoatState::pgnLogSnapshot() {
+    Lock l(mutex_);
+    // Return newest-first: start from head-1 and walk backwards.
+    std::array<PgnEvent, kPgnLogSize> out{};
+    for (size_t i = 0; i < kPgnLogSize; ++i) {
+        size_t idx = (pgn_log_head_ + kPgnLogSize - 1 - i) % kPgnLogSize;
+        out[i] = pgn_log_[idx];
+    }
+    return out;
+}
+
+uint32_t BoatState::pgnLogTotal() {
+    Lock l(mutex_);
+    return pgn_log_total_;
+}
+
 void BoatState::pruneStaleAis_locked() {
     const uint32_t now = millis();
     for (auto& slot : ais_) {

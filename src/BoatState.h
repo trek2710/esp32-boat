@@ -13,6 +13,17 @@
 #include <array>
 #include <cstdint>
 
+// One entry in the rolling PGN log. The NMEA bridge calls BoatState::logPgn()
+// every time a frame arrives so the debug screen can show bus traffic. In
+// SIMULATED_DATA builds, the sim tick synthesises entries so the debug screen
+// is still populated on the bench.
+struct PgnEvent {
+    uint32_t pgn      = 0;    // e.g. 129025
+    uint8_t  src      = 0;    // source address on the N2K bus (0 = sim)
+    uint32_t t_ms     = 0;    // millis() at receive
+    char     summary[56] = {0}; // short decoded/"undecoded" string
+};
+
 struct AisTarget {
     uint32_t mmsi = 0;
     char     name[20] = {0};   // up to 20 ASCII chars; may be empty until we see PGN 129809
@@ -71,10 +82,21 @@ public:
 
     static constexpr uint32_t kAisStaleMs = 10UL * 60UL * 1000UL; // 10 minutes
 
+    // ---- PGN log (for the debug screen) -----------------------------------
+    // Fixed-size ring buffer. pgnLogSnapshot() returns a copy in newest-first
+    // order; empty slots have pgn == 0 and should be skipped by the UI.
+    static constexpr size_t kPgnLogSize = 64;
+    void logPgn(uint32_t pgn, uint8_t src, const char* summary);
+    std::array<PgnEvent, kPgnLogSize> pgnLogSnapshot();
+    uint32_t pgnLogTotal();  // total events seen since boot (not just buffered)
+
 private:
-    SemaphoreHandle_t              mutex_;
-    Instruments                    i_;
-    std::array<AisTarget, 32>      ais_{};
+    SemaphoreHandle_t                       mutex_;
+    Instruments                             i_;
+    std::array<AisTarget, 32>               ais_{};
+    std::array<PgnEvent, kPgnLogSize>       pgn_log_{};
+    size_t                                  pgn_log_head_  = 0; // next write index
+    uint32_t                                pgn_log_total_ = 0;
 
     void pruneStaleAis_locked();
 };

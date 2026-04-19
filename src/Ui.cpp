@@ -1,7 +1,7 @@
-// Minimal LVGL instrument UI.
-//
-// Five pages (GPS / Wind / Depth / Heading / AIS) with swipe-to-page. Values
-// come from BoatState every tick.
+// LVGL instrument UI — three screens, swipe to cycle:
+//   0. Overview — classic-boating wind compass + big SOG + big wind speed
+//   1. Data     — every value from BoatState in a compact grid
+//   2. Debug    — rolling NMEA 2000 PGN log (populated in sim + real builds)
 //
 // NOTE ON THE DISPLAY DRIVER:
 // The Waveshare ESP32-S3-Touch-LCD-2.1 uses a QSPI-interfaced ST77916 panel
@@ -25,8 +25,12 @@
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
 
+#include <cstdio>
+
 namespace ui {
 namespace {
+
+// --- Display driver stub ----------------------------------------------------
 
 // Stub LGFX — compiles cleanly on LovyanGFX 1.2.0 but does NOT drive the
 // Waveshare 2.1" round. Replace before expecting pixels on the real panel.
@@ -86,58 +90,292 @@ lv_color_t*        buf2 = nullptr;
 
 BoatState* g_state = nullptr;
 
-struct Page {
+// --- Page state -------------------------------------------------------------
+
+constexpr int kNumPages = 3;
+
+// ---- Overview page ----
+struct OverviewPage {
     lv_obj_t* root;
-    lv_obj_t* labels[6];
+    lv_obj_t* wind_meter;               // lv_meter (compass rose)
+    lv_meter_indicator_t* wind_needle;  // AWA needle
+    lv_obj_t* wind_center_lbl;          // AWS inside the compass
+    lv_obj_t* sog_big_lbl;              // big SOG number
+    lv_obj_t* sog_unit_lbl;             // "kn SOG" below the big number
+    lv_obj_t* hdg_small_lbl;            // HDG/COG under SOG
 };
-Page pages[5] = {};
-int  current_page = 0;
+OverviewPage overview;
 
-lv_obj_t* buildPage(const char* title) {
-    lv_obj_t* scr = lv_obj_create(nullptr);
+// ---- Data page ----
+struct DataPage {
+    lv_obj_t* root;
+    lv_obj_t* body_lbl;                 // one multi-line label with everything
+};
+DataPage data_pg;
+
+// ---- Debug page ----
+struct DebugPage {
+    lv_obj_t* root;
+    lv_obj_t* header_lbl;               // "PGN LOG (N)"
+    lv_obj_t* body_lbl;                 // recent entries, newest first
+};
+DebugPage debug_pg;
+
+lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr };
+int       current_page = 0;
+
+// --- Helpers ----------------------------------------------------------------
+
+void styleScreen(lv_obj_t* scr) {
     lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-
-    lv_obj_t* title_lbl = lv_label_create(scr);
-    lv_label_set_text(title_lbl, title);
-    lv_obj_set_style_text_color(title_lbl, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_20, LV_PART_MAIN);
-    lv_obj_align(title_lbl, LV_ALIGN_TOP_MID, 0, 40);
-    return scr;
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-lv_obj_t* addStat(lv_obj_t* parent, const char* label, int y) {
+lv_obj_t* makeLabel(lv_obj_t* parent,
+                    const lv_font_t* font,
+                    lv_color_t color,
+                    const char* initial_text) {
     lv_obj_t* lbl = lv_label_create(parent);
-    lv_label_set_text_fmt(lbl, "%s: --", label);
-    lv_obj_set_style_text_color(lbl, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, LV_PART_MAIN);
-    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, y);
+    lv_label_set_text(lbl, initial_text);
+    lv_obj_set_style_text_color(lbl, color, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl, font, LV_PART_MAIN);
     return lbl;
 }
 
-void buildAllPages() {
-    pages[0].root      = buildPage("GPS");
-    pages[0].labels[0] = addStat(pages[0].root, "LAT",  110);
-    pages[0].labels[1] = addStat(pages[0].root, "LON",  160);
-    pages[0].labels[2] = addStat(pages[0].root, "SOG",  250);
-    pages[0].labels[3] = addStat(pages[0].root, "COG",  300);
+// --- Page construction ------------------------------------------------------
 
-    pages[1].root      = buildPage("WIND");
-    pages[1].labels[0] = addStat(pages[1].root, "AWA",  120);
-    pages[1].labels[1] = addStat(pages[1].root, "AWS",  170);
-    pages[1].labels[2] = addStat(pages[1].root, "TWA",  260);
-    pages[1].labels[3] = addStat(pages[1].root, "TWS",  310);
+void buildOverviewPage() {
+    lv_obj_t* scr = lv_obj_create(nullptr);
+    styleScreen(scr);
+    overview.root = scr;
 
-    pages[2].root      = buildPage("DEPTH");
-    pages[2].labels[0] = addStat(pages[2].root, "DEPTH", 150);
-    pages[2].labels[1] = addStat(pages[2].root, "TEMP",  250);
+    // Wind meter (compass rose) — 280×280, positioned at the top of the
+    // round 480×480 display. 0° at the top = bow; positive = starboard.
+    lv_obj_t* meter = lv_meter_create(scr);
+    lv_obj_set_size(meter, 280, 280);
+    lv_obj_align(meter, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_set_style_bg_color(meter, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(meter, 0, LV_PART_MAIN);
 
-    pages[3].root      = buildPage("HEADING");
-    pages[3].labels[0] = addStat(pages[3].root, "HDG", 150);
-    pages[3].labels[1] = addStat(pages[3].root, "STW", 250);
+    lv_meter_scale_t* scale = lv_meter_add_scale(meter);
+    // 360° scale, 0 at top, clockwise. Rotate 270 so angle 0 points up.
+    lv_meter_set_scale_ticks(meter, scale, 37, 2, 8, lv_palette_main(LV_PALETTE_GREY));
+    lv_meter_set_scale_major_ticks(meter, scale, 3, 4, 14, lv_color_white(), 15);
+    lv_meter_set_scale_range(meter, scale, 0, 360, 360, 270);
+    overview.wind_needle = lv_meter_add_needle_line(
+        meter, scale, 4, lv_palette_main(LV_PALETTE_RED), -10);
+    lv_meter_set_indicator_value(meter, overview.wind_needle, 0);
+    overview.wind_meter = meter;
 
-    pages[4].root      = buildPage("AIS");
-    pages[4].labels[0] = addStat(pages[4].root, "Targets", 150);
+    // Wind speed (AWS) — shown large inside the compass centre.
+    overview.wind_center_lbl = makeLabel(meter, &lv_font_montserrat_48,
+                                         lv_color_white(), "--");
+    lv_obj_align(overview.wind_center_lbl, LV_ALIGN_CENTER, 0, -6);
+
+    // "kn AWS" unit just below the wind speed.
+    lv_obj_t* aws_unit = makeLabel(meter, &lv_font_montserrat_20,
+                                   lv_palette_main(LV_PALETTE_GREY), "kn AWS");
+    lv_obj_align(aws_unit, LV_ALIGN_CENTER, 0, 38);
+
+    // SOG — very large, lower part of the screen.
+    overview.sog_big_lbl = makeLabel(scr, &lv_font_montserrat_48,
+                                     lv_color_white(), "--");
+    lv_obj_align(overview.sog_big_lbl, LV_ALIGN_BOTTOM_MID, 0, -80);
+
+    overview.sog_unit_lbl = makeLabel(scr, &lv_font_montserrat_20,
+                                      lv_palette_main(LV_PALETTE_GREY), "kn SOG");
+    lv_obj_align(overview.sog_unit_lbl, LV_ALIGN_BOTTOM_MID, 0, -50);
+
+    // Heading / COG — smaller, at the very bottom.
+    overview.hdg_small_lbl = makeLabel(scr, &lv_font_montserrat_20,
+                                       lv_palette_main(LV_PALETTE_GREY),
+                                       "HDG --   COG --");
+    lv_obj_align(overview.hdg_small_lbl, LV_ALIGN_BOTTOM_MID, 0, -15);
 }
+
+void buildDataPage() {
+    lv_obj_t* scr = lv_obj_create(nullptr);
+    styleScreen(scr);
+    data_pg.root = scr;
+
+    lv_obj_t* title = makeLabel(scr, &lv_font_montserrat_28,
+                                lv_color_white(), "DATA");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+
+    data_pg.body_lbl = makeLabel(scr, &lv_font_montserrat_20,
+                                 lv_color_white(), "loading...");
+    lv_label_set_long_mode(data_pg.body_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(data_pg.body_lbl, 440);
+    lv_obj_set_style_text_line_space(data_pg.body_lbl, 4, LV_PART_MAIN);
+    lv_obj_align(data_pg.body_lbl, LV_ALIGN_TOP_MID, 0, 70);
+}
+
+void buildDebugPage() {
+    lv_obj_t* scr = lv_obj_create(nullptr);
+    styleScreen(scr);
+    debug_pg.root = scr;
+
+    debug_pg.header_lbl = makeLabel(scr, &lv_font_montserrat_20,
+                                    lv_color_white(), "PGN LOG (0)");
+    lv_obj_align(debug_pg.header_lbl, LV_ALIGN_TOP_MID, 0, 20);
+
+    debug_pg.body_lbl = makeLabel(scr, &lv_font_montserrat_14,
+                                  lv_color_white(), "(waiting for traffic)");
+    lv_label_set_long_mode(debug_pg.body_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(debug_pg.body_lbl, 460);
+    lv_obj_set_style_text_line_space(debug_pg.body_lbl, 2, LV_PART_MAIN);
+    lv_obj_align(debug_pg.body_lbl, LV_ALIGN_TOP_LEFT, 10, 60);
+}
+
+// --- Swipe handler (LVGL screen gestures) ----------------------------------
+
+void swipeHandler(lv_event_t* /*e*/) {
+    const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (dir == LV_DIR_LEFT)  current_page = (current_page + 1) % kNumPages;
+    if (dir == LV_DIR_RIGHT) current_page = (current_page + kNumPages - 1) % kNumPages;
+    lv_scr_load(pages[current_page]);
+    // Re-attach gesture event to the newly-active screen so swipes keep working.
+    lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
+}
+
+// --- Refresh ---------------------------------------------------------------
+
+void refreshOverview(const Instruments& s) {
+    // Wind needle: AWA is -180..180 with + starboard. Meter scale is 0..360
+    // with 0=bow, so shift by +360 when negative.
+    if (!isnan(s.awa)) {
+        double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
+        lv_meter_set_indicator_value(overview.wind_meter,
+                                     overview.wind_needle,
+                                     static_cast<int32_t>(deg));
+    }
+
+    // AWS in the meter centre.
+    if (isnan(s.aws)) {
+        lv_label_set_text(overview.wind_center_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", s.aws);
+        lv_label_set_text(overview.wind_center_lbl, buf);
+    }
+
+    // Big SOG
+    if (isnan(s.sog)) {
+        lv_label_set_text(overview.sog_big_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", s.sog);
+        lv_label_set_text(overview.sog_big_lbl, buf);
+    }
+
+    // HDG + COG secondary line
+    char hdg_buf[16], cog_buf[16];
+    if (isnan(s.heading_true_deg)) snprintf(hdg_buf, sizeof(hdg_buf), "--");
+    else snprintf(hdg_buf, sizeof(hdg_buf), "%.0f\xC2\xB0", s.heading_true_deg);
+    if (isnan(s.cog))              snprintf(cog_buf, sizeof(cog_buf), "--");
+    else snprintf(cog_buf, sizeof(cog_buf), "%.0f\xC2\xB0", s.cog);
+    lv_label_set_text_fmt(overview.hdg_small_lbl,
+                          "HDG %s   COG %s", hdg_buf, cog_buf);
+}
+
+// Format "value or --"; caller provides buffer, precision format string.
+void fmtOrDash(char* out, size_t n, double v, const char* fmt) {
+    if (isnan(v)) snprintf(out, n, "--");
+    else          snprintf(out, n, fmt, v);
+}
+
+void refreshData(const Instruments& s, size_t ais_count) {
+    char lat[12], lon[12], sog[12], cog[12];
+    char awa[12], aws[12], twa[12], tws[12];
+    char dep[12], tmp[12], hdg[12], stw[12];
+
+    fmtOrDash(lat, sizeof(lat), s.lat,              "%.4f");
+    fmtOrDash(lon, sizeof(lon), s.lon,              "%.4f");
+    fmtOrDash(sog, sizeof(sog), s.sog,              "%.1f");
+    fmtOrDash(cog, sizeof(cog), s.cog,              "%.0f");
+    fmtOrDash(awa, sizeof(awa), s.awa,              "%+.0f");
+    fmtOrDash(aws, sizeof(aws), s.aws,              "%.1f");
+    fmtOrDash(twa, sizeof(twa), s.twa,              "%+.0f");
+    fmtOrDash(tws, sizeof(tws), s.tws,              "%.1f");
+    fmtOrDash(dep, sizeof(dep), s.depth_m,          "%.1f");
+    fmtOrDash(tmp, sizeof(tmp), s.water_temp_c,     "%.1f");
+    fmtOrDash(hdg, sizeof(hdg), s.heading_true_deg, "%.0f");
+    fmtOrDash(stw, sizeof(stw), s.stw,              "%.1f");
+
+    char body[512];
+    snprintf(body, sizeof(body),
+             "LAT %s   LON %s\n"
+             "SOG %s kn   COG %s\xC2\xB0\n"
+             "AWA %s\xC2\xB0   AWS %s kn\n"
+             "TWA %s\xC2\xB0   TWS %s kn\n"
+             "DEPTH %s m   TEMP %s\xC2\xB0""C\n"
+             "HDG %s\xC2\xB0   STW %s kn\n"
+             "AIS targets: %u",
+             lat, lon,
+             sog, cog,
+             awa, aws,
+             twa, tws,
+             dep, tmp,
+             hdg, stw,
+             static_cast<unsigned>(ais_count));
+    lv_label_set_text(data_pg.body_lbl, body);
+}
+
+void refreshDebug() {
+    if (!g_state) return;
+    const uint32_t total = g_state->pgnLogTotal();
+    lv_label_set_text_fmt(debug_pg.header_lbl, "PGN LOG (%lu)",
+                          static_cast<unsigned long>(total));
+
+    auto log = g_state->pgnLogSnapshot(); // newest-first
+
+    // Keep it compact: show up to 18 newest non-empty entries. At montserrat_14
+    // with ~460px width that's about as much as fits on the round display.
+    constexpr size_t kMaxShown = 18;
+    char body[1400];
+    size_t off = 0;
+    body[0] = '\0';
+
+    const uint32_t now = millis();
+    size_t shown = 0;
+    for (const auto& e : log) {
+        if (shown >= kMaxShown) break;
+        if (e.pgn == 0) continue;
+        const uint32_t age = now - e.t_ms;
+        int n = snprintf(body + off, sizeof(body) - off,
+                         "%6lu  %4lu ms  %s\n",
+                         static_cast<unsigned long>(e.pgn),
+                         static_cast<unsigned long>(age),
+                         e.summary);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(body) - off) break;
+        off += n;
+        shown++;
+    }
+    if (shown == 0) {
+        snprintf(body, sizeof(body), "(waiting for traffic)");
+    }
+    lv_label_set_text(debug_pg.body_lbl, body);
+}
+
+void refreshFromState() {
+    if (!g_state) return;
+    const Instruments s   = g_state->snapshot();
+    const auto        ais = g_state->aisSnapshot();
+    size_t ais_count = 0;
+    for (const auto& t : ais) if (t.mmsi != 0) ais_count++;
+
+    // Only refresh the currently visible page — cheaper, and hidden pages will
+    // refresh next time they're shown.
+    switch (current_page) {
+        case 0: refreshOverview(s);        break;
+        case 1: refreshData(s, ais_count); break;
+        case 2: refreshDebug();            break;
+    }
+}
+
+// --- Display driver glue ---------------------------------------------------
 
 // LVGL -> LovyanGFX glue. The stub LGFX doesn't light up the real panel, but
 // LVGL still calls flush_cb which we terminate so LVGL doesn't stall.
@@ -151,51 +389,9 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     lv_disp_flush_ready(drv);
 }
 
-void swipeHandler(lv_event_t* /*e*/) {
-    const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-    if (dir == LV_DIR_LEFT)  current_page = (current_page + 1) % 5;
-    if (dir == LV_DIR_RIGHT) current_page = (current_page + 4) % 5; // -1 mod 5
-    lv_scr_load(pages[current_page].root);
-}
-
-void setOrDash(lv_obj_t* lbl, const char* key, double v, const char* fmt, const char* unit) {
-    if (isnan(v)) {
-        lv_label_set_text_fmt(lbl, "%s: --", key);
-    } else {
-        char tmp[32];
-        snprintf(tmp, sizeof(tmp), fmt, v);
-        lv_label_set_text_fmt(lbl, "%s: %s %s", key, tmp, unit);
-    }
-}
-
-void refreshFromState() {
-    if (!g_state) return;
-    auto s   = g_state->snapshot();
-    auto ais = g_state->aisSnapshot();
-
-    setOrDash(pages[0].labels[0], "LAT", s.lat, "%.4f",  "\xC2\xB0");
-    setOrDash(pages[0].labels[1], "LON", s.lon, "%.4f",  "\xC2\xB0");
-    setOrDash(pages[0].labels[2], "SOG", s.sog, "%.1f",  "kn");
-    setOrDash(pages[0].labels[3], "COG", s.cog, "%.0f",  "\xC2\xB0T");
-
-    setOrDash(pages[1].labels[0], "AWA", s.awa, "%+.0f", "\xC2\xB0");
-    setOrDash(pages[1].labels[1], "AWS", s.aws, "%.1f",  "kn");
-    setOrDash(pages[1].labels[2], "TWA", s.twa, "%+.0f", "\xC2\xB0");
-    setOrDash(pages[1].labels[3], "TWS", s.tws, "%.1f",  "kn");
-
-    setOrDash(pages[2].labels[0], "DEPTH", s.depth_m,      "%.1f", "m");
-    setOrDash(pages[2].labels[1], "TEMP",  s.water_temp_c, "%.1f", "\xC2\xB0""C");
-
-    setOrDash(pages[3].labels[0], "HDG", s.heading_true_deg, "%.0f", "\xC2\xB0T");
-    setOrDash(pages[3].labels[1], "STW", s.stw,              "%.1f", "kn");
-
-    size_t ais_count = 0;
-    for (const auto& t : ais) if (t.mmsi != 0) ais_count++;
-    lv_label_set_text_fmt(pages[4].labels[0], "Targets: %u",
-                          static_cast<unsigned>(ais_count));
-}
-
 }  // namespace
+
+// ---------------------------------------------------------------------------
 
 void begin(BoatState& state) {
     g_state = &state;
@@ -223,8 +419,14 @@ void begin(BoatState& state) {
     // 1.2.0. Once we have the real display driver up, we'll either write a
     // CST820 I2C driver or switch to a framework that includes one.
 
-    buildAllPages();
-    lv_scr_load(pages[0].root);
+    buildOverviewPage();
+    buildDataPage();
+    buildDebugPage();
+    pages[0] = overview.root;
+    pages[1] = data_pg.root;
+    pages[2] = debug_pg.root;
+
+    lv_scr_load(pages[0]);
     lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
 }
 

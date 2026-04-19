@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <cmath>
+#include <cstdio>
 
 #if !SIMULATED_DATA
 #include <NMEA2000_CAN.h>   // pulls in the backend for the current platform
@@ -64,6 +65,9 @@ void NmeaBridge::taskLoop() {
 void NmeaBridge::handleMsg(const tN2kMsg& msg) {
     if (!instance_) return;
     auto& s = instance_->state_;
+    const uint8_t src = msg.Source;
+    char summary[56];
+    summary[0] = '\0';
 
     switch (msg.PGN) {
         // ----------------------------------------------------------------- GPS
@@ -72,6 +76,9 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN129025(msg, lat, lon)) {
                 auto snap = s.snapshot();
                 s.setGps(lat, lon, snap.sog, snap.cog);
+                snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);
+            } else {
+                snprintf(summary, sizeof(summary), "GPS (parse failed)");
             }
             break;
         }
@@ -82,6 +89,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN129026(msg, sid, ref, cog_rad, sog_ms)) {
                 auto snap = s.snapshot();
                 s.setGps(snap.lat, snap.lon, msToKnots(sog_ms), RadToDeg(cog_rad));
+                snprintf(summary, sizeof(summary), "COG/SOG cog=%.0f sog=%.1fkn",
+                         RadToDeg(cog_rad), msToKnots(sog_ms));
+            } else {
+                snprintf(summary, sizeof(summary), "COG/SOG (parse failed)");
             }
             break;
         }
@@ -94,11 +105,18 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN130306(msg, sid, wind_speed_ms, wind_angle_rad, ref)) {
                 const double speed_kn  = msToKnots(wind_speed_ms);
                 const double angle_deg = normalizeDeg(RadToDeg(wind_angle_rad));
+                const char* kind = "?";
                 if (ref == N2kWind_Apparent) {
                     s.setWindApparent(angle_deg, speed_kn);
+                    kind = "AWA";
                 } else if (ref == N2kWind_True_boat || ref == N2kWind_True_water) {
                     s.setWindTrue(angle_deg, speed_kn);
+                    kind = "TWA";
                 }
+                snprintf(summary, sizeof(summary), "Wind %s=%+.0f spd=%.1fkn",
+                         kind, angle_deg, speed_kn);
+            } else {
+                snprintf(summary, sizeof(summary), "Wind (parse failed)");
             }
             break;
         }
@@ -110,6 +128,9 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN128267(msg, sid, depth_below_transducer_m, offset_m, range_m)) {
                 auto snap = s.snapshot();
                 s.setDepth(depth_below_transducer_m, snap.water_temp_c);
+                snprintf(summary, sizeof(summary), "Depth %.1fm", depth_below_transducer_m);
+            } else {
+                snprintf(summary, sizeof(summary), "Depth (parse failed)");
             }
             break;
         }
@@ -123,6 +144,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
                     auto snap = s.snapshot();
                     s.setDepth(snap.depth_m, temp_k - 273.15);
                 }
+                snprintf(summary, sizeof(summary), "Temp src=%u t=%.1fC",
+                         static_cast<unsigned>(temp_src), temp_k - 273.15);
+            } else {
+                snprintf(summary, sizeof(summary), "Temp (parse failed)");
             }
             break;
         }
@@ -136,6 +161,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
                 double deg = RadToDeg(heading_rad);
                 if (ref == N2khr_magnetic && !isnan(var_rad)) deg += RadToDeg(var_rad);
                 s.setHeading(normalizeDeg(deg));
+                snprintf(summary, sizeof(summary), "Heading %.0f%s",
+                         normalizeDeg(deg), ref == N2khr_magnetic ? "M" : "T");
+            } else {
+                snprintf(summary, sizeof(summary), "Heading (parse failed)");
             }
             break;
         }
@@ -145,6 +174,9 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             tN2kSpeedWaterReferenceType ref;
             if (ParseN2kPGN128259(msg, sid, stw_ms, sog_ms, ref)) {
                 s.setStw(msToKnots(stw_ms));
+                snprintf(summary, sizeof(summary), "STW %.1fkn", msToKnots(stw_ms));
+            } else {
+                snprintf(summary, sizeof(summary), "STW (parse failed)");
             }
             break;
         }
@@ -157,8 +189,11 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
         // properly once the instrument pages are validated on real data.
 
         default:
+            snprintf(summary, sizeof(summary), "(undecoded)");
             break;
     }
+
+    s.logPgn(static_cast<uint32_t>(msg.PGN), src, summary);
 }
 
 #endif // !SIMULATED_DATA
@@ -174,19 +209,86 @@ bool NmeaBridge::begin() {
     return true;
 }
 
+// Synthesises one fake PGN event at a time so the debug screen sees a steady,
+// human-readable trickle instead of a blur. Real bus traffic is rarely above
+// ~50 msg/s; aim for roughly that.
+namespace {
+struct SimEvent {
+    uint32_t pgn;
+    uint32_t last_ms;
+    uint32_t interval_ms;
+};
+SimEvent sim_events[] = {
+    {129025L, 0,  100},   // Position Rapid Update: 10 Hz typical
+    {129026L, 0,  250},   // COG/SOG: 4 Hz
+    {130306L, 0,  100},   // Wind: 10 Hz
+    {128267L, 0, 1000},   // Depth: 1 Hz
+    {130316L, 0, 2000},   // Water temp: 0.5 Hz
+    {127250L, 0,  100},   // Heading: 10 Hz
+    {128259L, 0,  250},   // STW: 4 Hz
+};
+}  // namespace
+
 void NmeaBridge::simulateTick() {
     static uint32_t t0 = millis();
-    const double t = (millis() - t0) / 1000.0;
+    const uint32_t now = millis();
+    const double t = (now - t0) / 1000.0;
 
-    state_.setGps(55.6761 + 0.0001 * sin(t * 0.1),
-                  12.5683 + 0.0001 * cos(t * 0.1),
-                  6.2 + 0.5 * sin(t * 0.3),
-                  120.0 + 5.0 * sin(t * 0.05));
-    state_.setWindApparent(45.0 + 10.0 * sin(t * 0.2), 12.0 + 2.0 * cos(t * 0.4));
-    state_.setWindTrue(   60.0 +  5.0 * sin(t * 0.15), 14.0 + 1.5 * cos(t * 0.25));
-    state_.setDepth(8.5 + 0.7 * sin(t * 0.1), 12.3);
-    state_.setHeading(normalizeDeg(120.0 + 5.0 * sin(t * 0.05)));
-    state_.setStw(5.9 + 0.4 * sin(t * 0.25));
+    // Update BoatState continuously so the UI numbers don't stutter.
+    const double lat = 55.6761 + 0.0001 * sin(t * 0.1);
+    const double lon = 12.5683 + 0.0001 * cos(t * 0.1);
+    const double sog = 6.2 + 0.5 * sin(t * 0.3);
+    const double cog = 120.0 + 5.0 * sin(t * 0.05);
+    const double awa = 45.0 + 10.0 * sin(t * 0.2);
+    const double aws = 12.0 +  2.0 * cos(t * 0.4);
+    const double twa = 60.0 +  5.0 * sin(t * 0.15);
+    const double tws = 14.0 +  1.5 * cos(t * 0.25);
+    const double depth   = 8.5 + 0.7 * sin(t * 0.1);
+    const double temp_c  = 12.3;
+    const double hdg     = normalizeDeg(120.0 + 5.0 * sin(t * 0.05));
+    const double stw     =  5.9 + 0.4 * sin(t * 0.25);
+
+    state_.setGps(lat, lon, sog, cog);
+    state_.setWindApparent(awa, aws);
+    state_.setWindTrue(twa, tws);
+    state_.setDepth(depth, temp_c);
+    state_.setHeading(hdg);
+    state_.setStw(stw);
+
+    // Fire simulated PGN log entries on their per-PGN intervals so the debug
+    // screen sees a realistic-looking trickle.
+    char summary[56];
+    for (auto& e : sim_events) {
+        if (now - e.last_ms < e.interval_ms) continue;
+        e.last_ms = now;
+        switch (e.pgn) {
+            case 129025L:
+                snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);
+                break;
+            case 129026L:
+                snprintf(summary, sizeof(summary), "COG/SOG cog=%.0f sog=%.1fkn", cog, sog);
+                break;
+            case 130306L:
+                snprintf(summary, sizeof(summary), "Wind AWA=%+.0f spd=%.1fkn", awa, aws);
+                break;
+            case 128267L:
+                snprintf(summary, sizeof(summary), "Depth %.1fm", depth);
+                break;
+            case 130316L:
+                snprintf(summary, sizeof(summary), "Temp sea t=%.1fC", temp_c);
+                break;
+            case 127250L:
+                snprintf(summary, sizeof(summary), "Heading %.0fT", hdg);
+                break;
+            case 128259L:
+                snprintf(summary, sizeof(summary), "STW %.1fkn", stw);
+                break;
+            default:
+                snprintf(summary, sizeof(summary), "(sim)");
+                break;
+        }
+        state_.logPgn(e.pgn, /*src=*/0, summary);
+    }
 }
 
 #endif // SIMULATED_DATA

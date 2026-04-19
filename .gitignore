@@ -14,6 +14,10 @@
 *.a
 build/
 
+# ...but allow committed pre-built firmware in binaries/
+!binaries/
+!binaries/**/*.bin
+
 # Python (if we add tooling)
 __pycache__/
 *.pyc

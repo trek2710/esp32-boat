@@ -1,11 +1,10 @@
 // Ui — minimal LVGL instrument dashboard.
 //
-// v1 draws five pages, cycled by swipe-left / swipe-right:
-//   0. GPS    (lat/lon, SOG, COG)
-//   1. Wind   (AWA/AWS, TWA/TWS)
-//   2. Depth  (depth + water temp)
-//   3. Heading (HDG + STW)
-//   4. AIS    (scrolling target list)
+// v1 draws three pages, cycled by swipe-left / swipe-right:
+//   0. Overview — classic-boating wind compass (needle = AWA, centre = AWS),
+//                 big SOG readout, small HDG/COG underneath.
+//   1. Data     — every value from BoatState laid out in a compact grid.
+//   2. Debug    — rolling log of received NMEA 2000 PGNs (PGN / age / summary).
 //
 // This header is intentionally minimal; screen construction happens in Ui.cpp.
 // When you want to customise appearance, start there.

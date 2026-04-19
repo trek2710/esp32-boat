@@ -16,15 +16,39 @@ confirmation when the board is in hand and the schematic is open.
 
 ## What it shows (v1)
 
-- **GPS** — position (lat/lon), SOG, COG
-- **Wind** — AWA / AWS and TWA / TWS
-- **Depth & water temperature**
-- **Heading & boat speed** (through the water)
-- **AIS targets** — scrolling list of nearby vessels (MMSI, name, CPA/TCPA if available)
+Three swipe-cycled screens:
 
-Not in v1 (see [docs/ROADMAP.md](docs/ROADMAP.md)): waypoint navigation, map rendering.
+1. **Overview** — classic-boating wind compass (needle shows apparent wind
+   angle, AWS in the centre), with a large SOG readout and HDG/COG below.
+2. **Data** — every value from the NMEA bus laid out in a compact grid
+   (LAT/LON, SOG/COG, AWA/AWS, TWA/TWS, DEPTH/TEMP, HDG/STW, AIS count).
+3. **Debug** — rolling log of received NMEA 2000 PGNs with age + decoded
+   summary. Useful for verifying the bus is alive.
+
+Decoded PGNs: GPS position (129025), COG/SOG (129026), Wind (130306),
+Water Depth (128267), Water Temperature (130316), Heading (127250), Speed
+Through Water (128259). AIS PGNs (129038/39/809/810) are TODO for v1.1.
+
+Not in v1 (see [docs/ROADMAP.md](docs/ROADMAP.md)): waypoint navigation,
+map rendering.
 
 ## Quick start
+
+### Flash the pre-built firmware (no toolchain needed)
+
+The [`binaries/`](binaries/) folder contains ready-to-flash `.bin` files
+for both the simulated and production builds, plus three different flash
+recipes (browser-based `esptool-js`, command-line `esptool.py`, or
+PlatformIO). See [binaries/README.md](binaries/README.md).
+
+The fastest path is the web flasher:
+
+1. Plug the ESP32-S3 into USB.
+2. Open <https://espressif.github.io/esptool-js/> in Chrome/Edge.
+3. Connect → pick the port → flash `binaries/esp32-boat-sim-merged.bin`
+   at offset `0x0`.
+
+### Build from source
 
 1. Install [PlatformIO](https://platformio.org/) (VS Code extension or the CLI — `pip install platformio`).
 2. Clone this repo:
@@ -34,8 +58,12 @@ Not in v1 (see [docs/ROADMAP.md](docs/ROADMAP.md)): waypoint navigation, map ren
    ```
 3. Build and flash with the board plugged in via USB-C:
    ```bash
-   pio run -t upload
+   pio run -e waveshare_esp32s3_touch_lcd_21_sim -t upload
    pio device monitor
+   ```
+4. To re-package the pre-built binaries after your changes:
+   ```bash
+   ./scripts/package.sh sim
    ```
 
 ## Wiring
@@ -70,6 +98,8 @@ esp32-boat/
 ├── src/NmeaBridge.{h,cpp}  PGN handlers that decode N2K frames into BoatState
 ├── src/Ui.{h,cpp}          LVGL screens + swipe-to-change-page logic
 ├── docs/                   BOM, wiring, roadmap
+├── binaries/               Pre-built .bin files + end-user flash instructions
+├── scripts/package.sh      Build + copy binaries into binaries/
 └── .github/workflows/      CI that runs `pio run` on every push
 ```
 
