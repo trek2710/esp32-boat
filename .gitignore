@@ -1,0 +1,35 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.clangd/
+.cache/
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+*.o
+*.a
+build/
+
+# Python (if we add tooling)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+
+# Secrets (WiFi creds, OTA passwords, etc.)
+secrets.h
+.env

@@ -1,0 +1,54 @@
+// Build-time configuration.
+//
+// Pin assignments, feature flags, and user-tunable constants.
+// Anything you need to change per-install lives here.
+
+#pragma once
+
+// -----------------------------------------------------------------------------
+// CAN / NMEA 2000
+// -----------------------------------------------------------------------------
+
+// ESP32-S3 TWAI (CAN) pin assignments. Verify these are free on the Waveshare
+// ESP32-S3-Touch-LCD-2.1 broken-out header before soldering. If either pin is
+// used by the display or touch, pick another free pair and update here.
+#ifndef CAN_TX_PIN
+#define CAN_TX_PIN 15
+#endif
+
+#ifndef CAN_RX_PIN
+#define CAN_RX_PIN 16
+#endif
+
+// NMEA 2000 device metadata (advertised on the bus). Unique serial code
+// distinguishes us from any other ESP32-based device the boat might run.
+static constexpr uint32_t N2K_SERIAL_CODE      = 271828UL; // any 32-bit value
+static constexpr uint16_t N2K_PRODUCT_CODE     = 2710;     // any 16-bit value
+static constexpr const char* N2K_MODEL_ID      = "esp32-boat";
+static constexpr const char* N2K_SW_VERSION    = "0.1.0";
+static constexpr const char* N2K_MODEL_VERSION = "1";
+
+// -----------------------------------------------------------------------------
+// Display
+// -----------------------------------------------------------------------------
+
+static constexpr uint16_t DISPLAY_WIDTH  = 480;
+static constexpr uint16_t DISPLAY_HEIGHT = 480;
+
+// LVGL tick in ms. Don't raise above 10.
+static constexpr uint32_t LV_TICK_MS = 5;
+
+// -----------------------------------------------------------------------------
+// Feature flags
+// -----------------------------------------------------------------------------
+
+// When set, NmeaBridge feeds the UI fake data instead of talking to the bus.
+// Useful for desk development before the transceiver is wired up.
+#ifndef SIMULATED_DATA
+#define SIMULATED_DATA 0
+#endif
+
+// Set to 1 and populate `secrets.h` (WiFi credentials) to enable OTA.
+#ifndef ENABLE_OTA
+#define ENABLE_OTA 0
+#endif
