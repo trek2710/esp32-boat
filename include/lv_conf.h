@@ -38,15 +38,18 @@
 #define LV_USE_ARC    1
 #define LV_USE_BAR    1
 #define LV_USE_BTN    1
-#define LV_USE_BTNMATRIX 0
-#define LV_USE_CANVAS 0
+// btnmatrix and textarea are required by lv_extra.h (via lv_keyboard.h /
+// lv_msgbox.h / lv_spinbox.h). Keeping them enabled is cheap and avoids the
+// "lv_kb: lv_btnm is required" compile errors.
+#define LV_USE_BTNMATRIX 1
+#define LV_USE_TEXTAREA  1
+#define LV_USE_CANVAS   0
 #define LV_USE_CHECKBOX 0
 #define LV_USE_DROPDOWN 0
-#define LV_USE_LIST   1
-#define LV_USE_SLIDER 0
-#define LV_USE_SWITCH 0
-#define LV_USE_TABLE  0
-#define LV_USE_TEXTAREA 0
+#define LV_USE_LIST     1
+#define LV_USE_SLIDER   0
+#define LV_USE_SWITCH   0
+#define LV_USE_TABLE    0
 
 // -------- Themes ----------------------------------------------------------
 #define LV_USE_THEME_DEFAULT 1

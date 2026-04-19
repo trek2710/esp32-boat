@@ -1,9 +1,21 @@
 // Minimal LVGL instrument UI.
 //
-// This file deliberately stays small: it sets up LVGL with the LovyanGFX
-// driver, builds five pages with plain labels, and updates them from
-// BoatState once per tick. Visual polish (gauges, dials, round-layout tweaks)
-// comes in v1.x once we have the real hardware to iterate against.
+// Five pages (GPS / Wind / Depth / Heading / AIS) with swipe-to-page. Values
+// come from BoatState every tick.
+//
+// NOTE ON THE DISPLAY DRIVER:
+// The Waveshare ESP32-S3-Touch-LCD-2.1 uses a QSPI-interfaced ST77916 panel
+// and a CST820 I2C touch controller — neither of which are supported by
+// LovyanGFX 1.2.0 out of the box. For the v1 scaffold we use a *stub* LGFX
+// class (Panel_GC9A01 on SPI with placeholder pins) so the firmware
+// compiles and boots cleanly; the display itself won't light up on the real
+// board until this class is replaced with either:
+//   (a) a hand-written LovyanGFX Panel_ST77916 / Touch_CST820 subclass, or
+//   (b) the Espressif ESP32_Display_Panel library (which has a ready-made
+//       board preset for ESP32-S3-Touch-LCD-2.1).
+// The simulated firmware is still useful without the display — the serial
+// monitor will show boot / simulated data / timing, proving the sw stack
+// runs on your hardware.
 
 #include "Ui.h"
 
@@ -16,48 +28,67 @@
 namespace ui {
 namespace {
 
-// ---------------------------------------------------------------------------
-// LovyanGFX configuration for Waveshare ESP32-S3-Touch-LCD-2.1.
-// These pin values come from the Waveshare wiki example; verify against your
-// exact board revision before trusting them for flashing.
-// ---------------------------------------------------------------------------
+// Stub LGFX — compiles cleanly on LovyanGFX 1.2.0 but does NOT drive the
+// Waveshare 2.1" round. Replace before expecting pixels on the real panel.
 class LGFX : public lgfx::LGFX_Device {
-    lgfx::Panel_ST7701       panel_; // Waveshare 2.1" round uses ST7701 or ST77916.
-                                     // Swap for Panel_ST77916 if the display stays blank.
-    lgfx::Bus_Parallel16     bus_;   // Placeholder; real board is QSPI — replace with
-                                     // Bus_SPI / custom QSPI config per Waveshare demo.
-    lgfx::Light_PWM          light_;
-    lgfx::Touch_CST820       touch_;
+    lgfx::Panel_GC9A01 panel_;
+    lgfx::Bus_SPI      bus_;
 
 public:
     LGFX() {
-        // Stub config — the scaffolded build just needs these to link.
-        // At hardware-bringup time, replace with the exact values from
-        // Waveshare's factory demo (QSPI pins, initialisation sequence).
-        auto pcfg = panel_.config();
-        pcfg.memory_width  = DISPLAY_WIDTH;
-        pcfg.memory_height = DISPLAY_HEIGHT;
-        pcfg.panel_width   = DISPLAY_WIDTH;
-        pcfg.panel_height  = DISPLAY_HEIGHT;
-        pcfg.offset_rotation = 0;
-        panel_.config(pcfg);
-
+        { // Bus — placeholder SPI config.
+            auto cfg = bus_.config();
+            cfg.spi_host    = SPI2_HOST;
+            cfg.spi_mode    = 0;
+            cfg.freq_write  = 40000000;
+            cfg.freq_read   = 16000000;
+            cfg.spi_3wire   = false;
+            cfg.use_lock    = true;
+            cfg.dma_channel = SPI_DMA_CH_AUTO;
+            cfg.pin_sclk    = -1;
+            cfg.pin_mosi    = -1;
+            cfg.pin_miso    = -1;
+            cfg.pin_dc      = -1;
+            bus_.config(cfg);
+            panel_.setBus(&bus_);
+        }
+        { // Panel — declare 480×480 so LVGL lays out correctly; GC9A01's
+          // real resolution is 240×240 but this class never actually drives
+          // the panel in v1.
+            auto cfg = panel_.config();
+            cfg.pin_cs         = -1;
+            cfg.pin_rst        = -1;
+            cfg.pin_busy       = -1;
+            cfg.memory_width   = DISPLAY_WIDTH;
+            cfg.memory_height  = DISPLAY_HEIGHT;
+            cfg.panel_width    = DISPLAY_WIDTH;
+            cfg.panel_height   = DISPLAY_HEIGHT;
+            cfg.offset_x       = 0;
+            cfg.offset_y       = 0;
+            cfg.offset_rotation = 0;
+            cfg.dummy_read_pixel = 8;
+            cfg.dummy_read_bits  = 1;
+            cfg.readable        = false;
+            cfg.invert          = false;
+            cfg.rgb_order       = false;
+            cfg.dlen_16bit      = false;
+            cfg.bus_shared      = false;
+            panel_.config(cfg);
+        }
         setPanel(&panel_);
     }
 };
 
-LGFX                  gfx;
-lv_disp_draw_buf_t    draw_buf;
-// Dynamically allocated from PSRAM in begin() to keep DRAM free.
-lv_color_t*           buf1 = nullptr;
-lv_color_t*           buf2 = nullptr;
+LGFX               gfx;
+lv_disp_draw_buf_t draw_buf;
+lv_color_t*        buf1 = nullptr;
+lv_color_t*        buf2 = nullptr;
 
-BoatState*            g_state = nullptr;
+BoatState* g_state = nullptr;
 
-// Screens + labels we'll update each tick.
 struct Page {
     lv_obj_t* root;
-    lv_obj_t* labels[6];   // per-page — unused slots left nullptr
+    lv_obj_t* labels[6];
 };
 Page pages[5] = {};
 int  current_page = 0;
@@ -84,37 +115,32 @@ lv_obj_t* addStat(lv_obj_t* parent, const char* label, int y) {
 }
 
 void buildAllPages() {
-    // GPS
     pages[0].root      = buildPage("GPS");
     pages[0].labels[0] = addStat(pages[0].root, "LAT",  110);
     pages[0].labels[1] = addStat(pages[0].root, "LON",  160);
     pages[0].labels[2] = addStat(pages[0].root, "SOG",  250);
     pages[0].labels[3] = addStat(pages[0].root, "COG",  300);
 
-    // Wind
     pages[1].root      = buildPage("WIND");
     pages[1].labels[0] = addStat(pages[1].root, "AWA",  120);
     pages[1].labels[1] = addStat(pages[1].root, "AWS",  170);
     pages[1].labels[2] = addStat(pages[1].root, "TWA",  260);
     pages[1].labels[3] = addStat(pages[1].root, "TWS",  310);
 
-    // Depth / temp
     pages[2].root      = buildPage("DEPTH");
     pages[2].labels[0] = addStat(pages[2].root, "DEPTH", 150);
     pages[2].labels[1] = addStat(pages[2].root, "TEMP",  250);
 
-    // Heading / STW
     pages[3].root      = buildPage("HEADING");
     pages[3].labels[0] = addStat(pages[3].root, "HDG", 150);
     pages[3].labels[1] = addStat(pages[3].root, "STW", 250);
 
-    // AIS
     pages[4].root      = buildPage("AIS");
     pages[4].labels[0] = addStat(pages[4].root, "Targets", 150);
-    // A proper list view comes in v1.x — for scaffold we just show count + closest MMSI.
 }
 
-// LVGL → LovyanGFX glue.
+// LVGL -> LovyanGFX glue. The stub LGFX doesn't light up the real panel, but
+// LVGL still calls flush_cb which we terminate so LVGL doesn't stall.
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     const uint32_t w = area->x2 - area->x1 + 1;
     const uint32_t h = area->y2 - area->y1 + 1;
@@ -125,25 +151,13 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     lv_disp_flush_ready(drv);
 }
 
-void readTouchCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
-    uint16_t x = 0, y = 0;
-    if (gfx.getTouch(&x, &y)) {
-        data->state = LV_INDEV_STATE_PRESSED;
-        data->point.x = x;
-        data->point.y = y;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
-}
-
-void swipeHandler(lv_event_t* e) {
+void swipeHandler(lv_event_t* /*e*/) {
     const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
     if (dir == LV_DIR_LEFT)  current_page = (current_page + 1) % 5;
     if (dir == LV_DIR_RIGHT) current_page = (current_page + 4) % 5; // -1 mod 5
     lv_scr_load(pages[current_page].root);
 }
 
-// Convenience: format a double (NaN-safe).
 void setOrDash(lv_obj_t* lbl, const char* key, double v, const char* fmt, const char* unit) {
     if (isnan(v)) {
         lv_label_set_text_fmt(lbl, "%s: --", key);
@@ -156,7 +170,7 @@ void setOrDash(lv_obj_t* lbl, const char* key, double v, const char* fmt, const 
 
 void refreshFromState() {
     if (!g_state) return;
-    auto s = g_state->snapshot();
+    auto s   = g_state->snapshot();
     auto ais = g_state->aisSnapshot();
 
     setOrDash(pages[0].labels[0], "LAT", s.lat, "%.4f",  "\xC2\xB0");
@@ -176,8 +190,9 @@ void refreshFromState() {
     setOrDash(pages[3].labels[1], "STW", s.stw,              "%.1f", "kn");
 
     size_t ais_count = 0;
-    for (auto& t : ais) if (t.mmsi != 0) ais_count++;
-    lv_label_set_text_fmt(pages[4].labels[0], "Targets: %u", static_cast<unsigned>(ais_count));
+    for (const auto& t : ais) if (t.mmsi != 0) ais_count++;
+    lv_label_set_text_fmt(pages[4].labels[0], "Targets: %u",
+                          static_cast<unsigned>(ais_count));
 }
 
 }  // namespace
@@ -191,7 +206,6 @@ void begin(BoatState& state) {
 
     lv_init();
 
-    // Two line-buffers in PSRAM (40 rows of 480 pixels each = ~38 KB).
     const size_t line_buf_px = DISPLAY_WIDTH * 40;
     buf1 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
     buf2 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
@@ -205,16 +219,12 @@ void begin(BoatState& state) {
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
 
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type    = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = readTouchCb;
-    lv_indev_drv_register(&indev_drv);
+    // No touch driver in the v1 scaffold — Touch_CST820 isn't in LovyanGFX
+    // 1.2.0. Once we have the real display driver up, we'll either write a
+    // CST820 I2C driver or switch to a framework that includes one.
 
     buildAllPages();
     lv_scr_load(pages[0].root);
-
-    // Global swipe listener on the active screen.
     lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
 }
 

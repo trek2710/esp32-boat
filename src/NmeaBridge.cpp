@@ -1,14 +1,14 @@
 #include "NmeaBridge.h"
 
-#include "config.h"
+#include <Arduino.h>
+#include <cmath>
 
-#include <NMEA2000_CAN.h>   // pulls in NMEA2000_esp32 when ESP32 is the target
-#include <N2kMessages.h>
+#if !SIMULATED_DATA
+#include <NMEA2000_CAN.h>   // pulls in the backend for the current platform
+#include <N2kMessages.h>    // Parse* helpers + msToKnots / radToDeg already defined here
+#endif
 
 namespace {
-constexpr double kMetersPerSecondToKnots = 1.9438444924406;
-inline double msToKnots(double ms) { return ms * kMetersPerSecondToKnots; }
-inline double radToDeg(double r)   { return r * (180.0 / PI); }
 inline double normalizeDeg(double d) {
     while (d < -180.0) d += 360.0;
     while (d >  180.0) d -= 360.0;
@@ -16,45 +16,37 @@ inline double normalizeDeg(double d) {
 }
 }  // namespace
 
-NmeaBridge* NmeaBridge::instance_ = nullptr;
-
 NmeaBridge::NmeaBridge(BoatState& state) : state_(state) {}
+
+// ============================================================================
+// Production build — real NMEA 2000 stack.
+// ============================================================================
+#if !SIMULATED_DATA
+
+NmeaBridge* NmeaBridge::instance_ = nullptr;
 
 bool NmeaBridge::begin() {
     instance_ = this;
-
-    // NMEA2000 is a global singleton (`NMEA2000`) set up by NMEA2000_CAN.h.
-    // We just configure + start it.
     n2k_ = &NMEA2000;
 
     n2k_->SetProductInformation(
-        "ESP32-BOAT-001",                    // manufacturer's model serial code
-        N2K_PRODUCT_CODE,
-        N2K_MODEL_ID,
-        N2K_SW_VERSION,
-        N2K_MODEL_VERSION);
+        "ESP32-BOAT-001", N2K_PRODUCT_CODE, N2K_MODEL_ID,
+        N2K_SW_VERSION, N2K_MODEL_VERSION);
 
     n2k_->SetDeviceInformation(
-        N2K_SERIAL_CODE,   // unique device ID within manufacturer
-        130,               // Device function: Display
-        120,               // Device class: Display
-        2046);             // Manufacturer's ID (2046 = reserved/experimental)
+        N2K_SERIAL_CODE,
+        130,    // Device function: Display
+        120,    // Device class:    Display
+        2046);  // Manufacturer ID (2046 = reserved / experimental)
 
-    n2k_->SetMode(tNMEA2000::N2km_ListenOnly);  // v1: read-only
+    n2k_->SetMode(tNMEA2000::N2km_ListenOnly);
     n2k_->EnableForward(false);
     n2k_->SetMsgHandler(&NmeaBridge::handleMsg);
 
-    if (!n2k_->Open()) {
-        return false;
-    }
+    if (!n2k_->Open()) return false;
 
     xTaskCreatePinnedToCore(&NmeaBridge::taskTrampoline,
-                            "n2k",
-                            4096,
-                            this,
-                            5,         // mid priority
-                            nullptr,
-                            0);        // core 0 — UI runs on core 1
+                            "n2k", 4096, this, 5, nullptr, 0);
     return true;
 }
 
@@ -74,11 +66,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
     auto& s = instance_->state_;
 
     switch (msg.PGN) {
-        // ---------------------------------------------------------------- GPS
+        // ----------------------------------------------------------------- GPS
         case 129025L: { // Position Rapid Update
             double lat = NAN, lon = NAN;
             if (ParseN2kPGN129025(msg, lat, lon)) {
-                // Merge with whatever SOG/COG we already had.
                 auto snap = s.snapshot();
                 s.setGps(lat, lon, snap.sog, snap.cog);
             }
@@ -90,19 +81,19 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             double cog_rad = NAN, sog_ms = NAN;
             if (ParseN2kPGN129026(msg, sid, ref, cog_rad, sog_ms)) {
                 auto snap = s.snapshot();
-                s.setGps(snap.lat, snap.lon, msToKnots(sog_ms), radToDeg(cog_rad));
+                s.setGps(snap.lat, snap.lon, msToKnots(sog_ms), RadToDeg(cog_rad));
             }
             break;
         }
 
-        // --------------------------------------------------------------- Wind
+        // ---------------------------------------------------------------- Wind
         case 130306L: { // Wind Data
             unsigned char sid;
             double wind_speed_ms = NAN, wind_angle_rad = NAN;
             tN2kWindReference ref;
             if (ParseN2kPGN130306(msg, sid, wind_speed_ms, wind_angle_rad, ref)) {
                 const double speed_kn  = msToKnots(wind_speed_ms);
-                const double angle_deg = normalizeDeg(radToDeg(wind_angle_rad));
+                const double angle_deg = normalizeDeg(RadToDeg(wind_angle_rad));
                 if (ref == N2kWind_Apparent) {
                     s.setWindApparent(angle_deg, speed_kn);
                 } else if (ref == N2kWind_True_boat || ref == N2kWind_True_water) {
@@ -112,12 +103,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             break;
         }
 
-        // -------------------------------------------------------------- Depth
+        // --------------------------------------------------------------- Depth
         case 128267L: { // Water Depth
             unsigned char sid;
-            double depth_below_transducer_m = NAN;
-            double offset_m = NAN;
-            double range_m  = NAN;
+            double depth_below_transducer_m = NAN, offset_m = NAN, range_m = NAN;
             if (ParseN2kPGN128267(msg, sid, depth_below_transducer_m, offset_m, range_m)) {
                 auto snap = s.snapshot();
                 s.setDepth(depth_below_transducer_m, snap.water_temp_c);
@@ -138,15 +127,14 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             break;
         }
 
-        // ------------------------------------------------------ Heading / STW
+        // ------------------------------------------------------- Heading / STW
         case 127250L: { // Vessel Heading
             unsigned char sid;
             double heading_rad = NAN, dev_rad = NAN, var_rad = NAN;
             tN2kHeadingReference ref;
             if (ParseN2kPGN127250(msg, sid, heading_rad, dev_rad, var_rad, ref)) {
-                // If sensor reports magnetic and variation is known, convert to true.
-                double deg = radToDeg(heading_rad);
-                if (ref == N2khr_magnetic && !isnan(var_rad)) deg += radToDeg(var_rad);
+                double deg = RadToDeg(heading_rad);
+                if (ref == N2khr_magnetic && !isnan(var_rad)) deg += RadToDeg(var_rad);
                 s.setHeading(normalizeDeg(deg));
             }
             break;
@@ -162,52 +150,43 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
         }
 
         // ---------------------------------------------------------------- AIS
-        case 129038L:   // AIS Class A Position Report
-        case 129039L: { // AIS Class B Position Report
-            uint8_t  msg_id, repeat, ais_transceiver_info;
-            uint32_t user_id;
-            double   lat = NAN, lon = NAN;
-            bool     accuracy, raim;
-            uint8_t  seconds;
-            double   cog_rad = NAN, sog_ms = NAN;
-            tN2kAISTransceiverInformation ti;
-            double   heading_rad = NAN;
-            // Both PGNs have similar parsers; use the generic one for class B
-            // to keep the scaffold small. Class A decode would add rot + navstatus.
-            if (ParseN2kPGN129039(msg, msg_id, repeat, user_id, lat, lon, accuracy,
-                                  raim, seconds, cog_rad, sog_ms, ti, heading_rad)) {
-                AisTarget t;
-                t.mmsi = user_id;
-                t.lat  = lat;
-                t.lon  = lon;
-                t.sog  = msToKnots(sog_ms);
-                t.cog  = radToDeg(cog_rad);
-                t.last_seen_ms = millis();
-                s.upsertAisTarget(t);
-            }
-            break;
-        }
-
-        // Static data (vessel name) — PGN 129809 / 129810 add names to targets.
-        // Scaffold TODO: decode and merge into the matching MMSI slot.
+        // TODO(v1.1): AIS PGNs 129038 / 129039 / 129809 / 129810.
+        // The Parse signatures in NMEA2000-library 4.22 take many more
+        // parameters (tN2kAISRepeat, tN2kAISTransceiverInformation,
+        // tN2kAISUnit, Display/DSC/Band/Msg22/Mode/State flags). Wire them up
+        // properly once the instrument pages are validated on real data.
 
         default:
             break;
     }
 }
 
+#endif // !SIMULATED_DATA
+
+
+// ============================================================================
+// Simulated build — fake values, no NMEA 2000 stack.
+// ============================================================================
 #if SIMULATED_DATA
+
+bool NmeaBridge::begin() {
+    Serial.println(F("[sim] NMEA bridge running in SIMULATED_DATA mode"));
+    return true;
+}
+
 void NmeaBridge::simulateTick() {
     static uint32_t t0 = millis();
     const double t = (millis() - t0) / 1000.0;
+
     state_.setGps(55.6761 + 0.0001 * sin(t * 0.1),
                   12.5683 + 0.0001 * cos(t * 0.1),
                   6.2 + 0.5 * sin(t * 0.3),
                   120.0 + 5.0 * sin(t * 0.05));
     state_.setWindApparent(45.0 + 10.0 * sin(t * 0.2), 12.0 + 2.0 * cos(t * 0.4));
-    state_.setWindTrue(60.0 + 5.0 * sin(t * 0.15), 14.0 + 1.5 * cos(t * 0.25));
+    state_.setWindTrue(   60.0 +  5.0 * sin(t * 0.15), 14.0 + 1.5 * cos(t * 0.25));
     state_.setDepth(8.5 + 0.7 * sin(t * 0.1), 12.3);
     state_.setHeading(normalizeDeg(120.0 + 5.0 * sin(t * 0.05)));
     state_.setStw(5.9 + 0.4 * sin(t * 0.25));
 }
-#endif
+
+#endif // SIMULATED_DATA

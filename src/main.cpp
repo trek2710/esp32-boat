@@ -4,6 +4,7 @@
 // the LVGL tick; the NMEA parse loop runs in its own FreeRTOS task on core 0.
 
 #include <Arduino.h>
+#include <lvgl.h>
 
 #include "BoatState.h"
 #include "NmeaBridge.h"
