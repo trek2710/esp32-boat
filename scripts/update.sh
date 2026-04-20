@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Add three-screen UI, PGN log, prebuilt binaries, 3D-printable case, and update.sh + CHANGELOG workflow"
+DEFAULT_MSG="Add three-screen UI, PGN log, prebuilt binaries, 3D case, update.sh + CHANGELOG, and fix CI to build sim env only"
 
 set -euo pipefail
 
@@ -125,6 +125,7 @@ git add -- \
     binaries/ \
     hardware/ \
     docs/ \
+    .github/ \
     README.md LICENSE .gitignore platformio.ini \
     CHANGELOG.md \
     2>/dev/null || true
