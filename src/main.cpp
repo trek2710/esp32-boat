@@ -59,37 +59,41 @@ void lvglTickTask(void*) {
 void setup() {
     Serial.begin(115200);
 
-    // USB-CDC-on-boot needs ~1.5–2 s to fully enumerate on the host before our
-    // first printf is guaranteed to reach the terminal. Without this, a crash
-    // later in setup() can drop the CDC endpoint and all prior output with it,
-    // making the boot loop look like silence. 2 s is conservative but cheap.
+    // USB-CDC-on-boot needs ~1.5–2 s to fully enumerate on the host before
+    // the first byte is guaranteed to reach the terminal. Without this, a
+    // crash later in setup() can drop the CDC endpoint and all prior output
+    // with it, making the boot loop look like silence. 2 s is conservative.
     delay(2000);
-    Serial.println(F("esp32-boat booting"));
-    Serial.flush();
+
+    // We use log_i() rather than Serial.println() for the diagnostic output
+    // below. Arduino's HWCDC-backed `Serial` (active whenever
+    // ARDUINO_USB_CDC_ON_BOOT=1) silently drops writes when the host-side
+    // CDC endpoint isn't actively reading — which is exactly the case for
+    // the first few hundred ms after reset, while the host is
+    // re-enumerating. That was masking *all* of our setup() progress logs
+    // on a freshly flashed image. log_i goes through the lower-level ESP-IDF
+    // console path (same path as the esp32-hal-* core and esp_log messages
+    // we see reliably) and is not gated on CDC-connected state.
+    log_i("esp32-boat booting");
 
 #if DISPLAY_SAFE_MODE
-    Serial.println(F("[SAFE MODE] display init skipped (DISPLAY_SAFE_MODE=1)"));
-    Serial.flush();
+    log_i("[SAFE MODE] display init skipped (DISPLAY_SAFE_MODE=1)");
 #else
-    Serial.println(F("[step] ui::begin()"));
-    Serial.flush();
+    log_i("[step] ui::begin()");
     ui::begin(g_state);
-    Serial.println(F("[step] ui::begin() ok"));
-    Serial.flush();
+    log_i("[step] ui::begin() ok");
 #endif
 
-    Serial.println(F("[step] nmea::begin()"));
-    Serial.flush();
+    log_i("[step] nmea::begin()");
     if (!g_bridge.begin()) {
-        Serial.println(F("[WARN] NMEA 2000 bridge failed to start — continuing with no bus."));
+        log_w("[WARN] NMEA 2000 bridge failed to start - continuing with no bus.");
     }
 
 #if !DISPLAY_SAFE_MODE
     xTaskCreatePinnedToCore(lvglTickTask, "lvgl-tick", 2048, nullptr, 1, nullptr, 1);
 #endif
 
-    Serial.println(F("esp32-boat ready"));
-    Serial.flush();
+    log_i("esp32-boat ready");
 }
 
 void loop() {

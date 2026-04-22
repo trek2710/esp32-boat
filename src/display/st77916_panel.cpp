@@ -89,13 +89,23 @@ constexpr InitCmd kInit[] = {
 // ── Public API ────────────────────────────────────────────────────────────
 
 bool St77916Panel::begin(Ch422g& io) {
-    Serial.println(F("[st77916] initBus"));           Serial.flush();
-    if (!initBus())         { return false; }
-    Serial.println(F("[st77916] resetPanel"));        Serial.flush();
-    if (!resetPanel(io))    { return false; }
-    Serial.println(F("[st77916] runInitSequence"));   Serial.flush();
-    if (!runInitSequence()) { return false; }
-    Serial.println(F("[st77916] backlight on"));      Serial.flush();
+    // Use log_i / log_e (ESP-IDF log path via ets_printf) rather than
+    // Serial.println. With ARDUINO_USB_CDC_ON_BOOT=1 the Arduino `Serial`
+    // is a HWCDC instance whose write() silently drops bytes when the
+    // host-side CDC endpoint isn't actively reading — which happens for
+    // ~hundreds of ms right after reset, exactly when we most want these
+    // logs. The ESP-IDF console path (used by log_i) doesn't have that
+    // gate, so these show up reliably on the first boot of a
+    // freshly-flashed image. The ESP_LOGE "txdata transfer > ..." errors
+    // from the SPI driver that we were seeing went through this same
+    // path, which is why they were visible and ours weren't.
+    log_i("[st77916] initBus");
+    if (!initBus())         { log_e("[st77916] initBus failed");         return false; }
+    log_i("[st77916] resetPanel");
+    if (!resetPanel(io))    { log_e("[st77916] resetPanel failed");      return false; }
+    log_i("[st77916] runInitSequence");
+    if (!runInitSequence()) { log_e("[st77916] runInitSequence failed"); return false; }
+    log_i("[st77916] backlight on");
 
     // Flip the backlight on (CH422G EXIO0). Do this AFTER the init sequence
     // so the operator doesn't see a flash of power-on noise.
@@ -153,21 +163,35 @@ void St77916Panel::fillColor(uint16_t rgb565) {
 // ── Private helpers ───────────────────────────────────────────────────────
 
 bool St77916Panel::initBus() {
-    // One-time SPI bus init (safe to call once; repeated init returns
-    // ESP_ERR_INVALID_STATE which we treat as "already set up").
+    const spi_host_device_t host = static_cast<spi_host_device_t>(QSPI_HOST);
+
+    // Deliberately NO spi_bus_free(host) here. Earlier bring-up added one
+    // as a "paranoia cleanup" but it can leave the IDF's internal DMA
+    // state in a half-released condition — a subsequent init returns
+    // ESP_OK but with bus_attr->dma_enabled=false, which caps every
+    // transfer at the 64-byte hardware FIFO. On ESP32-S3 with SPI3_HOST
+    // there is no Arduino-side competition anyway; the bus should be
+    // untouched at this point in boot.
+
     spi_bus_config_t buscfg = {};
     buscfg.sclk_io_num     = QSPI_PIN_CLK;
     buscfg.data0_io_num    = QSPI_PIN_D0;
     buscfg.data1_io_num    = QSPI_PIN_D1;
     buscfg.data2_io_num    = QSPI_PIN_D2;
     buscfg.data3_io_num    = QSPI_PIN_D3;
-    buscfg.max_transfer_sz = PANEL_WIDTH * PANEL_HEIGHT * 2 + 16;
+    // Size this to cover one LVGL flush (40 lines × 480 px × 2 B ≈ 38 KB)
+    // plus a little slack, not a full frame. DMA descriptor allocation
+    // scales with this number; a full 480×480×2 B = 450 KB setting is
+    // wasteful and in some IDF builds triggers silent allocation failures
+    // that leave DMA disabled.
+    buscfg.max_transfer_sz = PANEL_WIDTH * 40 * 2 + 64;
     buscfg.flags           = SPICOMMON_BUSFLAG_MASTER | SPICOMMON_BUSFLAG_QUAD;
 
-    esp_err_t err = spi_bus_initialize(static_cast<spi_host_device_t>(QSPI_HOST),
-                                       &buscfg, SPI_DMA_CH_AUTO);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        Serial.printf("[st77916] spi_bus_initialize failed: 0x%x\n", err);
+    esp_err_t err = spi_bus_initialize(host, &buscfg, SPI_DMA_CH_AUTO);
+    log_i("[st77916] spi_bus_initialize rc=0x%x (%s)", err, esp_err_to_name(err));
+    if (err != ESP_OK) {
+        // INVALID_STATE after spi_bus_free means something re-claimed it
+        // between our free and init — not recoverable here.
         return false;
     }
 
@@ -181,12 +205,10 @@ bool St77916Panel::initBus() {
     devcfg.queue_size     = 7;
     devcfg.flags          = SPI_DEVICE_HALFDUPLEX;
 
-    err = spi_bus_add_device(static_cast<spi_host_device_t>(QSPI_HOST),
-                             &devcfg, &asHandle(spi_dev_));
-    if (err != ESP_OK) {
-        Serial.printf("[st77916] spi_bus_add_device failed: 0x%x\n", err);
-        return false;
-    }
+    err = spi_bus_add_device(host, &devcfg, &asHandle(spi_dev_));
+    log_i("[st77916] spi_bus_add_device rc=0x%x (%s)", err, esp_err_to_name(err));
+    if (err != ESP_OK) return false;
+
     return true;
 }
 
@@ -244,20 +266,42 @@ void St77916Panel::sendCommand(uint8_t cmd, const uint8_t* data, size_t len) {
 
 void St77916Panel::sendPixels(const void* pixels, size_t bytes) {
     // ST77916 QSPI pixel frame — command+address+data all in quad mode.
-    spi_transaction_ext_t t = {};
-    t.base.flags    = SPI_TRANS_MODE_QIO
-                    | SPI_TRANS_MODE_DIOQIO_ADDR
-                    | SPI_TRANS_VARIABLE_CMD
-                    | SPI_TRANS_VARIABLE_ADDR
-                    | SPI_TRANS_VARIABLE_DUMMY;
-    t.base.cmd      = 0x32;
-    t.base.addr     = (uint32_t)0x2C << 8;
-    t.command_bits  = 8;
-    t.address_bits  = 24;
-    t.dummy_bits    = 0;
-    t.base.length   = bytes * 8;
-    t.base.tx_buffer = pixels;
-    spi_device_polling_transmit(asHandle(spi_dev_), &t.base);
+    //
+    // We cap each transaction at SOC_SPI_MAXIMUM_BUFFER_SIZE (64 bytes on
+    // ESP32-S3) and loop. That's the size of the SPI hardware FIFO; any
+    // transaction ≤ that always works whether DMA is engaged or not. If
+    // bring-up later confirms DMA is actually on (no more "txdata transfer
+    // > hardware max supported len" logs and the first full refresh shows
+    // pixels), we can lift this cap for a big speed-up — DMA can do tens
+    // of KB per transaction. Until then, correctness > speed.
+    //
+    // On the ST77916, subsequent MEMWRITE-continue calls simply append to
+    // the pixel stream at the current GRAM write pointer, so splitting a
+    // single block across multiple transactions is safe — we still send
+    // the "start pixel frame" command (0x32 / 0x2C) each time because the
+    // controller accepts it as "continue writing". (This matches how
+    // Waveshare's own driver blasts line-buffers chunk-by-chunk.)
+    constexpr size_t kMaxChunk = 64;  // == SOC_SPI_MAXIMUM_BUFFER_SIZE on S3
+    const uint8_t* p = static_cast<const uint8_t*>(pixels);
+    while (bytes > 0) {
+        const size_t n = bytes > kMaxChunk ? kMaxChunk : bytes;
+        spi_transaction_ext_t t = {};
+        t.base.flags    = SPI_TRANS_MODE_QIO
+                        | SPI_TRANS_MODE_DIOQIO_ADDR
+                        | SPI_TRANS_VARIABLE_CMD
+                        | SPI_TRANS_VARIABLE_ADDR
+                        | SPI_TRANS_VARIABLE_DUMMY;
+        t.base.cmd      = 0x32;
+        t.base.addr     = (uint32_t)0x2C << 8;
+        t.command_bits  = 8;
+        t.address_bits  = 24;
+        t.dummy_bits    = 0;
+        t.base.length   = n * 8;
+        t.base.tx_buffer = p;
+        spi_device_polling_transmit(asHandle(spi_dev_), &t.base);
+        p     += n;
+        bytes -= n;
+    }
 }
 
 }  // namespace display

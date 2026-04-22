@@ -29,9 +29,16 @@ namespace display {
 
 // --- ST77916 QSPI ----------------------------------------------------------
 
-// SPI host. SPI2_HOST is GP-SPI2, the user-accessible SPI master on ESP32-S3.
-// (SPI3 / SPI1 are either used by the flash or unavailable for QSPI.)
-static constexpr int QSPI_HOST    = 2;   // SPI2_HOST numeric value
+// SPI host. IMPORTANT: on ESP32-S3 the spi_host_device_t enum is
+//   SPI1_HOST=0, SPI2_HOST=1, SPI3_HOST=2, SPI_HOST_MAX=3.
+// So the integer 2 means SPI3_HOST, not SPI2_HOST as an older comment in
+// this file claimed. We deliberately use SPI3 here (value 2): the
+// Arduino-ESP32 core ships a global `SPIClass SPI(FSPI)` whose FSPI
+// alias is SPI2_HOST, and if anything in the graphics stack ever calls
+// `SPI.begin()` we'd collide with it — SPI3 has no such global. Pins are
+// routed through the GPIO matrix, so the assignments below don't depend
+// on which SPI peripheral we target.
+static constexpr int QSPI_HOST    = 2;   // SPI3_HOST on ESP32-S3
 
 // QSPI pin numbers. CLK + 4 data lines + CS.
 static constexpr int QSPI_PIN_CS   = 21;
@@ -57,17 +64,38 @@ static constexpr int PANEL_HEIGHT  = 480;
 // explicitly when initializing the bus.
 static constexpr int I2C_PIN_SDA   = 11;
 static constexpr int I2C_PIN_SCL   = 10;
-static constexpr uint32_t I2C_FREQ_HZ = 400 * 1000;
+// 100 kHz (not 400 kHz). ESP32's internal pull-ups are weak (~45 kΩ) and at
+// 400 kHz the bus rise time can exceed the I2C spec, producing phantom NACKs
+// across ALL devices. On a Waveshare board WITH external pull-ups 400 kHz
+// works, but 100 kHz works regardless — there's no user-visible difference
+// since CH422G/CST820/RTC traffic is tiny. Bump later if bring-up is stable.
+static constexpr uint32_t I2C_FREQ_HZ = 100 * 1000;
 
 // --- CH422G I/O expander ---------------------------------------------------
 
-// 7-bit I2C address of the CH422G. Waveshare's reference code uses 0x24
-// for the base (output) register; the chip also responds on 0x23 (input),
-// 0x22 (mode), and 0x20 (command). See ch422g.h for the address map.
-// Only the OUTPUT address is needed to drive our three control lines.
-static constexpr uint8_t CH422G_I2C_ADDR_OUTPUT = 0x24;
-static constexpr uint8_t CH422G_I2C_ADDR_CMD    = 0x24 >> 1; // 0x12 on some refs
-static constexpr uint8_t CH422G_I2C_ADDR_MODE   = 0x24 >> 1; // placeholder
+// CH422G is unusual: it doesn't use one I2C address with a register pointer,
+// it uses *multiple* 7-bit I2C addresses, each one mapped to a specific
+// internal register. We only need two of them:
+//
+//   0x24  SYS/Mode register.
+//         Bit 0 (IO_OE) = 1 → make the IO0..IO7 pins outputs.
+//                         Without this write the expander stays in all-
+//                         input mode and the downstream LCD_RST/LCD_BL/
+//                         TP_RST stays floating. Waveshare's demo writes
+//                         0x01 here during init.
+//
+//   0x38  WR_IO register.
+//         Write a byte whose bits drive IO0..IO7 directly.  Used every
+//         time we flip backlight/reset. This is DIFFERENT from the CH422G
+//         "OD" register (address 0x23) which drives the open-drain-only
+//         EXIO0..EXIO7 pins. On the Waveshare ESP32-S3-Touch-LCD-2.1
+//         board, LCD_RST/TP_RST/LCD_BL/SD_CS are wired to IO0..IO3 (not
+//         to EXIO0..EXIO3), so we use 0x38.
+//
+// Reference: WCH CH422G datasheet + Waveshare's
+// esp32-s3-touch-lcd-2.1 demo (CH422G_Mode=0x24, CH422G_WR_IO=0x38).
+static constexpr uint8_t CH422G_I2C_ADDR_MODE   = 0x24;
+static constexpr uint8_t CH422G_I2C_ADDR_OUTPUT = 0x38;
 
 // Which CH422G EXIO channel drives which board signal. Bit positions in the
 // CH422G's single-byte output register. Derived from Waveshare's demo code:

@@ -368,30 +368,65 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
 void begin(BoatState& state) {
     g_state = &state;
 
-    // Each step logs before+after so a crash pinpoints the exact stage. Flush
-    // is critical — USB-CDC drops its last buffered bytes on a hard reset, so
-    // without flush we'd never know where we died.
-    auto step = [](const char* tag) {
-        Serial.print(F("[ui] "));
-        Serial.println(tag);
-        Serial.flush();
+    // Each step logs so a crash pinpoints the exact stage. We use log_i()
+    // rather than Serial — Arduino's HWCDC-backed Serial silently drops
+    // writes when the host-side CDC endpoint isn't actively reading (e.g.
+    // during USB re-enumeration after reset), which was eating every one
+    // of these step logs. log_i() goes through ESP-IDF's lower-level
+    // console path which is not gated on CDC-connected state.
+    auto step = [](const char* tag) { log_i("[ui] %s", tag); };
+
+    // Bring up I2C, but with a pin-swap fallback: Waveshare has shipped
+    // multiple revisions of this board that disagree on which GPIO is SDA
+    // and which is SCL, and we can't tell from software which rev we're on.
+    // So: try the documented assignment first, scan; if zero devices ACK,
+    // swap and scan again. Whichever ordering produces devices is the right
+    // one and we use it for the rest of boot. This costs us nothing when
+    // the primary ordering is correct (the scan was going to run anyway)
+    // and makes the "wrong board rev" failure mode instantly self-healing.
+    auto scanBus = []() {
+        int found = 0;
+        for (uint8_t addr = 1; addr < 127; ++addr) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) ++found;
+        }
+        return found;
     };
 
-    step("Wire.begin()");
+    step("Wire.begin() [primary: SDA=11, SCL=10]");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
+    int device_count = scanBus();
+    log_i("[ui] i2c: primary ordering found %d device(s)", device_count);
+
+    if (device_count == 0) {
+        log_w("[ui] i2c: primary ordering saw zero devices, trying swapped "
+              "pins (SDA=%d, SCL=%d)",
+              display::I2C_PIN_SCL, display::I2C_PIN_SDA);
+        Wire.end();
+        Wire.begin(display::I2C_PIN_SCL, display::I2C_PIN_SDA, display::I2C_FREQ_HZ);
+        device_count = scanBus();
+        log_i("[ui] i2c: swapped ordering found %d device(s)", device_count);
+        if (device_count == 0) {
+            log_e("[ui] i2c: still zero devices after swapping pins. "
+                  "Check 3V3 rail on the I2C bus, external pull-up resistors, "
+                  "and whether this is actually an ESP32-S3-Touch-LCD-2.1.");
+        } else {
+            log_i("[ui] i2c: SWAP WORKED — update display_pins.h to "
+                  "I2C_PIN_SDA=%d, I2C_PIN_SCL=%d permanently.",
+                  display::I2C_PIN_SCL, display::I2C_PIN_SDA);
+        }
+    }
 
     step("CH422G.begin()");
     if (!g_expander.begin()) {
-        Serial.println(F("[ui] CH422G not responding on I2C — backlight + resets "
-                          "won't be driven. Check I2C pins / board rev."));
-        Serial.flush();
+        log_e("[ui] CH422G not responding on I2C - backlight + resets "
+              "won't be driven. Check I2C pins / board rev.");
     }
 
     step("ST77916.begin()");
     if (!g_panel.begin(g_expander)) {
-        Serial.println(F("[ui] ST77916 bring-up failed — continuing without "
-                          "pixels; LVGL will still tick."));
-        Serial.flush();
+        log_e("[ui] ST77916 bring-up failed - continuing without pixels; "
+              "LVGL will still tick.");
     } else {
         step("ST77916 fillColor(black)");
         g_panel.fillColor(0x0000);
@@ -404,6 +439,11 @@ void begin(BoatState& state) {
     const size_t line_buf_px = DISPLAY_WIDTH * 40;
     buf1 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
     buf2 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
+    if (!buf1 || !buf2) {
+        log_e("[ui] ps_malloc failed: buf1=%p buf2=%p (%u bytes each)",
+              buf1, buf2,
+              static_cast<unsigned>(line_buf_px * sizeof(lv_color_t)));
+    }
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, line_buf_px);
 
     step("lv_disp_drv_register");

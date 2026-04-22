@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Real display driver: replace LovyanGFX stub with hand-written ST77916 QSPI driver (ESP-IDF spi_master, quad transactions) + CH422G I2C expander for reset/backlight gating. Pixels-only in v1; CST820 touch and vendor-specific init table are follow-ups. Drops LovyanGFX from lib_deps entirely."
+DEFAULT_MSG="Display bring-up round 4: SPI side now clean — 64-byte sendPixels chunking, SPI3_HOST, and dropping spi_bus_free made runInitSequence/backlight-on/fillColor go through with no 'txdata transfer > hardware max supported len' errors on the panel. I2C side still blind: scan sees zero devices at 100 kHz with pins (SDA=11, SCL=10). That leaves pin-swap as the strongest remaining candidate — Waveshare has shipped multiple ESP32-S3-Touch-LCD-2.1 revisions with SDA/SCL swapped. So Ui.cpp::begin() now tries the documented pin order first, scans; if zero devices, calls Wire.end() and re-inits with pins swapped, scans again. Whichever ordering ACKs devices is the one we keep. Also moved the scan out of Ch422g::begin() (now run once in Ui.cpp before the expander is touched) and dropped I2C to 100 kHz to tolerate the ESP32's weak internal pull-ups in case there are no board-level pull-ups."
 
 set -euo pipefail
 

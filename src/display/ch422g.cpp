@@ -10,21 +10,39 @@
 namespace display {
 
 bool Ch422g::begin() {
-    // Probe the expander by starting an I2C transmission to its output-register
-    // address and checking for an ACK. No register byte is written because the
-    // CH422G's output "register" *is* whatever byte follows the address.
-    Wire.beginTransmission(CH422G_I2C_ADDR_OUTPUT);
-    const uint8_t err = Wire.endTransmission();
+    // CH422G uses multiple I2C addresses (one per internal register) instead
+    // of the usual <address, register-pointer, data> protocol. We:
+    //   1. Write 0x01 to the MODE register (0x24) → "IO0..IO7 are outputs".
+    //      Without this the WR_IO register has no effect, and our LCD_RST /
+    //      LCD_BL / TP_RST lines stay floating (i.e. panel never comes out
+    //      of reset, backlight never turns on).
+    //   2. Write 0x00 to the OUTPUT register (0x38) → backlight off, both
+    //      resets asserted (active-low, so bit=0 = in-reset). St77916Panel
+    //      sequences reset/backlight from here.
+    //
+    // Bus-level diagnostics (which addresses ACK at all) live in Ui.cpp so
+    // they run before we get here and can auto-correct a swapped SDA/SCL.
+
+    // ---- step 1: configure mode register --------------------------------
+    Wire.beginTransmission(CH422G_I2C_ADDR_MODE);
+    Wire.write(0x01);                    // IO_OE = 1 — set IO0..IO7 as outputs
+    uint8_t err = Wire.endTransmission();
     if (err != 0) {
-        // err 2 = NACK on address, err 5 = timeout. Either way the expander
-        // is not responding. Caller will log + fall back.
+        log_e("[ch422g] mode-register write to 0x%02X NACKed (err=%u)",
+              CH422G_I2C_ADDR_MODE, err);
         return false;
     }
-    // Start with everything held: backlight off, both resets asserted (reset
-    // lines are active low, so a '0' bit means "in reset"). After this the
-    // caller sequences the panel bring-up.
+
+    // ---- step 2: prime the output register ------------------------------
     shadow_ = 0;
-    return writeOutput(shadow_);
+    if (!writeOutput(shadow_)) {
+        log_e("[ch422g] output-register write to 0x%02X failed",
+              CH422G_I2C_ADDR_OUTPUT);
+        return false;
+    }
+    log_i("[ch422g] ok (mode=0x%02X, output=0x%02X)",
+          CH422G_I2C_ADDR_MODE, CH422G_I2C_ADDR_OUTPUT);
+    return true;
 }
 
 bool Ch422g::writeOutput(uint8_t bits) {
