@@ -31,15 +31,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
-      # We build the SAFE env only for now. Other envs don't compile:
-      #   - sim/prod: unresolved LVGL header issue (lv_color_t, lv_obj_t,
-      #     lv_tick_inc "not declared" when our .cpp files include <lvgl.h>,
-      #     despite LVGL 8.3.11 being correctly installed and visible in the
-      #     dependency graph). Separately under investigation.
-      #   - prod: also pulls in NMEA2000_esp32 1.0.3 which targets ESP32-
-      #     classic CAN registers that don't exist on the S3.
-      # Safe-env firmware has been flashed and confirmed running on real
-      # hardware (heartbeats every second, ~363 KB free heap stable), so at
-      # least CI here proves the non-UI half of the codebase stays buildable.
+      # CI builds both SIM and SAFE envs. The PROD env still doesn't link —
+      # it pulls in NMEA2000_esp32 1.0.3 whose ESP32-classic CAN registers
+      # don't exist on the S3 — and is not yet gated on in CI. Once we swap
+      # in an S3-capable CAN backend the prod env should be added here too.
+      - name: Build sim firmware
+        run: pio run -e waveshare_esp32s3_touch_lcd_21_sim
+
       - name: Build safe firmware
         run: pio run -e waveshare_esp32s3_touch_lcd_21_safe

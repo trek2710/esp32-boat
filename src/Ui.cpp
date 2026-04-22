@@ -41,7 +41,9 @@ uint32_t tick() {
 
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
-#include <lvgl.h>
+// See main.cpp / platformio.ini for why this is <lvgl/lvgl.h> and not <lvgl.h>:
+// LovyanGFX ships its own lvgl.h shim that hijacks the unqualified include.
+#include <lvgl/lvgl.h>
 
 #include <cstdio>
 

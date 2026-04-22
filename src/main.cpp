@@ -15,8 +15,14 @@
 // (lv_color_t / lv_obj_t / lv_tick_inc not declared when compiling our files).
 // Keeping lvgl.h out of the safe build means safe-mode firmware can be
 // flashed and observed on real hardware without being blocked on that.
+// NOTE: we include <lvgl/lvgl.h> rather than plain <lvgl.h>. LovyanGFX ships
+// its own minimal lvgl.h shim at .pio/libdeps/<env>/LovyanGFX/src/lvgl.h, and
+// LDF puts that include path BEFORE the real LVGL's, so <lvgl.h> resolves to
+// the shim and only forward-declares lv_font_t. Going via the lvgl/ subdir
+// hits the real header unambiguously (only real LVGL has lvgl/lvgl.h). See
+// the long comment in platformio.ini for the full explanation.
 #if !DISPLAY_SAFE_MODE
-#include <lvgl.h>
+#include <lvgl/lvgl.h>
 #endif
 
 namespace {
