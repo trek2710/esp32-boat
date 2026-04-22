@@ -52,3 +52,13 @@ static constexpr uint32_t LV_TICK_MS = 5;
 #ifndef ENABLE_OTA
 #define ENABLE_OTA 0
 #endif
+
+// When set, `ui::begin()` and `ui::tick()` are skipped entirely. The firmware
+// still runs Serial logging and the NMEA / sim bridge, just without any LVGL
+// or display init. Use this to isolate "is the boot loop caused by the
+// display driver?" from "is something else broken?" when bringing up on new
+// hardware. Build with `-e waveshare_esp32s3_touch_lcd_21_safe` or add
+// `-DDISPLAY_SAFE_MODE=1` to any env's build_flags.
+#ifndef DISPLAY_SAFE_MODE
+#define DISPLAY_SAFE_MODE 0
+#endif

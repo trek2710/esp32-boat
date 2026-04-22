@@ -21,6 +21,24 @@
 
 #include "config.h"
 
+#if DISPLAY_SAFE_MODE
+// -----------------------------------------------------------------------------
+// SAFE MODE — stub implementation. No LVGL, no LovyanGFX. Lets us prove the
+// firmware boots on new hardware without fighting any display-driver or LVGL
+// header wiring issues. Pair with DISPLAY_SAFE_MODE=1 in main.cpp so the
+// caller never invokes these stubs' side-effects.
+// -----------------------------------------------------------------------------
+namespace ui {
+void begin(BoatState& /*state*/) {
+    // Intentional no-op. main.cpp does not call us when DISPLAY_SAFE_MODE=1.
+}
+uint32_t tick() {
+    return 100;  // idle hint; main.cpp also does not call us in safe mode.
+}
+}  // namespace ui
+
+#else  // !DISPLAY_SAFE_MODE — the real LVGL UI.
+
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
@@ -436,3 +454,5 @@ uint32_t tick() {
 }
 
 }  // namespace ui
+
+#endif  // DISPLAY_SAFE_MODE

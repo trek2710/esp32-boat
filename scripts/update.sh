@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Add three-screen UI, PGN log, prebuilt binaries, 3D case, update.sh + CHANGELOG, and fix CI to build sim env only"
+DEFAULT_MSG="Safe-mode firmware now boots cleanly on real hardware (heartbeats + 363KB free heap stable); update.sh defaults to building safe env until LVGL headers unbreak"
 
 set -euo pipefail
 
@@ -55,10 +55,16 @@ echo "==> Branch:  ${BRANCH}"
 echo "==> Message: ${MSG}"
 
 # ---- 1. rebuild firmware (unless --no-build) --------------------------------
+# We currently rebuild the SAFE env only. The sim + prod envs don't compile
+# right now because of an unresolved LVGL header-visibility issue (lv_color_t,
+# lv_obj_t, lv_tick_inc "not declared" when our .cpp files include <lvgl.h>,
+# despite LVGL 8.3.11 being correctly installed). Once that's fixed we can
+# switch this back to "sim" (or build both).
+BUILD_ENV="${BUILD_ENV:-safe}"
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     echo
-    echo "==> Rebuilding sim firmware (use -n to skip)"
-    ./scripts/package.sh sim
+    echo "==> Rebuilding ${BUILD_ENV} firmware (use -n to skip, or BUILD_ENV=sim ./scripts/update.sh to override)"
+    ./scripts/package.sh "${BUILD_ENV}"
 else
     echo
     echo "==> Skipping firmware rebuild (--no-build)"

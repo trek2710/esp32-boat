@@ -25,20 +25,44 @@ case "${CHOICE}" in
         ENV="waveshare_esp32s3_touch_lcd_21_sim"
         TAG="sim"
         ;;
+    safe|SAFE)
+        ENV="waveshare_esp32s3_touch_lcd_21_safe"
+        TAG="safe"
+        ;;
     prod|PROD|production)
         ENV="waveshare_esp32s3_touch_lcd_21"
         TAG="prod"
         ;;
     *)
-        echo "usage: $0 [sim|prod]" >&2
+        echo "usage: $0 [sim|safe|prod]" >&2
         exit 1
         ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/.pio/build/${ENV}"
+LIBDEPS_DIR="${REPO_ROOT}/.pio/libdeps/${ENV}"
 OUT_DIR="${REPO_ROOT}/binaries"
 mkdir -p "${OUT_DIR}"
+
+# ---- cache hygiene ---------------------------------------------------------
+# PlatformIO reuses whatever is in .pio/libdeps/<env>/ even after lib_deps
+# in platformio.ini is tightened. We got bitten HARD by this on LVGL: 8.4.0
+# was cached under libdeps and kept being picked up after we pinned to 8.3.x,
+# producing identical compile errors across multiple rebuilds.
+#
+# Auto-clean when platformio.ini is newer than libdeps/, i.e. the user has
+# edited a pin since the last resolve. Override with CLEAN_LIBDEPS=0 if you
+# explicitly want to reuse the cached libs (e.g. offline, in a hurry).
+INI="${REPO_ROOT}/platformio.ini"
+AUTO_CLEAN=0
+if [[ -d "${LIBDEPS_DIR}" && -f "${INI}" && "${INI}" -nt "${LIBDEPS_DIR}" ]]; then
+    AUTO_CLEAN=1
+fi
+if [[ "${CLEAN_LIBDEPS:-${AUTO_CLEAN}}" == "1" && -d "${LIBDEPS_DIR}" ]]; then
+    echo "==> Clearing ${LIBDEPS_DIR} (platformio.ini changed — forcing re-resolve)"
+    rm -rf "${LIBDEPS_DIR}"
+fi
 
 echo "==> Building PlatformIO env: ${ENV}"
 cd "${REPO_ROOT}"
