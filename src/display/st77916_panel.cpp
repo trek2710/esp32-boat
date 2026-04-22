@@ -89,9 +89,13 @@ constexpr InitCmd kInit[] = {
 // ── Public API ────────────────────────────────────────────────────────────
 
 bool St77916Panel::begin(Ch422g& io) {
+    Serial.println(F("[st77916] initBus"));           Serial.flush();
     if (!initBus())         { return false; }
+    Serial.println(F("[st77916] resetPanel"));        Serial.flush();
     if (!resetPanel(io))    { return false; }
+    Serial.println(F("[st77916] runInitSequence"));   Serial.flush();
     if (!runInitSequence()) { return false; }
+    Serial.println(F("[st77916] backlight on"));      Serial.flush();
 
     // Flip the backlight on (CH422G EXIO0). Do this AFTER the init sequence
     // so the operator doesn't see a flash of power-on noise.

@@ -368,41 +368,45 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
 void begin(BoatState& state) {
     g_state = &state;
 
-    // 1. Bring up the shared I2C bus (CH422G expander + future touch + RTC).
-    //    We pass explicit SDA/SCL because Arduino's default pins are wrong
-    //    for this board. Frequency stays modest at 400 kHz.
+    // Each step logs before+after so a crash pinpoints the exact stage. Flush
+    // is critical — USB-CDC drops its last buffered bytes on a hard reset, so
+    // without flush we'd never know where we died.
+    auto step = [](const char* tag) {
+        Serial.print(F("[ui] "));
+        Serial.println(tag);
+        Serial.flush();
+    };
+
+    step("Wire.begin()");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
 
-    // 2. Talk to the CH422G. Without this the panel RESET line stays asserted
-    //    and the backlight stays off, so a failure here is fatal to pixels.
-    //    We log but don't abort — a missing expander on a different board rev
-    //    shouldn't cause the firmware to hang; the UI logic still runs and
-    //    the serial heartbeat can reveal the underlying cause.
+    step("CH422G.begin()");
     if (!g_expander.begin()) {
         Serial.println(F("[ui] CH422G not responding on I2C — backlight + resets "
                           "won't be driven. Check I2C pins / board rev."));
+        Serial.flush();
     }
 
-    // 3. Bring up the ST77916 QSPI panel.
+    step("ST77916.begin()");
     if (!g_panel.begin(g_expander)) {
         Serial.println(F("[ui] ST77916 bring-up failed — continuing without "
                           "pixels; LVGL will still tick."));
+        Serial.flush();
     } else {
-        // Smoke test: blank the panel to black before LVGL starts pushing
-        // partial-screen tiles, otherwise the operator sees a frame of
-        // power-on noise for ~100 ms.
+        step("ST77916 fillColor(black)");
         g_panel.fillColor(0x0000);
     }
 
-    // 4. LVGL init + framebuffer allocation. We use two 40-line buffers in
-    //    PSRAM (~75 KB each at 16 bpp * 480 px) for ping-pong DMA.
+    step("lv_init()");
     lv_init();
 
+    step("ps_malloc framebuffers");
     const size_t line_buf_px = DISPLAY_WIDTH * 40;
     buf1 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
     buf2 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, line_buf_px);
 
+    step("lv_disp_drv_register");
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res  = DISPLAY_WIDTH;
@@ -411,10 +415,7 @@ void begin(BoatState& state) {
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
 
-    // No CST820 touch driver in v1 — pages cycle via programmatic swipe
-    // handler stubs for now. Adding a real LVGL input device + CST820 I2C
-    // driver is a follow-up.
-
+    step("build pages");
     buildOverviewPage();
     buildDataPage();
     buildDebugPage();
@@ -424,6 +425,7 @@ void begin(BoatState& state) {
 
     lv_scr_load(pages[0]);
     lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
+    step("ready");
 }
 
 uint32_t tick() {

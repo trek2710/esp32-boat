@@ -25,6 +25,21 @@
 #include <lvgl/lvgl.h>
 #endif
 
+// Bump the Arduino loopTask stack from the 8 KB default to 16 KB.
+//
+// ESP-IDF's spi_bus_initialize (which our ST77916 panel driver calls during
+// ui::begin()) uses several KB of stack on its own, and LVGL widget
+// construction for the three UI pages piles on top of that. With the default
+// stack the S3 hits FreeRTOS's stack-overflow detector mid-setup and
+// reboots in a loop. 16 KB is comfortable headroom for both and costs us
+// only 8 KB of RAM.
+//
+// SET_LOOP_TASK_STACK_SIZE is a framework macro that the Arduino-ESP32
+// core checks when it creates loopTask — it must be at global scope.
+#if !DISPLAY_SAFE_MODE
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+#endif
+
 namespace {
 BoatState   g_state;
 NmeaBridge  g_bridge(g_state);
