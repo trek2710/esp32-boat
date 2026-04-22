@@ -393,7 +393,51 @@ void begin(BoatState& state) {
         return found;
     };
 
-    step("Wire.begin() [primary: SDA=11, SCL=10]");
+    // Before we even ask the Wire driver to touch the bus, sniff the idle
+    // state of the SDA/SCL candidate pins as plain inputs with the internal
+    // pull-ups engaged. Three outcomes, and each one gives us a clear next
+    // step:
+    //   (a) both idle HIGH  → bus is electrically healthy. Any device on it
+    //                          can't be that far away — either we have the
+    //                          wrong pin pair or one specific device is dead.
+    //   (b) either stuck LOW → someone's shorting the rail to ground. Usual
+    //                          culprits: wrong pins (the GPIO we picked is
+    //                          being driven by something else — e.g. another
+    //                          peripheral hard-tied to the same net), a held
+    //                          reset, or no 3V3 on the I2C side of the board.
+    //   (c) pins float mid-rail → internal pull-up not engaging. Rare on S3,
+    //                          but possible if the pin is strapping-restricted
+    //                          or if a weak external pull-down exists.
+    //
+    // This runs BEFORE Wire.begin() so we see the truly-idle state, not a
+    // state shaped by the I2C controller's own driver. We put the pins back
+    // in INPUT afterwards so Wire.begin() owns them cleanly.
+    auto probeIdle = [](int sda, int scl) {
+        pinMode(sda, INPUT_PULLUP);
+        pinMode(scl, INPUT_PULLUP);
+        delayMicroseconds(200);   // give the pull-ups time to charge the line
+        const int sda_hi = digitalRead(sda);
+        const int scl_hi = digitalRead(scl);
+        log_i("[ui] i2c: idle-state probe (SDA=GPIO%d, SCL=GPIO%d) → "
+              "SDA=%s, SCL=%s",
+              sda, scl,
+              sda_hi ? "HIGH (ok)" : "LOW (bus dead / shorted?)",
+              scl_hi ? "HIGH (ok)" : "LOW (bus dead / shorted?)");
+        // Release so the I2C driver can take over ownership.
+        pinMode(sda, INPUT);
+        pinMode(scl, INPUT);
+    };
+
+    // Probe every plausible I2C pin pair, not just the pair we're about to
+    // use — one flash tells us which GPIOs actually look like a live I2C bus
+    // regardless of what display_pins.h currently says. 8/9 is the documented
+    // default for CH422G-bearing Waveshare ESP32-S3 boards; 10/11 is what
+    // earlier bring-up tried; some revs use 6/7.
+    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);   // 8, 9  (current)
+    probeIdle(10, 11);
+    probeIdle(6, 7);
+
+    step("Wire.begin() [primary: SDA=8, SCL=9]");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
     int device_count = scanBus();
     log_i("[ui] i2c: primary ordering found %d device(s)", device_count);

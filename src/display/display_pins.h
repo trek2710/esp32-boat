@@ -59,11 +59,20 @@ static constexpr int PANEL_HEIGHT  = 480;
 
 // --- Shared I2C bus (CH422G + touch + RTC) ---------------------------------
 
-// All three on-board I2C peripherals share one bus. Arduino's Wire default is
-// SDA=GPIO8, SCL=GPIO9 which is wrong for this board — we pass these pins
-// explicitly when initializing the bus.
-static constexpr int I2C_PIN_SDA   = 11;
-static constexpr int I2C_PIN_SCL   = 10;
+// All three on-board I2C peripherals share one bus. Waveshare's public
+// documentation for the ESP32-S3-Touch-LCD family states that the I2C bus
+// shared by CH422G, the CST820 touch controller, and the PCF85063 RTC is
+// routed to GPIO8 (SDA) and GPIO9 (SCL) on the ESP32-S3 — which happens to
+// be Arduino-ESP32's default Wire pinout too, but we pass them explicitly so
+// nothing depends on that default.
+//
+// Earlier bring-up tried GPIO11/10 (and the swapped 10/11) based on an older
+// board-rev guess; an I2C scan at 100 kHz found zero devices in either order,
+// which rules those pins out. 8/9 is the documented default; the auto-scan
+// logic in Ui.cpp still runs through both orderings here, so if a board rev
+// does swap them we'll still find the CH422G.
+static constexpr int I2C_PIN_SDA   = 8;
+static constexpr int I2C_PIN_SCL   = 9;
 // 100 kHz (not 400 kHz). ESP32's internal pull-ups are weak (~45 kΩ) and at
 // 400 kHz the bus rise time can exceed the I2C spec, producing phantom NACKs
 // across ALL devices. On a Waveshare board WITH external pull-ups 400 kHz
