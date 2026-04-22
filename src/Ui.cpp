@@ -3,19 +3,16 @@
 //   1. Data     — every value from BoatState in a compact grid
 //   2. Debug    — rolling NMEA 2000 PGN log (populated in sim + real builds)
 //
-// NOTE ON THE DISPLAY DRIVER:
+// DISPLAY DRIVER:
 // The Waveshare ESP32-S3-Touch-LCD-2.1 uses a QSPI-interfaced ST77916 panel
-// and a CST820 I2C touch controller — neither of which are supported by
-// LovyanGFX 1.2.0 out of the box. For the v1 scaffold we use a *stub* LGFX
-// class (Panel_GC9A01 on SPI with placeholder pins) so the firmware
-// compiles and boots cleanly; the display itself won't light up on the real
-// board until this class is replaced with either:
-//   (a) a hand-written LovyanGFX Panel_ST77916 / Touch_CST820 subclass, or
-//   (b) the Espressif ESP32_Display_Panel library (which has a ready-made
-//       board preset for ESP32-S3-Touch-LCD-2.1).
-// The simulated firmware is still useful without the display — the serial
-// monitor will show boot / simulated data / timing, proving the sw stack
-// runs on your hardware.
+// (480×480, round) plus a CH422G I2C I/O expander that gates LCD reset,
+// touch reset, and backlight enable. We drive both from src/display/ —
+// St77916Panel handles the QSPI bus + vendor init + pixel blasts, Ch422g
+// handles the expander-gated resets. Nothing in the LVGL widget code below
+// knows or cares about this — the only integration point is flush_cb.
+// Capacitive touch (CST820) is not wired in v1; the UI is screen-only
+// with programmatic page cycling. A CST820 driver + LVGL input device will
+// land in a follow-up.
 
 #include "Ui.h"
 
@@ -40,70 +37,29 @@ uint32_t tick() {
 #else  // !DISPLAY_SAFE_MODE — the real LVGL UI.
 
 #include <Arduino.h>
-#include <LovyanGFX.hpp>
-// See main.cpp / platformio.ini for why this is <lvgl/lvgl.h> and not <lvgl.h>:
-// LovyanGFX ships its own lvgl.h shim that hijacks the unqualified include.
+#include <Wire.h>
+// NOTE: include real LVGL via the lvgl/ subpath. Historical reason kept in
+// case we ever re-add LovyanGFX for anything: that library ships its own
+// lvgl.h shim that hijacked the unqualified include. Going via the lvgl/
+// subdir remains unambiguous.
 #include <lvgl/lvgl.h>
 
 #include <cstdio>
 
+#include "display/ch422g.h"
+#include "display/display_pins.h"
+#include "display/st77916_panel.h"
+
 namespace ui {
 namespace {
 
-// --- Display driver stub ----------------------------------------------------
+// --- Display driver -------------------------------------------------------
 
-// Stub LGFX — compiles cleanly on LovyanGFX 1.2.0 but does NOT drive the
-// Waveshare 2.1" round. Replace before expecting pixels on the real panel.
-class LGFX : public lgfx::LGFX_Device {
-    lgfx::Panel_GC9A01 panel_;
-    lgfx::Bus_SPI      bus_;
+// Real driver now. The CH422G expander must be initialized before the panel
+// (it gates the panel's RESET line); we keep both as file-local statics.
+display::Ch422g       g_expander;
+display::St77916Panel g_panel;
 
-public:
-    LGFX() {
-        { // Bus — placeholder SPI config.
-            auto cfg = bus_.config();
-            cfg.spi_host    = SPI2_HOST;
-            cfg.spi_mode    = 0;
-            cfg.freq_write  = 40000000;
-            cfg.freq_read   = 16000000;
-            cfg.spi_3wire   = false;
-            cfg.use_lock    = true;
-            cfg.dma_channel = SPI_DMA_CH_AUTO;
-            cfg.pin_sclk    = -1;
-            cfg.pin_mosi    = -1;
-            cfg.pin_miso    = -1;
-            cfg.pin_dc      = -1;
-            bus_.config(cfg);
-            panel_.setBus(&bus_);
-        }
-        { // Panel — declare 480×480 so LVGL lays out correctly; GC9A01's
-          // real resolution is 240×240 but this class never actually drives
-          // the panel in v1.
-            auto cfg = panel_.config();
-            cfg.pin_cs         = -1;
-            cfg.pin_rst        = -1;
-            cfg.pin_busy       = -1;
-            cfg.memory_width   = DISPLAY_WIDTH;
-            cfg.memory_height  = DISPLAY_HEIGHT;
-            cfg.panel_width    = DISPLAY_WIDTH;
-            cfg.panel_height   = DISPLAY_HEIGHT;
-            cfg.offset_x       = 0;
-            cfg.offset_y       = 0;
-            cfg.offset_rotation = 0;
-            cfg.dummy_read_pixel = 8;
-            cfg.dummy_read_bits  = 1;
-            cfg.readable        = false;
-            cfg.invert          = false;
-            cfg.rgb_order       = false;
-            cfg.dlen_16bit      = false;
-            cfg.bus_shared      = false;
-            panel_.config(cfg);
-        }
-        setPanel(&panel_);
-    }
-};
-
-LGFX               gfx;
 lv_disp_draw_buf_t draw_buf;
 lv_color_t*        buf1 = nullptr;
 lv_color_t*        buf2 = nullptr;
@@ -397,15 +353,11 @@ void refreshFromState() {
 
 // --- Display driver glue ---------------------------------------------------
 
-// LVGL -> LovyanGFX glue. The stub LGFX doesn't light up the real panel, but
-// LVGL still calls flush_cb which we terminate so LVGL doesn't stall.
+// LVGL -> ST77916 glue. LVGL hands us a partial-screen rectangle of RGB565
+// pixels (LV_COLOR_DEPTH=16, LV_COLOR_16_SWAP=1); we forward it straight to
+// the panel. lv_disp_flush_ready tells LVGL the buffer is reusable.
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
-    const uint32_t w = area->x2 - area->x1 + 1;
-    const uint32_t h = area->y2 - area->y1 + 1;
-    gfx.startWrite();
-    gfx.setAddrWindow(area->x1, area->y1, w, h);
-    gfx.writePixels(reinterpret_cast<uint16_t*>(color_p), w * h);
-    gfx.endWrite();
+    g_panel.drawBitmap(area->x1, area->y1, area->x2, area->y2, color_p);
     lv_disp_flush_ready(drv);
 }
 
@@ -416,10 +368,34 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
 void begin(BoatState& state) {
     g_state = &state;
 
-    gfx.begin();
-    gfx.setRotation(0);
-    gfx.fillScreen(TFT_BLACK);
+    // 1. Bring up the shared I2C bus (CH422G expander + future touch + RTC).
+    //    We pass explicit SDA/SCL because Arduino's default pins are wrong
+    //    for this board. Frequency stays modest at 400 kHz.
+    Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
 
+    // 2. Talk to the CH422G. Without this the panel RESET line stays asserted
+    //    and the backlight stays off, so a failure here is fatal to pixels.
+    //    We log but don't abort — a missing expander on a different board rev
+    //    shouldn't cause the firmware to hang; the UI logic still runs and
+    //    the serial heartbeat can reveal the underlying cause.
+    if (!g_expander.begin()) {
+        Serial.println(F("[ui] CH422G not responding on I2C — backlight + resets "
+                          "won't be driven. Check I2C pins / board rev."));
+    }
+
+    // 3. Bring up the ST77916 QSPI panel.
+    if (!g_panel.begin(g_expander)) {
+        Serial.println(F("[ui] ST77916 bring-up failed — continuing without "
+                          "pixels; LVGL will still tick."));
+    } else {
+        // Smoke test: blank the panel to black before LVGL starts pushing
+        // partial-screen tiles, otherwise the operator sees a frame of
+        // power-on noise for ~100 ms.
+        g_panel.fillColor(0x0000);
+    }
+
+    // 4. LVGL init + framebuffer allocation. We use two 40-line buffers in
+    //    PSRAM (~75 KB each at 16 bpp * 480 px) for ping-pong DMA.
     lv_init();
 
     const size_t line_buf_px = DISPLAY_WIDTH * 40;
@@ -435,9 +411,9 @@ void begin(BoatState& state) {
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
 
-    // No touch driver in the v1 scaffold — Touch_CST820 isn't in LovyanGFX
-    // 1.2.0. Once we have the real display driver up, we'll either write a
-    // CST820 I2C driver or switch to a framework that includes one.
+    // No CST820 touch driver in v1 — pages cycle via programmatic swipe
+    // handler stubs for now. Adding a real LVGL input device + CST820 I2C
+    // driver is a follow-up.
 
     buildOverviewPage();
     buildDataPage();

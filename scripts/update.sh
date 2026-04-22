@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Sim env builds again: fix LVGL header hijack (include <lvgl/lvgl.h> directly, add .pio/libdeps/<env>/ to -I) and pin LovyanGFX to =1.2.0 to dodge the 1.2.20 LVGLfont rewrite against LVGL 9 API. Restore sim as default build env for update.sh and CI."
+DEFAULT_MSG="Real display driver: replace LovyanGFX stub with hand-written ST77916 QSPI driver (ESP-IDF spi_master, quad transactions) + CH422G I2C expander for reset/backlight gating. Pixels-only in v1; CST820 touch and vendor-specific init table are follow-ups. Drops LovyanGFX from lib_deps entirely."
 
 set -euo pipefail
 

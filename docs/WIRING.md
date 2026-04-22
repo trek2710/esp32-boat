@@ -38,8 +38,9 @@
 
 ## ESP32-S3 pin assignments
 
-These are the pins **we** add on top of the display board. The display + touch
-pins are handled by the board + LovyanGFX driver; you don't wire them.
+### Pins we add (CAN transceiver)
+
+These go between the broken-out header and the external SN65HVD230 CAN transceiver.
 
 | Signal | ESP32-S3 GPIO | Goes to | Notes |
 |---|---|---|---|
@@ -54,6 +55,58 @@ pins are handled by the board + LovyanGFX driver; you don't wire them.
 > select, etc.), swap to another free pair (GPIO 6, 7, 17, 18 are common
 > alternatives on ESP32-S3). Whatever you pick, update `CAN_TX_PIN` /
 > `CAN_RX_PIN` in `src/config.h`.
+
+### Pins the Waveshare board wires internally
+
+The display + touch + I/O expander are all pre-routed on the Waveshare PCB —
+you don't solder these, but the firmware has to know the assignments. They
+live in `src/display/display_pins.h` so the values below and the code can't
+drift. If Waveshare ships a new revision with a different pinout, update that
+header and rebuild.
+
+**ST77916 display (QSPI)**
+
+| Signal | ESP32-S3 GPIO |
+|---|---|
+| LCD_CS   | GPIO 21 |
+| LCD_CLK  | GPIO 40 |
+| LCD_D0   | GPIO 46 |
+| LCD_D1   | GPIO 45 |
+| LCD_D2   | GPIO 42 |
+| LCD_D3   | GPIO 41 |
+| LCD_RST  | via CH422G EXIO2 (not a direct GPIO) |
+| LCD_BL   | via CH422G EXIO0 (not a direct GPIO) |
+
+**Shared I2C bus** (CH422G I/O expander, CST820 touch, PCF85063 RTC)
+
+| Signal | ESP32-S3 GPIO |
+|---|---|
+| I2C_SDA | GPIO 11 |
+| I2C_SCL | GPIO 10 |
+
+**CST820 capacitive touch**
+
+| Signal | ESP32-S3 GPIO |
+|---|---|
+| TP_INT | GPIO 4 |
+| TP_RST | via CH422G EXIO1 |
+| TP_SDA / TP_SCL | shared I2C bus above |
+| TP I2C address | `0x15` |
+
+**CH422G I/O expander bit assignments**
+
+| EXIO channel | Drives |
+|---|---|
+| EXIO0 | LCD backlight enable (active high) |
+| EXIO1 | Touch reset (active low) |
+| EXIO2 | LCD reset (active low) |
+| EXIO3 | SD card CS (not used in v1) |
+
+> **Revision caveat:** the values above are derived from Waveshare's published
+> schematic for the ESP32-S3-Touch-LCD-2.1. Some batches route LCD_RST
+> directly to a GPIO instead of via CH422G, and CH422G bit-to-signal mapping
+> has shifted across revisions. If you flash and see a dark screen, the first
+> thing to check is whether your board rev matches this table.
 
 ## NMEA 2000 drop cable pinout (Micro-C, male, looking at the pins)
 
