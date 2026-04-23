@@ -24,9 +24,14 @@
 //   4. Configure esp_lcd_new_rgb_panel with our pin map + porch timings
 //      and hand it a PSRAM-backed framebuffer big enough for 480×480×2.
 //   5. esp_lcd_panel_init pushes the first frame and starts PCLK.
-//   6. Turn the backlight on (TCA9554 IO0, active high) last so the
-//      "panel comes alive" moment is the blacked-out framebuffer, not
-//      whatever initial DRAM garbage the display was showing.
+//   6. Turn the backlight on via PWM on RAW GPIO6 (ledcSetup + ledcAttachPin
+//      + ledcWrite at full duty) last, so the "panel comes alive" moment
+//      is the blacked-out framebuffer, not whatever initial DRAM garbage
+//      the display was showing. Round 14 tried to drive the backlight
+//      through TCA9554 IO0 — that was wrong on two counts: the backlight
+//      isn't on the expander at all, AND the bit we wrote happens to be
+//      the panel-reset line (LCD_RST on IO0 in Waveshare's 1-indexed EXIO
+//      naming), so it was actively pulsing RESET while expecting pixels.
 //
 // drawBitmap(...) is a thin wrapper over esp_lcd_panel_draw_bitmap, same
 // signature as st77916_panel.h so Ui.cpp's flush_cb doesn't care which

@@ -17,7 +17,9 @@ namespace {
 
 // --- 3-wire SPI init bus ---------------------------------------------------
 //
-// CS is on TCA9554 IO3. SCK and SDA are bit-banged on two spare GPIOs that
+// CS is on TCA9554 IO2 (Waveshare EXIO3; round 14 had this labelled IO3
+// because of the off-by-one EXIO-naming misread, corrected in round 15).
+// SCK and SDA are bit-banged on two spare GPIOs that
 // are not otherwise claimed on this board — GPIO1 and GPIO2 both idle HIGH
 // in the round-13 boot scan, and neither is part of the 16 parallel RGB
 // data lines, so reusing them for one-shot init traffic won't fight the
@@ -118,8 +120,10 @@ const St7701InitCmd kInitCmds[] = {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Panel reset via TCA9554. LCD_RST is active-low on IO1. Hold it low for
-// 20 ms, release for 120 ms. The ST7701S datasheet specifies ≥10 µs for
+// Panel reset via TCA9554. LCD_RST is active-low on IO0 (= EXIO1 in
+// Waveshare's 1-indexed helper naming; round 14 had this on IO1, which is
+// actually TP_RST — see the round-15 note in display_pins.h). Hold RST low
+// for 20 ms, release for 120 ms. The ST7701S datasheet specifies ≥10 µs for
 // the reset pulse width and ≥120 ms before the first init command, so our
 // margins are comfortable.
 // ---------------------------------------------------------------------------
@@ -322,17 +326,26 @@ bool St7701Panel::begin(Tca9554& io) {
     if (!resetPanel(io)) return false;
 
     log_i("[st7701] runInitSequence (3-wire SPI @ SCK=GPIO%d SDA=GPIO%d, "
-          "CS=TCA9554 IO3)", kInitSpiSck, kInitSpiSda);
+          "CS=TCA9554 IO2 / EXIO3)", kInitSpiSck, kInitSpiSda);
     if (!runInitSequence(io)) return false;
 
     log_i("[st7701] initRgbPanel");
     if (!initRgbPanel()) return false;
 
-    log_i("[st7701] backlight on (TCA9554 IO0 high)");
-    if (!io.setBits(TCA9554_BIT_LCD_BL)) {
-        log_w("[st7701] TCA9554 backlight write failed - pixels may be "
-              "driven but invisible");
-    }
+    // Backlight is on RAW GPIO6 with PWM, not on the TCA9554 (round 15 fix).
+    // Round 14 was writing to TCA9554 IO0 which is actually LCD_RST (off-by-
+    // one EXIO-naming misread) — that's both why the panel never came out of
+    // reset properly AND why the screen stayed dark: LCD_RST got stuck HIGH-
+    // then-low-then-stuck-high again, and nothing was driving GPIO6, so the
+    // backlight FET's gate sat at 0 V and the LED array never lit.
+    log_i("[st7701] backlight: ledcSetup(ch=%d, freq=%d Hz, res=%d-bit), "
+          "ledcAttachPin(%d, %d), ledcWrite(%d, %d) [full brightness]",
+          BACKLIGHT_PWM_CH, BACKLIGHT_PWM_FREQ, BACKLIGHT_PWM_RES,
+          BACKLIGHT_PIN, BACKLIGHT_PWM_CH,
+          BACKLIGHT_PWM_CH, BACKLIGHT_PWM_FULL);
+    ledcSetup(BACKLIGHT_PWM_CH, BACKLIGHT_PWM_FREQ, BACKLIGHT_PWM_RES);
+    ledcAttachPin(BACKLIGHT_PIN, BACKLIGHT_PWM_CH);
+    ledcWrite(BACKLIGHT_PWM_CH, BACKLIGHT_PWM_FULL);
 
     ready_ = true;
     return true;

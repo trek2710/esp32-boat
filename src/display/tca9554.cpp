@@ -35,21 +35,24 @@ bool Tca9554::begin() {
     }
 
     // Step 2: prime the OUTPUT register to the known-safe power-up state.
-    // Bit assignments (see display_pins.h — this is the round-13 corrected
-    // mapping, sourced from LovyanGFX discussion #630 for this exact board):
-    //   bit 0 = LCD_BL    = 0 → backlight off
-    //   bit 1 = LCD_RST   = 0 → panel in reset (active low)
-    //   bit 2 = TP_RST    = 0 → touch in reset (active low)
-    //   bit 3 = LCD_CS    = 0 → panel 3-wire-SPI CS held low (not-selected
+    // Bit assignments (see display_pins.h — this is the round-15 corrected
+    // mapping; round 13 had every signal shifted up by one because the LGFX
+    // #630 config uses EXIO1..EXIO8 as 1-indexed names that map to bits 0..7,
+    // which round 13 misread as direct bit numbers):
+    //   bit 0 = LCD_RST   = 0 → panel in reset (active low)
+    //   bit 1 = TP_RST    = 0 → touch in reset (active low)
+    //   bit 2 = LCD_CS    = 0 → panel 3-wire-SPI CS held low (not-selected
     //                           when the bus isn't clocking; driven high/low
     //                           in software for each init byte by the panel
-    //                           driver in round 14+)
-    //   bits 4..6 unused on this board rev.
+    //                           driver)
+    //   bits 3..6 unused on this board rev.
     //   bit 7 = BUZZER    = 0 → piezo quiet (active high). Keep OFF so we
     //                           don't chirp during every warm reboot.
     //
-    // The panel driver calls resetPanel() + setBits(LCD_BL) later to drive
-    // through the init sequence.
+    // Note: there is no backlight bit on the expander. The backlight is on
+    // raw GPIO6 with PWM — see BACKLIGHT_PIN in display_pins.h. The panel
+    // driver's begin() drives GPIO6 with ledcSetup/ledcWrite directly after
+    // the RGB bus is up.
     shadow_ = 0;
     if (!writeOutput(shadow_)) {
         log_e("[tca9554] OUTPUT prime-write to 0x%02X reg 0x%02X failed",

@@ -1,6 +1,44 @@
 // display_pins.h — central pinout for the Waveshare ESP32-S3-Touch-LCD-2.1.
 //
 // ───────────────────────────────────────────────────────────────────────────
+// ROUND 15 FIX (2026-04-23, after round-14 flash still dark)
+//
+// Round 14 built a real ST7701 RGB driver on top of esp_lcd_panel_rgb. It
+// compiled, it ran, every step logged success — and the screen stayed
+// black. We fetched the LovyanGFX discussion #630 config for this exact
+// board a second time and found two off-by-one errors we'd been carrying
+// since round 13:
+//
+//   1. Backlight is NOT on the TCA9554. It's on RAW GPIO6 with PWM via
+//      ledcAttach(6, 20000, 10). This is consistent with our own boot-log
+//      GPIO idle-state scan showing `gpio 6 : LOW (tied down — device?)`:
+//      BL was sitting at 0 V the whole time because nothing in our code
+//      ever drove GPIO6. The round-13 IO0=LCD_BL guess is wrong and is
+//      being retired.
+//
+//   2. The TCA9554 EXIO naming in LGFX #630 is 1-indexed — EXIO1 = bit 0,
+//      EXIO2 = bit 1, ..., EXIO8 = bit 7. We misread it as a direct bit-
+//      number mapping, which shifted every signal up by one bit:
+//
+//              LGFX #630 label     what it means    we had it at
+//              EXIO1 = LCD_RST  →  bit 0           bit 1
+//              EXIO2 = TP_RST   →  bit 1           bit 2
+//              EXIO3 = LCD_CS   →  bit 2           bit 3
+//              EXIO8 = Buzzer   →  bit 7           bit 7 ✓ (correct)
+//
+//      Which means round 14's panel-reset pulse hit the TOUCH reset pin,
+//      not the LCD. The ST7701 was never actually reset, so it stayed in
+//      power-on idle and ignored the 3-wire SPI init sequence entirely.
+//      The buzzer bit happened to already be right (bit 7 is bit 7 either
+//      way), which is why the round-12 beeps led us to a correct IO7 = BUZZER
+//      mapping through a wrong model.
+//
+// Fix this round: shift the TCA9554 bit map down by one, drop the LCD_BL
+// constant, add BACKLIGHT_PIN = 6 with the PWM config as real GPIOs below.
+// Everything else (RGB pin list, 3-wire SPI init GPIOs 1/2, I2C on 15/7)
+// is unchanged and confirmed correct by the same LGFX #630 reference.
+// ───────────────────────────────────────────────────────────────────────────
+//
 // CHIPSET PIVOT (rounds 10..13, 2026-04-23)
 //
 // Nine rounds of bring-up assumed this board was the "ST77916 QSPI + CH422G"
@@ -219,41 +257,67 @@ static constexpr uint8_t TCA9554_REG_OUTPUT = 0x01;
 static constexpr uint8_t TCA9554_REG_POLINV = 0x02;
 static constexpr uint8_t TCA9554_REG_CONFIG = 0x03;
 
-// Which TCA9554 IO bit drives which board signal.
+// Which TCA9554 IO bit drives which board signal (ROUND 15 CORRECTION).
 //
-// Mapping below is the round-13 revision, pieced together from two sources:
-//   (a) LovyanGFX discussion #630 (this exact board): EXIO1 = LCD_RST,
-//       EXIO2 = TP_RST, EXIO3 = LCD_CS. Note EXIO1 and EXIO2 are SWAPPED
-//       from what we had in rounds 11–12, and EXIO3 is LCD_CS (for the
-//       panel's 3-wire init bus), NOT the SD card CS.
-//   (b) The round-12 bit-mapping diagnostic: phases B (all HIGH) and J
-//       (only IO7 HIGH) produced a short beep. IO7 is therefore a piezo
-//       buzzer driven active-high, not anything LCD-related. That's not
-//       in any LGFX config we've seen but explains the phase J beep.
+// Round 13 misread the LGFX #630 "EXIO1/EXIO2/EXIO3" labels as direct bit
+// numbers. They are actually 1-indexed into Waveshare's Set_EXIO() helper:
+// EXIO1 = bit 0, EXIO2 = bit 1, ..., EXIO8 = bit 7. This shifted every
+// signal up by one in rounds 13–14, which is why round 14's panel-reset
+// pulse was actually hitting the touch-reset bit and the ST7701 never came
+// out of its power-on idle state.
 //
-// IO0 is the only bit we never got independent confirmation on. The
-// Waveshare product page says "Pin 2 of the TCA9554 ... controls the
-// screen backlight" (ambiguous between IC-pin-2 and IO2). Since IO1 and
-// IO2 are both committed to resets, IO0 is the only remaining candidate
-// for LCD_BL on this expander, so we keep the active-high LCD_BL guess
-// there. If the backlight still refuses to come on once the RGB driver
-// is producing valid pixels in round 14+, we move backlight off the
-// expander entirely and probe direct GPIOs.
-static constexpr uint8_t TCA9554_BIT_LCD_BL  = 1 << 0;  // IO0 — backlight (active high, unconfirmed)
-static constexpr uint8_t TCA9554_BIT_LCD_RST = 1 << 1;  // IO1 — panel reset (active low)
-static constexpr uint8_t TCA9554_BIT_TP_RST  = 1 << 2;  // IO2 — touch reset (active low)
-static constexpr uint8_t TCA9554_BIT_LCD_CS  = 1 << 3;  // IO3 — panel CS for 3-wire SPI init
-static constexpr uint8_t TCA9554_BIT_BUZZER  = 1 << 7;  // IO7 — piezo buzzer (active high)
-// IO4..IO6 are unused on this board rev as far as we can tell — no beep,
-// no visible effect during the round-12 walking-ones scan. Left unassigned
-// so a future driver doesn't collide with anything we discover later.
+// Corrected mapping, from LGFX discussion #630:
+//   EXIO1 → bit 0 → LCD_RST  (was bit 1 in round 13)
+//   EXIO2 → bit 1 → TP_RST   (was bit 2 in round 13)
+//   EXIO3 → bit 2 → LCD_CS   (was bit 3 in round 13)
+//   EXIO8 → bit 7 → Buzzer   (bit 7 in round 13 too — accidentally right
+//                              because bit 7 is bit 7 in either indexing)
+//
+// There is no longer a TCA9554_BIT_LCD_BL. The backlight lives on RAW
+// GPIO6 with PWM, not on the expander. See BACKLIGHT_PIN below.
+static constexpr uint8_t TCA9554_BIT_LCD_RST = 1 << 0;  // IO0 (EXIO1) — panel reset (active low)
+static constexpr uint8_t TCA9554_BIT_TP_RST  = 1 << 1;  // IO1 (EXIO2) — touch reset (active low)
+static constexpr uint8_t TCA9554_BIT_LCD_CS  = 1 << 2;  // IO2 (EXIO3) — panel CS for 3-wire SPI init
+static constexpr uint8_t TCA9554_BIT_BUZZER  = 1 << 7;  // IO7 (EXIO8) — piezo buzzer (active high)
+// IO3..IO6 are unused on this board rev as far as we can tell — no beep,
+// no visible effect during the round-12 walking-ones scan (now reinterpreted
+// with the corrected bit mapping, the only phases that DID something were
+// the all-HIGH phase and the IO7-alone phase, consistent with IO7 = buzzer
+// and everything else being either NC or driving panel/touch reset lines
+// that don't have an audible effect). Left unassigned so a future driver
+// doesn't collide with anything we discover later.
+
+// --- Raw-GPIO backlight (round 15) -----------------------------------------
+//
+// The LCD backlight on this board is driven by GPIO6 through a FET + LED
+// driver, NOT by any TCA9554 bit. LGFX #630 configures it as
+// ledcAttach(6, 20000, 10) — 20 kHz PWM, 10-bit duty. Arduino-ESP32 2.0.16
+// doesn't have ledcAttach (that's 3.x); we use the equivalent
+// ledcSetup(ch, freq, res) + ledcAttachPin(pin, ch) + ledcWrite(ch, duty)
+// triple instead.
+//
+// 20 kHz is above audible range so no backlight whine, and 10-bit gives
+// 1024 brightness steps — plenty for a simple day/night toggle. During
+// bring-up we just drive full duty (1023) to confirm the panel is alive.
+//
+// Evidence that this is correct: our own round-14 boot-log idle-state
+// GPIO scan reported `gpio 6 : LOW (tied down — device?)`, meaning GPIO6
+// was sitting at 0 V at boot with no firmware driving it. That's exactly
+// what a backlight FET gate looks like when it's not being driven: held
+// low by its pull-down to keep the backlight off.
+static constexpr int BACKLIGHT_PIN       = 6;
+static constexpr int BACKLIGHT_PWM_CH    = 0;           // LEDC channel — first free
+static constexpr int BACKLIGHT_PWM_FREQ  = 20000;       // 20 kHz (above audible)
+static constexpr int BACKLIGHT_PWM_RES   = 10;          // 10-bit duty (0..1023)
+static constexpr int BACKLIGHT_PWM_FULL  = (1 << 10) - 1;  // full brightness = 1023
 
 // --- CST820 touch (wired for future use; not driven in v1) -----------------
 
 static constexpr int TP_PIN_INT = 4;   // Touch interrupt (active low)
-// TP_RST is not a direct GPIO — it's TCA9554 IO2 (see TCA9554_BIT_TP_RST
-// above; note rounds 11–12 had this on IO1 — corrected in round 13 from
-// LovyanGFX discussion #630). SDA/SCL are the shared I2C bus (GPIO 15 / 7).
+// TP_RST is not a direct GPIO — it's TCA9554 IO1 / EXIO2 (see
+// TCA9554_BIT_TP_RST above; round 13 had this on IO2 because of the off-
+// by-one EXIO-naming misread, corrected in round 15 after the LGFX #630
+// config was re-read). SDA/SCL are the shared I2C bus (GPIO 15 / 7).
 static constexpr uint8_t TP_I2C_ADDR = 0x15;  // CST820 default
 
 // --- Other devices on the shared I2C bus (round 10 discovery) -------------

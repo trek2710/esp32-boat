@@ -88,12 +88,17 @@ over 16 parallel RGB565 data lines with HSYNC/VSYNC/DE/PCLK timing.
 | R0..R4    | GPIO 46, 3, 8, 18, 17 | red channel (5 bits, LSB→MSB) |
 | G0..G5    | GPIO 14, 13, 12, 11, 10, 9 | green channel (6 bits, LSB→MSB) |
 | B0..B4    | GPIO 5, 45, 48, 47, 21 | blue channel (5 bits, LSB→MSB) |
-| LCD_RST   | via TCA9554 IO1 (not a direct GPIO) | active low |
-| LCD_CS    | via TCA9554 IO3 (not a direct GPIO) | 3-wire-SPI CS during init |
-| LCD_BL    | via TCA9554 IO0 (not a direct GPIO) | active high, unconfirmed |
+| LCD_RST   | via TCA9554 IO0 / EXIO1 (not a direct GPIO) | active low |
+| LCD_CS    | via TCA9554 IO2 / EXIO3 (not a direct GPIO) | 3-wire-SPI CS during init |
+| LCD_BL    | GPIO 6 (raw, PWM) | 20 kHz / 10-bit via `ledcSetup` + `ledcAttachPin` + `ledcWrite` |
+| SPI_SCK (init) | GPIO 2 | 3-wire-SPI clock during ST7701 init only |
+| SPI_SDA (init) | GPIO 1 | 3-wire-SPI data during ST7701 init only |
 
 Source: LovyanGFX discussion #630 (working LGFX config for this exact
-board, cross-checked against Waveshare product page).
+board, cross-checked against Waveshare product page). Round 15 corrected
+the TCA9554 bit-index off-by-one (EXIO1 = bit 0, not bit 1) and moved the
+backlight off the expander onto raw GPIO6 — that's what finally turned the
+screen on after a dark screen through rounds 13 and 14.
 
 **Display — legacy ST77916 QSPI (stub driver; dead on this board variant)**
 
@@ -122,20 +127,27 @@ at 0x7E that may be spurious)
 | Signal | ESP32-S3 GPIO |
 |---|---|
 | TP_INT | GPIO 4 |
-| TP_RST | via TCA9554 IO1 |
+| TP_RST | via TCA9554 IO1 / EXIO2 |
 | TP_SDA / TP_SCL | shared I2C bus above |
 | TP I2C address | `0x15` |
 
-**TCA9554 I/O expander bit assignments** (addr 0x20, round-13 mapping)
+**TCA9554 I/O expander bit assignments** (addr 0x20, round-15 mapping)
 
-| IO channel | Drives | Notes |
-|---|---|---|
-| IO0 | LCD backlight enable | active high, unconfirmed — only remaining candidate on the expander |
-| IO1 | LCD reset | active low |
-| IO2 | Touch reset | active low |
-| IO3 | LCD CS | drives the panel's 3-wire-SPI CS line during init |
-| IO4..IO6 | (unused on this rev) | no observed effect during the round-12 walking-ones scan |
-| IO7 | Piezo buzzer | active high — discovered in round 12 when phases B and J beeped |
+Waveshare's reference software uses 1-indexed `EXIO1..EXIO8` labels that
+map to bit positions 0..7 on the TCA9554's P0..P7 lines. Round 13 read
+those labels as direct bit numbers and so shifted every signal up by one;
+round 15 corrected the mapping after the LGFX #630 config was re-read.
+
+| IO channel (bit) | Waveshare label | Drives | Notes |
+|---|---|---|---|
+| IO0 | EXIO1 | LCD reset | active low |
+| IO1 | EXIO2 | Touch reset | active low |
+| IO2 | EXIO3 | LCD CS | drives the panel's 3-wire-SPI CS line during init |
+| IO3..IO6 | EXIO4..EXIO7 | (unused on this rev) | no observed effect during the round-12 walking-ones scan, re-interpreted under the round-15 mapping |
+| IO7 | EXIO8 | Piezo buzzer | active high — discovered in round 12 when phases B and J beeped (bit 7 is bit 7 in either indexing, so this detection held up) |
+
+Backlight is NOT on this expander — see the `LCD_BL` row in the main
+display table for the raw-GPIO6 PWM setup.
 
 > **Revision caveat:** Waveshare has shipped at least two "ESP32-S3-Touch-LCD-2.1"
 > BOMs under the same SKU — ST77916 QSPI + CH422G, and ST7701 RGB + TCA9554.
