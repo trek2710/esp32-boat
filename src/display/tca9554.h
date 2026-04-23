@@ -28,8 +28,8 @@
 // Usage:
 //     Tca9554 io;
 //     if (!io.begin()) { /* I2C didn't ACK — expander not present */ }
-//     io.writeOutput(display::TCA9554_BIT_LCD_BL |
-//                    display::TCA9554_BIT_LCD_RST);
+//     io.writeOutput(display::TCA9554_BIT_LCD_RST |
+//                    display::TCA9554_BIT_LCD_CS);
 //
 // The caller owns the reset timing per the panel's power-up sequence.
 
