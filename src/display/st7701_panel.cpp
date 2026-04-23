@@ -69,7 +69,16 @@ const St7701InitCmd kInitCmds[] = {
 
     // Command2 BK0: resolution, scan direction, frame rate, gamma.
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
-    {0xC0, {0x63, 0x00}, 2, 0},  // display line = 480
+    // 0xC0 "Display Line Setting": byte 1 = NL[7:0], where number of
+    // display lines = (NL + 1) × 8. For our 480-line panel, NL = 59 =
+    // 0x3B → (59+1)×8 = 480 lines. Round 13–16 had this as 0x63 (= 99)
+    // which configures the panel for (99+1)×8 = 800 lines — not a value
+    // this physical cell can drive correctly. That mis-programming is
+    // a strong candidate for round 16's "vertical colored stripes in
+    // middle ~50%" symptom: feeding 480 lines of RGB data into a panel
+    // internally gated for 800 lines would smear rows across the array
+    // in exactly the sort of pattern we're seeing. Fixed in round 17.
+    {0xC0, {0x3B, 0x00}, 2, 0},  // display line = 480  (NL=59 → (59+1)*8)
     {0xC1, {0x10, 0x02}, 2, 0},  // VBP / VFP
     {0xC2, {0x37, 0x08}, 2, 0},  // inversion type
     {0xCC, {0x38}, 1, 0},
@@ -113,6 +122,43 @@ const St7701InitCmd kInitCmds[] = {
 
     // Leave vendor mode and turn the pixel pipeline on.
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
+
+    // 0x3A "COLMOD / Interface Pixel Format" — round-17 added it, round-18
+    // corrected the parameter from 0x66 to 0x55.
+    //
+    // Rounds 13–16 omitted this command entirely. Round 17 added it with
+    // 0x66 (18-bit/pixel RGB666) because that's the default value in the
+    // ST7701S datasheet and what the espressif esp-iot-solution ST7701
+    // driver uses — but espressif's reference board wires 18 data lines,
+    // not 16, so 0x66 matches THEIR hardware, not ours.
+    //
+    // On our 16-line RGB bus, COLMOD=0x66 tells the panel to treat the
+    // incoming data as 18-bit RGB666 — bit DB[17..12] = R[5..0],
+    // DB[11..6] = G[5..0], DB[5..0] = B[5..0]. But we only drive
+    // DB[15..0]. The panel floats/zeros DB[17..16] AND re-interprets
+    // every remaining bit against the 18bpp layout, so:
+    //   our bit 15 (pixel R4, MSB of red)  → panel reads as R3 (bit shift)
+    //   our bit 11 (pixel R0, LSB of red)  → panel reads as G5
+    //   our bit 10 (pixel G5, MSB of green) → panel reads as G4
+    //   ...
+    // Result: every colour channel's MSB/LSB gets shifted by a bit or
+    // two, and the "cross-talk" between channels produces exactly the
+    // vertical-stripe colored pattern rounds 16/17 showed (symptom
+    // shifted from "mostly blue" in round 16 to "more green+blue" in
+    // round 17 because adding the 0x66 COLMOD changed WHICH bits
+    // misalign, not whether they do).
+    //
+    // 0x55 = 16-bit/pixel RGB565 in BOTH RGB (DPI) and MCU (DBI)
+    // interfaces. This matches our 16 data lines exactly:
+    //   DB[15..11] = R[4..0]   DB[10..5] = G[5..0]   DB[4..0] = B[4..0]
+    // which is the RGB565 layout the ESP32 RGB peripheral puts on the
+    // wire when LV_COLOR_DEPTH=16 + LV_COLOR_16_SWAP=1. The ST7701S
+    // datasheet (section 10.2.19) lists 0x55 as a valid value; some
+    // community drivers avoid it out of caution, but it's correct for a
+    // 16-line bus and is what LovyanGFX ships for Waveshare's 16-line
+    // ST7701 boards.
+    {0x3A, {0x55}, 1, 0},
+
     {kCmdSlpout, {0x00}, 0, 120},  // sleep out — panel needs 120 ms
     {kCmdDispon, {0x00}, 0, 50},   // display on
 };
@@ -229,24 +275,41 @@ bool St7701Panel::initRgbPanel() {
     cfg.timings.h_res             = PANEL_WIDTH;
     cfg.timings.v_res             = PANEL_HEIGHT;
 
-    // Porch / pulse widths. These are the standard ST7701 480×480 values
-    // from the vendor reference — they match the timing the datasheet's
-    // RGB mode section shows for a 60 Hz refresh at ~14 MHz PCLK.
+    // Porch / pulse widths. Values taken from FatihErtugral's working
+    // ESP-IDF driver for the Waveshare ESP32-S3-Touch-LCD-2.8 (sibling
+    // ST7701 board — same panel controller, different physical size).
+    // Our round 15 used vsync_pulse_width=8 which works on the 2.8" board
+    // too, but vsync_pulse_width=2 is the exact value the reference ships
+    // with, so we use that to stay on the known-good side of the fence.
     cfg.timings.hsync_pulse_width = 8;
     cfg.timings.hsync_back_porch  = 10;
     cfg.timings.hsync_front_porch = 50;
-    cfg.timings.vsync_pulse_width = 8;
+    cfg.timings.vsync_pulse_width = 2;
     cfg.timings.vsync_back_porch  = 18;
-    cfg.timings.vsync_front_porch = 20;
+    cfg.timings.vsync_front_porch = 8;
 
-    // Polarities. hsync_idle_low = 0 means HSYNC idles high and pulses low
-    // during sync, which matches the ST7701's default after our init seq.
-    // pclk_active_neg = 1 means the panel latches data on the falling edge
-    // of PCLK — the default for ST7701 RGB mode.
+    // Polarity flags (round 16 fix).
+    //
+    // Round 15 had pclk_active_neg = 1, which tells the RGB peripheral to
+    // drive data on the falling edge of PCLK. That caused the round-15
+    // symptom: the panel came alive with colored vertical stripes
+    // compressed into the middle ~50% of the screen — classic
+    // "data sampled on the wrong PCLK edge" pattern, every other pixel
+    // gets captured with stale data so columns smear together into stripes.
+    //
+    // FatihErtugral's working config for the sibling 2.8" Waveshare ST7701
+    // board uses pclk_active_neg = 0, meaning data is valid on the rising
+    // edge of PCLK. That's the standard ST7701 RGB-mode sampling and what
+    // the ST7701S datasheet shows in its RGB interface timing diagram.
+    //
+    // The other three flags (hsync_idle_low, vsync_idle_low, de_idle_high)
+    // all stay at 0 — HSYNC/VSYNC idle HIGH and pulse LOW during sync
+    // (active-low sync pulses, which is the ST7701 default), DE is active-
+    // high so it idles low.
     cfg.timings.flags.hsync_idle_low  = 0;
     cfg.timings.flags.vsync_idle_low  = 0;
     cfg.timings.flags.de_idle_high    = 0;
-    cfg.timings.flags.pclk_active_neg = 1;
+    cfg.timings.flags.pclk_active_neg = 0;   // <-- round 16: was 1
     cfg.timings.flags.pclk_idle_high  = 0;
 
     cfg.hsync_gpio_num = RGB_PIN_HSYNC;
