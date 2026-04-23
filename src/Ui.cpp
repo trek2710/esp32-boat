@@ -428,16 +428,149 @@ void begin(BoatState& state) {
         pinMode(scl, INPUT);
     };
 
-    // Probe every plausible I2C pin pair, not just the pair we're about to
-    // use — one flash tells us which GPIOs actually look like a live I2C bus
-    // regardless of what display_pins.h currently says. 8/9 is the documented
-    // default for CH422G-bearing Waveshare ESP32-S3 boards; 10/11 is what
-    // earlier bring-up tried; some revs use 6/7.
-    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);   // 8, 9  (current)
-    probeIdle(10, 11);
-    probeIdle(6, 7);
+    // Wait for USB CDC to stabilize before spraying diagnostics — otherwise
+    // the early log lines get eaten during enumeration after reset.
+    delay(1000);
 
-    step("Wire.begin() [primary: SDA=8, SCL=9]");
+    // Chip identity banner. Confirms module variant so we can cross-check
+    // which ESP32-S3 SKU (N16R8? N8R2?) is actually on the board. Some GPIOs
+    // are only internally-tied-off on specific PSRAM-equipped variants.
+    log_i("[ui] ===== CHIP IDENTITY =====");
+    log_i("[ui] chip:           %s rev %d, %d core(s)",
+          ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
+    log_i("[ui] cpu freq:       %u MHz", (unsigned)ESP.getCpuFreqMHz());
+    log_i("[ui] flash size:     %u MB", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
+    log_i("[ui] psram size:     %u MB", (unsigned)(ESP.getPsramSize() / (1024 * 1024)));
+    log_i("[ui] sdk version:    %s", ESP.getSdkVersion());
+    log_i("[ui] ===== END CHIP IDENTITY =====");
+    delay(100);
+
+    // Broad GPIO idle-state scan. Previous rounds only probed three pairs we
+    // guessed at (8/9, 10/11, 6/7) — all either electrically fine-but-silent
+    // or stuck. Now we scan EVERY safe GPIO and report idle state. The
+    // signature to look for:
+    //   HIGH with internal pull-up = pin is free, nothing connected.
+    //   LOW  despite internal pull-up = pin is being actively pulled down by
+    //        a peripheral → that's where a device (or a tied strap) lives.
+    // Pairs of LOW pins in a plausible layout are strong candidates for the
+    // real I2C bus on this specific board rev.
+    //
+    // Pins we deliberately SKIP on an ESP32-S3-WROOM-1 N16R8:
+    //   26..32 — SPI flash (internal).
+    //   33..37 — octal PSRAM (internal on N16R8). Touching breaks PSRAM.
+    //   43, 44 — UART0 tx/rx (debug console routing; safer to leave alone).
+    // Everything else is either general-purpose or strap-only and safe to
+    // read as INPUT_PULLUP.
+    static const int kScanPins[] = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21,
+        38, 39, 40, 41, 42, 45, 46, 47, 48,
+    };
+    log_i("[ui] ===== GPIO IDLE-STATE SCAN =====");
+    delay(50);
+    for (size_t i = 0; i < sizeof(kScanPins) / sizeof(kScanPins[0]); ++i) {
+        const int p = kScanPins[i];
+        pinMode(p, INPUT_PULLUP);
+        delayMicroseconds(200);
+        const int hi = digitalRead(p);
+        log_i("[ui] gpio %2d : %s",
+              p, hi ? "HIGH (free / pulled-up)" : "LOW  (tied down — device?)");
+        pinMode(p, INPUT);   // release cleanly
+        // Small pacing so log_i doesn't overflow the CDC drain.
+        if ((i % 4) == 3) {
+            delay(30);
+        }
+    }
+    log_i("[ui] ===== END GPIO IDLE-STATE SCAN =====");
+    delay(100);
+
+    // Keep the original targeted I2C pair probes too — cheaper than re-reading
+    // the scan above, and makes the "SDA=HIGH, SCL=HIGH" pattern jump out.
+    log_i("[ui] ===== I2C IDLE-STATE DIAGNOSTIC =====");
+    delay(100);
+    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);   // 8, 9  (current)
+    delay(100);
+    probeIdle(10, 11);
+    delay(100);
+    probeIdle(6, 7);
+    delay(100);
+    log_i("[ui] ===== END I2C IDLE-STATE DIAGNOSTIC =====");
+    delay(100);
+
+    // ---- targeted SCL-verification scan (round 10) ----------------------
+    // Round 9 (the 420-pair exhaustive scan) produced a clean breakthrough:
+    // every (SDA,SCL) pair with SDA=GPIO15 produced ACKs on exactly three
+    // addresses — 0x15, 0x20, 0x51 — and no other SDA pin produced any ACK.
+    // Crucially, 0x24 and 0x38 (CH422G's MODE + WR_IO registers) were NEVER
+    // hit, but 0x20 (the TCA9554 default address) was hit every time. Plus
+    // 0x15 (CST820 touch) and 0x51 (PCF85063 RTC) are consistent with what
+    // Waveshare wires here.
+    //
+    // Conclusion: this is NOT a CH422G board. The expander is a TCA9554 at
+    // 0x20, which also means the panel is almost certainly the ST7701 RGB
+    // variant (not ST77916 QSPI) of the "ESP32-S3-Touch-LCD-2.1" product —
+    // Waveshare pairs TCA9554 with ST7701 RGB + framebuffer-in-PSRAM, and
+    // CH422G with ST77916 QSPI. Rounds 1..9 were building drivers for the
+    // wrong chipset entirely.
+    //
+    // Remaining question: which pin is SCL? Round 9's exhaustive scan treated
+    // SDA and SCL symmetrically, and Arduino's Wire driver is lenient enough
+    // that several (SDA=15, SCL=X) orderings produced the same three ACKs —
+    // that doesn't tell us which X is the real SCL, only that SDA=15 is
+    // correct. To disambiguate we now fix SDA=15 and scan ALL 127 addresses
+    // on each plausible SCL candidate. The *correct* SCL will produce a
+    // tight set of exactly the three expected hits (0x15, 0x20, 0x51).
+    // Wrong-but-tolerated SCLs will either produce the same set (the Wire
+    // driver is bit-banging well enough to get away with it) or additional
+    // spurious ACKs / dropped ACKs. Either way, if one candidate gives a
+    // clean 3-hit set consistently and the rest don't, that's our SCL.
+    //
+    // SCL candidates, ranked by prior probability:
+    //   7  — Waveshare 4" touch-LCD silkscreen says "GPIO7 (SCL0)" right
+    //        next to "GPIO15 (SDA0)"; overwhelming favorite.
+    //   8, 9 — earlier display_pins.h guess; empirically excluded for
+    //        SDA but might still be a valid SCL if the board reused them.
+    //   1, 2, 5, 16 — adjacent safe GPIOs; scanned for completeness.
+    log_i("[ui] ===== ROUND 10: SCL VERIFICATION SCAN (SDA=GPIO15) =====");
+    delay(100);
+    Wire.end();
+    static const int kScl_candidates[] = { 7, 1, 2, 5, 8, 9, 16 };
+    const int kSda_fixed = 15;
+    int total_hits = 0;
+    for (size_t si = 0; si < sizeof(kScl_candidates) / sizeof(kScl_candidates[0]); ++si) {
+        const int scl = kScl_candidates[si];
+        if (scl == kSda_fixed) continue;
+        log_i("[ui] --- SDA=GPIO%d, SCL=GPIO%d: full 127-addr scan ---",
+              kSda_fixed, scl);
+        delay(50);
+        Wire.begin(kSda_fixed, scl, 100000);
+        int hits_this_pair = 0;
+        for (uint8_t addr = 1; addr < 127; ++addr) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) {
+                log_i("[ui]   ACK 0x%02X  (SDA=GPIO%d, SCL=GPIO%d)",
+                      addr, kSda_fixed, scl);
+                ++hits_this_pair;
+                ++total_hits;
+            }
+            // pace output — 127 addrs per pair × 7 pairs would flood CDC
+            if ((addr & 0x1F) == 0x1F) delay(5);
+        }
+        log_i("[ui] --- SDA=GPIO%d, SCL=GPIO%d: %d device(s) found ---",
+              kSda_fixed, scl, hits_this_pair);
+        if (hits_this_pair == 3) {
+            log_i("[ui]     ↑ clean 3-hit set — likely the real SCL if the "
+                  "three addrs are 0x15 / 0x20 / 0x51");
+        }
+        Wire.end();
+        delay(80);
+    }
+    log_i("[ui] scl-verification scan total ACKs across all candidates: %d",
+          total_hits);
+    log_i("[ui] ===== END ROUND 10 SCL VERIFICATION SCAN =====");
+    delay(100);
+
+    step("Wire.begin() [primary from display_pins.h]");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
     int device_count = scanBus();
     log_i("[ui] i2c: primary ordering found %d device(s)", device_count);
