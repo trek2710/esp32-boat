@@ -9,20 +9,20 @@
 // ST77916 QSPI + CH422G variant; round 9's I2C scan proved otherwise. The
 // TCA9554 expander at 0x20 gates LCD reset, touch reset, backlight, and the
 // panel's 3-wire-SPI CS line. src/display/Tca9554 handles the expander;
-// src/display/St77916Panel is the LEGACY QSPI driver — it compiles, brings
-// up the SPI bus cleanly, and then talks to nothing (this panel doesn't
-// speak QSPI). It stays in-tree only as a placeholder until round 14 lands
-// an ST7701 RGB driver (src/display/st7701_panel.*) with a PSRAM framebuffer
-// and esp_lcd_panel_rgb. Nothing in the LVGL widget code below knows or
-// cares — the only integration point is flush_cb.
+// src/display/St7701Panel (round 14) drives the panel: bit-banged 3-wire
+// SPI init over GPIO1/2 with CS via TCA9554 IO3, then esp_lcd_panel_rgb
+// for the 16 parallel data lines + HSYNC/VSYNC/DE/PCLK with a 480×480×2
+// framebuffer in PSRAM. Nothing in the LVGL widget code below knows or
+// cares — the only integration point is flushCb.
 //
-// Confirmation that a rewrite (not a wiring hunt) is the right move: the
+// Confirmation that a rewrite (not a wiring hunt) was the right move: the
 // device shipped with a factory demo image that displayed a working settings
 // UI when the user first powered it up over USB-C. Panel, backlight, touch
-// — the hardware is fully functional. Our dark screen is purely a
-// driver-protocol mismatch. Without a valid RGB pixel stream the LC layer
-// is opaque, which is also why the round-12 TCA9554 bit-walk never lit the
-// backlight regardless of which bit we toggled.
+// — the hardware is fully functional. Our round-12 dark screen was purely a
+// driver-protocol mismatch: ST77916 QSPI sequences sent to an ST7701 RGB
+// panel render as zero pixels, and without a valid RGB pixel stream the
+// LC layer is opaque, which is also why the TCA9554 bit-walk never lit
+// the backlight regardless of which bit we toggled.
 //
 // Capacitive touch (CST820 at 0x15) is wired on the same I2C bus but not
 // driven in v1; the UI is screen-only with programmatic page cycling. A
@@ -62,7 +62,7 @@ uint32_t tick() {
 
 #include "display/tca9554.h"
 #include "display/display_pins.h"
-#include "display/st77916_panel.h"
+#include "display/st7701_panel.h"
 
 namespace ui {
 namespace {
@@ -70,9 +70,10 @@ namespace {
 // --- Display driver -------------------------------------------------------
 
 // Real driver now. The TCA9554 expander must be initialized before the panel
-// (it gates the panel's RESET line); we keep both as file-local statics.
-display::Tca9554      g_expander;
-display::St77916Panel g_panel;
+// (it gates the panel's RESET, CS, and backlight lines); we keep both as
+// file-local statics so LVGL's flush_cb can reach g_panel without plumbing.
+display::Tca9554     g_expander;
+display::St7701Panel g_panel;
 
 lv_disp_draw_buf_t draw_buf;
 lv_color_t*        buf1 = nullptr;
@@ -588,12 +589,12 @@ void begin(BoatState& state) {
     // the full mapping. Round 14 will drive that mapping properly from
     // inside the new ST7701 panel driver.
 
-    step("ST77916.begin()");
+    step("ST7701.begin()");
     if (!g_panel.begin(g_expander)) {
-        log_e("[ui] ST77916 bring-up failed - continuing without pixels; "
+        log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
     } else {
-        step("ST77916 fillColor(black)");
+        step("ST7701 fillColor(black)");
         g_panel.fillColor(0x0000);
     }
 
