@@ -64,14 +64,38 @@ live in `src/display/display_pins.h` so the values below and the code can't
 drift. If Waveshare ships a new revision with a different pinout, update that
 header and rebuild.
 
-> **Chipset note (2026-04-23):** our board is the **ST7701 RGB + TCA9554**
-> variant of the ESP32-S3-Touch-LCD-2.1, not the ST77916 QSPI + CH422G
-> variant. An on-bench I2C scan confirmed 0x15 / 0x20 / 0x51 present and
-> 0x24 / 0x38 absent. The QSPI + CH422G tables below are left as placeholders
-> matching the **current** (partial) firmware; they'll be replaced with the
-> ST7701 RGB pinout once round 12 rewrites the panel driver.
+> **Chipset note (round 13, 2026-04-23):** our board is the **ST7701 RGB +
+> TCA9554** variant of the ESP32-S3-Touch-LCD-2.1, not the ST77916 QSPI +
+> CH422G variant. An on-bench I2C scan confirmed 0x15 / 0x20 / 0x51 present
+> and 0x24 / 0x38 absent. Separately, the factory demo image that shipped
+> on this board displayed a working settings UI on first power-up, so the
+> panel + backlight + touch are fully functional; our job is pure driver
+> work. The ST7701 RGB pinout below is the round-13 target; the legacy
+> ST77916 QSPI table underneath is kept only as a record of what the
+> (soon-to-be-deleted) stub driver is wired to.
 
-**Display (currently ST77916 QSPI glue — to be replaced with ST7701 RGB in round 12)**
+**Display — ST7701 RGB parallel bus (active target, round 13+)**
+
+The ST7701 is initialised over a 3-wire SPI port, then pixels are pushed
+over 16 parallel RGB565 data lines with HSYNC/VSYNC/DE/PCLK timing.
+
+| Signal | ESP32-S3 GPIO | Notes |
+|---|---|---|
+| RGB_HSYNC | GPIO 38 | horizontal sync |
+| RGB_VSYNC | GPIO 39 | vertical sync |
+| RGB_DE    | GPIO 40 | data enable (HENABLE) |
+| RGB_PCLK  | GPIO 41 | pixel clock, 14 MHz |
+| R0..R4    | GPIO 46, 3, 8, 18, 17 | red channel (5 bits, LSB→MSB) |
+| G0..G5    | GPIO 14, 13, 12, 11, 10, 9 | green channel (6 bits, LSB→MSB) |
+| B0..B4    | GPIO 5, 45, 48, 47, 21 | blue channel (5 bits, LSB→MSB) |
+| LCD_RST   | via TCA9554 IO1 (not a direct GPIO) | active low |
+| LCD_CS    | via TCA9554 IO3 (not a direct GPIO) | 3-wire-SPI CS during init |
+| LCD_BL    | via TCA9554 IO0 (not a direct GPIO) | active high, unconfirmed |
+
+Source: LovyanGFX discussion #630 (working LGFX config for this exact
+board, cross-checked against Waveshare product page).
+
+**Display — legacy ST77916 QSPI (stub driver; dead on this board variant)**
 
 | Signal | ESP32-S3 GPIO |
 |---|---|
@@ -81,7 +105,7 @@ header and rebuild.
 | LCD_D1   | GPIO 45 |
 | LCD_D2   | GPIO 42 |
 | LCD_D3   | GPIO 41 |
-| LCD_RST  | via TCA9554 IO2 (not a direct GPIO) |
+| LCD_RST  | via TCA9554 IO1 (not a direct GPIO) |
 | LCD_BL   | via TCA9554 IO0 (not a direct GPIO) |
 
 **Shared I2C bus** (TCA9554 I/O expander, CST820 touch, PCF85063 RTC,
@@ -102,14 +126,16 @@ at 0x7E that may be spurious)
 | TP_SDA / TP_SCL | shared I2C bus above |
 | TP I2C address | `0x15` |
 
-**TCA9554 I/O expander bit assignments** (addr 0x20)
+**TCA9554 I/O expander bit assignments** (addr 0x20, round-13 mapping)
 
-| IO channel | Drives |
-|---|---|
-| IO0 | LCD backlight enable (active high) |
-| IO1 | Touch reset (active low) |
-| IO2 | LCD reset (active low) |
-| IO3 | SD card CS (not used in v1) |
+| IO channel | Drives | Notes |
+|---|---|---|
+| IO0 | LCD backlight enable | active high, unconfirmed — only remaining candidate on the expander |
+| IO1 | LCD reset | active low |
+| IO2 | Touch reset | active low |
+| IO3 | LCD CS | drives the panel's 3-wire-SPI CS line during init |
+| IO4..IO6 | (unused on this rev) | no observed effect during the round-12 walking-ones scan |
+| IO7 | Piezo buzzer | active high — discovered in round 12 when phases B and J beeped |
 
 > **Revision caveat:** Waveshare has shipped at least two "ESP32-S3-Touch-LCD-2.1"
 > BOMs under the same SKU — ST77916 QSPI + CH422G, and ST7701 RGB + TCA9554.

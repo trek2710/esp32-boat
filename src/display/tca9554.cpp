@@ -35,11 +35,18 @@ bool Tca9554::begin() {
     }
 
     // Step 2: prime the OUTPUT register to the known-safe power-up state.
+    // Bit assignments (see display_pins.h — this is the round-13 corrected
+    // mapping, sourced from LovyanGFX discussion #630 for this exact board):
     //   bit 0 = LCD_BL    = 0 → backlight off
-    //   bit 1 = TP_RST    = 0 → touch in reset (active low)
-    //   bit 2 = LCD_RST   = 0 → panel in reset (active low)
-    //   bit 3 = SD_CS     = 0 → SD card not selected (unused in v1)
-    //   bits 4..7 reserved — safe to leave at 0.
+    //   bit 1 = LCD_RST   = 0 → panel in reset (active low)
+    //   bit 2 = TP_RST    = 0 → touch in reset (active low)
+    //   bit 3 = LCD_CS    = 0 → panel 3-wire-SPI CS held low (not-selected
+    //                           when the bus isn't clocking; driven high/low
+    //                           in software for each init byte by the panel
+    //                           driver in round 14+)
+    //   bits 4..6 unused on this board rev.
+    //   bit 7 = BUZZER    = 0 → piezo quiet (active high). Keep OFF so we
+    //                           don't chirp during every warm reboot.
     //
     // The panel driver calls resetPanel() + setBits(LCD_BL) later to drive
     // through the init sequence.

@@ -7,14 +7,26 @@
 // The Waveshare ESP32-S3-Touch-LCD-2.1 on our bench is the ST7701 RGB + TCA9554
 // variant (480×480, round). Rounds 1..9 incorrectly assumed it was the
 // ST77916 QSPI + CH422G variant; round 9's I2C scan proved otherwise. The
-// TCA9554 expander at 0x20 gates LCD reset, touch reset, and backlight
-// enable. src/display/Tca9554 handles the expander; src/display/St77916Panel
-// is currently still the QSPI driver and is being kept compiling until
-// round 12 rips it out and replaces it with an ST7701 RGB driver. Nothing
-// in the LVGL widget code below knows or cares — the only integration point
-// is flush_cb. Capacitive touch (CST820 at 0x15) is wired on the same I2C
-// bus but not driven in v1; the UI is screen-only with programmatic page
-// cycling. A CST820 driver + LVGL input device will land in a follow-up.
+// TCA9554 expander at 0x20 gates LCD reset, touch reset, backlight, and the
+// panel's 3-wire-SPI CS line. src/display/Tca9554 handles the expander;
+// src/display/St77916Panel is the LEGACY QSPI driver — it compiles, brings
+// up the SPI bus cleanly, and then talks to nothing (this panel doesn't
+// speak QSPI). It stays in-tree only as a placeholder until round 14 lands
+// an ST7701 RGB driver (src/display/st7701_panel.*) with a PSRAM framebuffer
+// and esp_lcd_panel_rgb. Nothing in the LVGL widget code below knows or
+// cares — the only integration point is flush_cb.
+//
+// Confirmation that a rewrite (not a wiring hunt) is the right move: the
+// device shipped with a factory demo image that displayed a working settings
+// UI when the user first powered it up over USB-C. Panel, backlight, touch
+// — the hardware is fully functional. Our dark screen is purely a
+// driver-protocol mismatch. Without a valid RGB pixel stream the LC layer
+// is opaque, which is also why the round-12 TCA9554 bit-walk never lit the
+// backlight regardless of which bit we toggled.
+//
+// Capacitive touch (CST820 at 0x15) is wired on the same I2C bus but not
+// driven in v1; the UI is screen-only with programmatic page cycling. A
+// CST820 driver + LVGL input device will land in a follow-up.
 
 #include "Ui.h"
 
@@ -563,54 +575,18 @@ void begin(BoatState& state) {
               "won't be driven. Check I2C pins / board rev.");
     }
 
-    // ---- TCA9554 bit-mapping diagnostic (round 12) ----------------------
-    // Round 11 got a clean TCA9554 ACK but the backlight never came on,
-    // which means our guess "IO0 = LCD_BL (active-high)" is wrong for
-    // this board rev. Brute-force the mapping: drive each of the 8 output
-    // bits individually and also all-LOW / all-HIGH, holding each state
-    // for 2 seconds. Watch the screen and note which phase letter lights
-    // the backlight — that tells us which IO pin controls LCD_BL AND
-    // whether it's active-high or active-low.
-    //
-    // Diagnostic logic chart (B = backlight visibly on):
-    //   active-HIGH on IOn → phase B (all HIGH) ON, phase <letter for IOn> ON
-    //   active-LOW  on IOn → phase A (all LOW)  ON, phase <letter for IOn> OFF,
-    //                        every other single-bit phase ON
-    //   not on TCA9554 at all → no phase lights the backlight; move to
-    //                           direct-GPIO probe in round 13.
-    //
-    // Phase A runs first so the user sees a clean "baseline" before bits
-    // start moving. Safe: we're only toggling bits that can only drive
-    // backlight / resets / SD CS, none of which damage the hardware when
-    // held in either state.
-    log_i("[ui] ===== TCA9554 BIT-MAPPING DIAGNOSTIC =====");
-    log_i("[ui] Watch the screen. Each phase is held for 2 s. Report the");
-    log_i("[ui] letter(s) of the phase where the backlight is visibly ON.");
-    delay(500);
-
-    struct TcaPhase { const char* label; uint8_t value; };
-    static const TcaPhase kTcaPhases[] = {
-        { "A: all LOW  (0x00) — baseline",                  0x00 },
-        { "B: all HIGH (0xFF) — every output at 1",         0xFF },
-        { "C: only IO0 HIGH (0x01)",                        0x01 },
-        { "D: only IO1 HIGH (0x02)",                        0x02 },
-        { "E: only IO2 HIGH (0x04)",                        0x04 },
-        { "F: only IO3 HIGH (0x08)",                        0x08 },
-        { "G: only IO4 HIGH (0x10)",                        0x10 },
-        { "H: only IO5 HIGH (0x20)",                        0x20 },
-        { "I: only IO6 HIGH (0x40)",                        0x40 },
-        { "J: only IO7 HIGH (0x80)",                        0x80 },
-    };
-    for (size_t i = 0; i < sizeof(kTcaPhases) / sizeof(kTcaPhases[0]); ++i) {
-        log_i("[ui] phase %s", kTcaPhases[i].label);
-        g_expander.writeOutput(kTcaPhases[i].value);
-        delay(2000);
-    }
-    // Restore all-LOW before handing control to ST77916.begin(), which will
-    // then set its own known pattern (IO2 HIGH + IO0 HIGH).
-    g_expander.writeOutput(0x00);
-    log_i("[ui] ===== END TCA9554 BIT-MAPPING DIAGNOSTIC =====");
-    delay(200);
+    // ---- Round-12 TCA9554 bit-mapping diagnostic removed in round 13 ----
+    // The factory firmware that shipped on this board showed a working
+    // settings UI on first power-up, so the hardware path from TCA9554 →
+    // backlight → panel is fine. Brute-forcing TCA9554 bits without a valid
+    // RGB pixel stream doesn't help: the LC layer is opaque until the
+    // ST7701 is receiving live pixel data, so no phase will ever light up
+    // visibly regardless of which bit is LCD_BL. The bit-mapping was also
+    // mostly resolved indirectly — the phase-B/J beeps identified IO7 as
+    // a piezo buzzer, and the LovyanGFX community config confirmed
+    // IO1 = LCD_RST, IO2 = TP_RST, IO3 = LCD_CS. See display_pins.h for
+    // the full mapping. Round 14 will drive that mapping properly from
+    // inside the new ST7701 panel driver.
 
     step("ST77916.begin()");
     if (!g_panel.begin(g_expander)) {
