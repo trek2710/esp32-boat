@@ -563,6 +563,55 @@ void begin(BoatState& state) {
               "won't be driven. Check I2C pins / board rev.");
     }
 
+    // ---- TCA9554 bit-mapping diagnostic (round 12) ----------------------
+    // Round 11 got a clean TCA9554 ACK but the backlight never came on,
+    // which means our guess "IO0 = LCD_BL (active-high)" is wrong for
+    // this board rev. Brute-force the mapping: drive each of the 8 output
+    // bits individually and also all-LOW / all-HIGH, holding each state
+    // for 2 seconds. Watch the screen and note which phase letter lights
+    // the backlight — that tells us which IO pin controls LCD_BL AND
+    // whether it's active-high or active-low.
+    //
+    // Diagnostic logic chart (B = backlight visibly on):
+    //   active-HIGH on IOn → phase B (all HIGH) ON, phase <letter for IOn> ON
+    //   active-LOW  on IOn → phase A (all LOW)  ON, phase <letter for IOn> OFF,
+    //                        every other single-bit phase ON
+    //   not on TCA9554 at all → no phase lights the backlight; move to
+    //                           direct-GPIO probe in round 13.
+    //
+    // Phase A runs first so the user sees a clean "baseline" before bits
+    // start moving. Safe: we're only toggling bits that can only drive
+    // backlight / resets / SD CS, none of which damage the hardware when
+    // held in either state.
+    log_i("[ui] ===== TCA9554 BIT-MAPPING DIAGNOSTIC =====");
+    log_i("[ui] Watch the screen. Each phase is held for 2 s. Report the");
+    log_i("[ui] letter(s) of the phase where the backlight is visibly ON.");
+    delay(500);
+
+    struct TcaPhase { const char* label; uint8_t value; };
+    static const TcaPhase kTcaPhases[] = {
+        { "A: all LOW  (0x00) — baseline",                  0x00 },
+        { "B: all HIGH (0xFF) — every output at 1",         0xFF },
+        { "C: only IO0 HIGH (0x01)",                        0x01 },
+        { "D: only IO1 HIGH (0x02)",                        0x02 },
+        { "E: only IO2 HIGH (0x04)",                        0x04 },
+        { "F: only IO3 HIGH (0x08)",                        0x08 },
+        { "G: only IO4 HIGH (0x10)",                        0x10 },
+        { "H: only IO5 HIGH (0x20)",                        0x20 },
+        { "I: only IO6 HIGH (0x40)",                        0x40 },
+        { "J: only IO7 HIGH (0x80)",                        0x80 },
+    };
+    for (size_t i = 0; i < sizeof(kTcaPhases) / sizeof(kTcaPhases[0]); ++i) {
+        log_i("[ui] phase %s", kTcaPhases[i].label);
+        g_expander.writeOutput(kTcaPhases[i].value);
+        delay(2000);
+    }
+    // Restore all-LOW before handing control to ST77916.begin(), which will
+    // then set its own known pattern (IO2 HIGH + IO0 HIGH).
+    g_expander.writeOutput(0x00);
+    log_i("[ui] ===== END TCA9554 BIT-MAPPING DIAGNOSTIC =====");
+    delay(200);
+
     step("ST77916.begin()");
     if (!g_panel.begin(g_expander)) {
         log_e("[ui] ST77916 bring-up failed - continuing without pixels; "
