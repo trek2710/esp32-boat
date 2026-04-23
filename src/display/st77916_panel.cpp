@@ -21,7 +21,7 @@
 
 #include "driver/spi_master.h"
 
-#include "ch422g.h"
+#include "tca9554.h"
 #include "display_pins.h"
 
 namespace display {
@@ -88,7 +88,7 @@ constexpr InitCmd kInit[] = {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-bool St77916Panel::begin(Ch422g& io) {
+bool St77916Panel::begin(Tca9554& io) {
     // Use log_i / log_e (ESP-IDF log path via ets_printf) rather than
     // Serial.println. With ARDUINO_USB_CDC_ON_BOOT=1 the Arduino `Serial`
     // is a HWCDC instance whose write() silently drops bytes when the
@@ -107,9 +107,9 @@ bool St77916Panel::begin(Ch422g& io) {
     if (!runInitSequence()) { log_e("[st77916] runInitSequence failed"); return false; }
     log_i("[st77916] backlight on");
 
-    // Flip the backlight on (CH422G EXIO0). Do this AFTER the init sequence
+    // Flip the backlight on (TCA9554 IO0). Do this AFTER the init sequence
     // so the operator doesn't see a flash of power-on noise.
-    io.setBits(CH422G_BIT_LCD_BL);
+    io.setBits(TCA9554_BIT_LCD_BL);
 
     ready_ = true;
     return true;
@@ -212,12 +212,12 @@ bool St77916Panel::initBus() {
     return true;
 }
 
-bool St77916Panel::resetPanel(Ch422g& io) {
-    // Sequence: assert reset (EXIO2 low), hold, deassert, then wait out the
-    // ST77916's post-reset quiet period before sending SWRESET.
-    io.clearBits(CH422G_BIT_LCD_RST);
+bool St77916Panel::resetPanel(Tca9554& io) {
+    // Sequence: assert reset (IO2 low, active-low), hold, deassert, then
+    // wait out the ST77916's post-reset quiet period before SWRESET.
+    io.clearBits(TCA9554_BIT_LCD_RST);
     delay(10);
-    io.setBits(CH422G_BIT_LCD_RST);
+    io.setBits(TCA9554_BIT_LCD_RST);
     delay(120);
     return true;
 }

@@ -18,15 +18,13 @@
 // chipset family.
 //
 // Pivot plan, in order:
-//   round 10 (this file)  — lock SDA/SCL, document TCA9554/ST7701 pivot,
-//                           leave CH422G symbols so ch422g.cpp still compiles
-//                           while we cut it over.
-//   round 11  — swap ch422g.cpp for a TCA9554 driver (single-addr 0x20, with
-//               registers 0x03=config and 0x01=output).
+//   round 10  — lock SDA/SCL to GPIO 15 / GPIO 7, document the pivot.  DONE.
+//   round 11  — swap ch422g.cpp for tca9554.cpp (single-addr 0x20, register
+//               0x03=config / 0x01=output).  DONE (this revision).
 //   round 12+ — rip out ST77916 QSPI driver; replace with esp_lcd_panel_rgb
 //               ST7701 driver + PSRAM framebuffer. Change QSPI_* pin symbols
 //               below into RGB pin symbols (hsync/vsync/de/pclk/16 data
-//               lines — different pinout entirely).
+//               lines — different pinout entirely). Pending.
 // ───────────────────────────────────────────────────────────────────────────
 //
 // What this board still contains (post-pivot):
@@ -139,55 +137,30 @@ static constexpr uint8_t TCA9554_BIT_TP_RST  = 1 << 1;  // IO1 — touch reset
 static constexpr uint8_t TCA9554_BIT_LCD_RST = 1 << 2;  // IO2 — panel reset
 static constexpr uint8_t TCA9554_BIT_SD_CS   = 1 << 3;  // IO3 — sd card (unused)
 
-// --- CH422G I/O expander (UNUSED on this board rev — kept to compile) ------
-// Round-9 scan proved the board does NOT host a CH422G: 0x24 and 0x38 never
-// ACKed on any pin pair, whereas 0x20 (TCA9554) did. These symbols stay here
-// temporarily so src/display/ch422g.cpp still compiles while we port it to
-// TCA9554 in round 11. DO NOT wire new code against CH422G_*.
-//
-// Original CH422G docs below for reference while porting:
-//
-// CH422G is unusual: it doesn't use one I2C address with a register pointer,
-// it uses *multiple* 7-bit I2C addresses, each one mapped to a specific
-// internal register. We only need two of them:
-//
-//   0x24  SYS/Mode register.
-//         Bit 0 (IO_OE) = 1 → make the IO0..IO7 pins outputs.
-//                         Without this write the expander stays in all-
-//                         input mode and the downstream LCD_RST/LCD_BL/
-//                         TP_RST stays floating. Waveshare's demo writes
-//                         0x01 here during init.
-//
-//   0x38  WR_IO register.
-//         Write a byte whose bits drive IO0..IO7 directly.  Used every
-//         time we flip backlight/reset. This is DIFFERENT from the CH422G
-//         "OD" register (address 0x23) which drives the open-drain-only
-//         EXIO0..EXIO7 pins. On the Waveshare ESP32-S3-Touch-LCD-2.1
-//         board, LCD_RST/TP_RST/LCD_BL/SD_CS are wired to IO0..IO3 (not
-//         to EXIO0..EXIO3), so we use 0x38.
-//
-// Reference: WCH CH422G datasheet + Waveshare's
-// esp32-s3-touch-lcd-2.1 demo (CH422G_Mode=0x24, CH422G_WR_IO=0x38).
-static constexpr uint8_t CH422G_I2C_ADDR_MODE   = 0x24;
-static constexpr uint8_t CH422G_I2C_ADDR_OUTPUT = 0x38;
-
-// Which CH422G EXIO channel drives which board signal. Bit positions in the
-// CH422G's single-byte output register. Derived from Waveshare's demo code:
-//   EXIO0 — DISP / LCD backlight enable (active high)
-//   EXIO1 — TP_RST (capacitive touch reset, active low)
-//   EXIO2 — LCD_RST (panel reset, active low)
-//   EXIO3 — SD CS (we don't use SD in v1)
-// TBD: verify bit ordering on YOUR board rev — some revs swap these.
-static constexpr uint8_t CH422G_BIT_LCD_BL  = 1 << 0;  // EXIO0 — backlight
-static constexpr uint8_t CH422G_BIT_TP_RST  = 1 << 1;  // EXIO1 — touch reset
-static constexpr uint8_t CH422G_BIT_LCD_RST = 1 << 2;  // EXIO2 — panel reset
-static constexpr uint8_t CH422G_BIT_SD_CS   = 1 << 3;  // EXIO3 — sd card (unused)
-
 // --- CST820 touch (wired for future use; not driven in v1) -----------------
 
 static constexpr int TP_PIN_INT = 4;   // Touch interrupt (active low)
-// TP_RST and TP_SDA/TP_SCL are not direct GPIOs — TP_RST is EXIO1 on CH422G;
-// SDA/SCL are the shared I2C bus above.
+// TP_RST is not a direct GPIO — it's TCA9554 IO1 (see TCA9554_BIT_TP_RST
+// above). SDA/SCL are the shared I2C bus (GPIO 15 / GPIO 7).
 static constexpr uint8_t TP_I2C_ADDR = 0x15;  // CST820 default
+
+// --- Other devices on the shared I2C bus (round 10 discovery) -------------
+//
+// The round-10 full 127-address scan also found ACKs at 0x6B and 0x7E. These
+// weren't in our round-9 short-list, so we didn't have a story for them.
+// Best guesses (not yet confirmed):
+//
+//   0x6B — likely QMI8658 6-axis IMU (accel + gyro). Waveshare pairs one
+//          with their round touch displays on some revs for tilt/heading.
+//          QMI8658's default 7-bit address is 0x6B.
+//   0x7E — unknown. Could be a real device (a battery / fuel-gauge IC, a
+//          boot-mode chip), or an Arduino-ESP32 hal-i2c quirk where a
+//          stuck bus produces a false ACK around the 10-bit-addressing
+//          reserved band (0x78..0x7F).
+//
+// Neither is on the v1 critical path. If 0x6B is the IMU it'd be a nice
+// feed for heel/pitch readouts later, but not required to show NMEA data.
+static constexpr uint8_t IMU_I2C_ADDR_GUESS      = 0x6B;
+static constexpr uint8_t UNKNOWN_I2C_ADDR_GUESS  = 0x7E;
 
 }  // namespace display

@@ -64,7 +64,14 @@ live in `src/display/display_pins.h` so the values below and the code can't
 drift. If Waveshare ships a new revision with a different pinout, update that
 header and rebuild.
 
-**ST77916 display (QSPI)**
+> **Chipset note (2026-04-23):** our board is the **ST7701 RGB + TCA9554**
+> variant of the ESP32-S3-Touch-LCD-2.1, not the ST77916 QSPI + CH422G
+> variant. An on-bench I2C scan confirmed 0x15 / 0x20 / 0x51 present and
+> 0x24 / 0x38 absent. The QSPI + CH422G tables below are left as placeholders
+> matching the **current** (partial) firmware; they'll be replaced with the
+> ST7701 RGB pinout once round 12 rewrites the panel driver.
+
+**Display (currently ST77916 QSPI glue — to be replaced with ST7701 RGB in round 12)**
 
 | Signal | ESP32-S3 GPIO |
 |---|---|
@@ -74,39 +81,40 @@ header and rebuild.
 | LCD_D1   | GPIO 45 |
 | LCD_D2   | GPIO 42 |
 | LCD_D3   | GPIO 41 |
-| LCD_RST  | via CH422G EXIO2 (not a direct GPIO) |
-| LCD_BL   | via CH422G EXIO0 (not a direct GPIO) |
+| LCD_RST  | via TCA9554 IO2 (not a direct GPIO) |
+| LCD_BL   | via TCA9554 IO0 (not a direct GPIO) |
 
-**Shared I2C bus** (CH422G I/O expander, CST820 touch, PCF85063 RTC)
+**Shared I2C bus** (TCA9554 I/O expander, CST820 touch, PCF85063 RTC,
+plus an unidentified device at 0x6B — probably a QMI8658 IMU — and one
+at 0x7E that may be spurious)
 
 | Signal | ESP32-S3 GPIO |
 |---|---|
-| I2C_SDA | GPIO 11 |
-| I2C_SCL | GPIO 10 |
+| I2C_SDA | GPIO 15 |
+| I2C_SCL | GPIO 7 |
 
 **CST820 capacitive touch**
 
 | Signal | ESP32-S3 GPIO |
 |---|---|
 | TP_INT | GPIO 4 |
-| TP_RST | via CH422G EXIO1 |
+| TP_RST | via TCA9554 IO1 |
 | TP_SDA / TP_SCL | shared I2C bus above |
 | TP I2C address | `0x15` |
 
-**CH422G I/O expander bit assignments**
+**TCA9554 I/O expander bit assignments** (addr 0x20)
 
-| EXIO channel | Drives |
+| IO channel | Drives |
 |---|---|
-| EXIO0 | LCD backlight enable (active high) |
-| EXIO1 | Touch reset (active low) |
-| EXIO2 | LCD reset (active low) |
-| EXIO3 | SD card CS (not used in v1) |
+| IO0 | LCD backlight enable (active high) |
+| IO1 | Touch reset (active low) |
+| IO2 | LCD reset (active low) |
+| IO3 | SD card CS (not used in v1) |
 
-> **Revision caveat:** the values above are derived from Waveshare's published
-> schematic for the ESP32-S3-Touch-LCD-2.1. Some batches route LCD_RST
-> directly to a GPIO instead of via CH422G, and CH422G bit-to-signal mapping
-> has shifted across revisions. If you flash and see a dark screen, the first
-> thing to check is whether your board rev matches this table.
+> **Revision caveat:** Waveshare has shipped at least two "ESP32-S3-Touch-LCD-2.1"
+> BOMs under the same SKU — ST77916 QSPI + CH422G, and ST7701 RGB + TCA9554.
+> The in-firmware I2C scan in `src/Ui.cpp` will print which addresses it found
+> at boot; cross-check against this table if the screen is dark.
 
 ## NMEA 2000 drop cable pinout (Micro-C, male, looking at the pins)
 

@@ -11,8 +11,8 @@
 //     and the bring-up path visible in two files you can actually read.
 //
 // What it does:
-//   begin(Ch422g&)
-//       Owns bus init, device add, CH422G-gated reset sequence, vendor init
+//   begin(Tca9554&)
+//       Owns bus init, device add, TCA9554-gated reset sequence, vendor init
 //       register writes, and turns the backlight on at the end. After this
 //       returns successfully the panel is showing whatever GRAM held at
 //       power-on (usually noise) — you must then push a frame with
@@ -31,14 +31,14 @@
 
 namespace display {
 
-class Ch422g;  // forward decl; see ch422g.h
+class Tca9554;  // forward decl; see tca9554.h
 
 class St77916Panel {
 public:
     // Bring the panel out of reset and run the vendor init sequence. Returns
     // true on success; false means "I tried but something didn't ACK / SPI
     // init failed — don't expect pixels".
-    bool begin(Ch422g& io);
+    bool begin(Tca9554& io);
 
     // Push a rectangle of RGB565 pixels. Byte-order matches LVGL's
     // LV_COLOR_16_SWAP=1 layout (high byte first on the wire).
@@ -53,7 +53,7 @@ public:
 
 private:
     bool initBus();
-    bool resetPanel(Ch422g& io);
+    bool resetPanel(Tca9554& io);
     bool runInitSequence();
     void sendCommand(uint8_t cmd);
     void sendCommand(uint8_t cmd, const uint8_t* data, size_t len);

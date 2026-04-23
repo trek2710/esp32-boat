@@ -4,15 +4,17 @@
 //   2. Debug    — rolling NMEA 2000 PGN log (populated in sim + real builds)
 //
 // DISPLAY DRIVER:
-// The Waveshare ESP32-S3-Touch-LCD-2.1 uses a QSPI-interfaced ST77916 panel
-// (480×480, round) plus a CH422G I2C I/O expander that gates LCD reset,
-// touch reset, and backlight enable. We drive both from src/display/ —
-// St77916Panel handles the QSPI bus + vendor init + pixel blasts, Ch422g
-// handles the expander-gated resets. Nothing in the LVGL widget code below
-// knows or cares about this — the only integration point is flush_cb.
-// Capacitive touch (CST820) is not wired in v1; the UI is screen-only
-// with programmatic page cycling. A CST820 driver + LVGL input device will
-// land in a follow-up.
+// The Waveshare ESP32-S3-Touch-LCD-2.1 on our bench is the ST7701 RGB + TCA9554
+// variant (480×480, round). Rounds 1..9 incorrectly assumed it was the
+// ST77916 QSPI + CH422G variant; round 9's I2C scan proved otherwise. The
+// TCA9554 expander at 0x20 gates LCD reset, touch reset, and backlight
+// enable. src/display/Tca9554 handles the expander; src/display/St77916Panel
+// is currently still the QSPI driver and is being kept compiling until
+// round 12 rips it out and replaces it with an ST7701 RGB driver. Nothing
+// in the LVGL widget code below knows or cares — the only integration point
+// is flush_cb. Capacitive touch (CST820 at 0x15) is wired on the same I2C
+// bus but not driven in v1; the UI is screen-only with programmatic page
+// cycling. A CST820 driver + LVGL input device will land in a follow-up.
 
 #include "Ui.h"
 
@@ -46,7 +48,7 @@ uint32_t tick() {
 
 #include <cstdio>
 
-#include "display/ch422g.h"
+#include "display/tca9554.h"
 #include "display/display_pins.h"
 #include "display/st77916_panel.h"
 
@@ -55,9 +57,9 @@ namespace {
 
 // --- Display driver -------------------------------------------------------
 
-// Real driver now. The CH422G expander must be initialized before the panel
+// Real driver now. The TCA9554 expander must be initialized before the panel
 // (it gates the panel's RESET line); we keep both as file-local statics.
-display::Ch422g       g_expander;
+display::Tca9554      g_expander;
 display::St77916Panel g_panel;
 
 lv_disp_draw_buf_t draw_buf;
@@ -484,91 +486,52 @@ void begin(BoatState& state) {
     log_i("[ui] ===== END GPIO IDLE-STATE SCAN =====");
     delay(100);
 
-    // Keep the original targeted I2C pair probes too — cheaper than re-reading
-    // the scan above, and makes the "SDA=HIGH, SCL=HIGH" pattern jump out.
+    // Idle-state sanity probe on the locked-in I2C pair. With the pivot
+    // we already know SDA=15 / SCL=7 is the right answer; this probe stays
+    // as a quick visual "are the lines free?" check before Wire.begin(). If
+    // either line reads LOW here something is electrically wrong — usually
+    // a device holding the line low because its reset isn't driven.
     log_i("[ui] ===== I2C IDLE-STATE DIAGNOSTIC =====");
     delay(100);
-    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);   // 8, 9  (current)
-    delay(100);
-    probeIdle(10, 11);
-    delay(100);
-    probeIdle(6, 7);
+    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);
     delay(100);
     log_i("[ui] ===== END I2C IDLE-STATE DIAGNOSTIC =====");
     delay(100);
 
-    // ---- targeted SCL-verification scan (round 10) ----------------------
-    // Round 9 (the 420-pair exhaustive scan) produced a clean breakthrough:
-    // every (SDA,SCL) pair with SDA=GPIO15 produced ACKs on exactly three
-    // addresses — 0x15, 0x20, 0x51 — and no other SDA pin produced any ACK.
-    // Crucially, 0x24 and 0x38 (CH422G's MODE + WR_IO registers) were NEVER
-    // hit, but 0x20 (the TCA9554 default address) was hit every time. Plus
-    // 0x15 (CST820 touch) and 0x51 (PCF85063 RTC) are consistent with what
-    // Waveshare wires here.
+    // ---- one-shot I2C bus enumeration (round 11) ------------------------
+    // SDA=GPIO15 / SCL=GPIO7 locked in per the round-10 scan (see
+    // display_pins.h). We still dump the full 127-address scan at boot so
+    // every bring-up log captures "here's what was on the bus this time" —
+    // cheap (~50 ms), makes failure modes ("expander missing!") jump out.
     //
-    // Conclusion: this is NOT a CH422G board. The expander is a TCA9554 at
-    // 0x20, which also means the panel is almost certainly the ST7701 RGB
-    // variant (not ST77916 QSPI) of the "ESP32-S3-Touch-LCD-2.1" product —
-    // Waveshare pairs TCA9554 with ST7701 RGB + framebuffer-in-PSRAM, and
-    // CH422G with ST77916 QSPI. Rounds 1..9 were building drivers for the
-    // wrong chipset entirely.
-    //
-    // Remaining question: which pin is SCL? Round 9's exhaustive scan treated
-    // SDA and SCL symmetrically, and Arduino's Wire driver is lenient enough
-    // that several (SDA=15, SCL=X) orderings produced the same three ACKs —
-    // that doesn't tell us which X is the real SCL, only that SDA=15 is
-    // correct. To disambiguate we now fix SDA=15 and scan ALL 127 addresses
-    // on each plausible SCL candidate. The *correct* SCL will produce a
-    // tight set of exactly the three expected hits (0x15, 0x20, 0x51).
-    // Wrong-but-tolerated SCLs will either produce the same set (the Wire
-    // driver is bit-banging well enough to get away with it) or additional
-    // spurious ACKs / dropped ACKs. Either way, if one candidate gives a
-    // clean 3-hit set consistently and the rest don't, that's our SCL.
-    //
-    // SCL candidates, ranked by prior probability:
-    //   7  — Waveshare 4" touch-LCD silkscreen says "GPIO7 (SCL0)" right
-    //        next to "GPIO15 (SDA0)"; overwhelming favorite.
-    //   8, 9 — earlier display_pins.h guess; empirically excluded for
-    //        SDA but might still be a valid SCL if the board reused them.
-    //   1, 2, 5, 16 — adjacent safe GPIOs; scanned for completeness.
-    log_i("[ui] ===== ROUND 10: SCL VERIFICATION SCAN (SDA=GPIO15) =====");
-    delay(100);
+    // Known bus fingerprint for this board rev:
+    //   0x15  CST820 touch
+    //   0x20  TCA9554 I/O expander
+    //   0x51  PCF85063 RTC
+    //   0x6B  (probably QMI8658 IMU — round-10 discovery, not yet used)
+    //   0x7E  (unknown — may be a real device or a hal-i2c artefact)
+    log_i("[ui] ===== I2C BUS ENUMERATION (SDA=GPIO%d, SCL=GPIO%d) =====",
+          display::I2C_PIN_SDA, display::I2C_PIN_SCL);
+    delay(50);
     Wire.end();
-    static const int kScl_candidates[] = { 7, 1, 2, 5, 8, 9, 16 };
-    const int kSda_fixed = 15;
-    int total_hits = 0;
-    for (size_t si = 0; si < sizeof(kScl_candidates) / sizeof(kScl_candidates[0]); ++si) {
-        const int scl = kScl_candidates[si];
-        if (scl == kSda_fixed) continue;
-        log_i("[ui] --- SDA=GPIO%d, SCL=GPIO%d: full 127-addr scan ---",
-              kSda_fixed, scl);
-        delay(50);
-        Wire.begin(kSda_fixed, scl, 100000);
-        int hits_this_pair = 0;
-        for (uint8_t addr = 1; addr < 127; ++addr) {
-            Wire.beginTransmission(addr);
-            if (Wire.endTransmission() == 0) {
-                log_i("[ui]   ACK 0x%02X  (SDA=GPIO%d, SCL=GPIO%d)",
-                      addr, kSda_fixed, scl);
-                ++hits_this_pair;
-                ++total_hits;
-            }
-            // pace output — 127 addrs per pair × 7 pairs would flood CDC
-            if ((addr & 0x1F) == 0x1F) delay(5);
+    Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
+    int enum_hits = 0;
+    for (uint8_t addr = 1; addr < 127; ++addr) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            log_i("[ui]   ACK 0x%02X", addr);
+            ++enum_hits;
         }
-        log_i("[ui] --- SDA=GPIO%d, SCL=GPIO%d: %d device(s) found ---",
-              kSda_fixed, scl, hits_this_pair);
-        if (hits_this_pair == 3) {
-            log_i("[ui]     ↑ clean 3-hit set — likely the real SCL if the "
-                  "three addrs are 0x15 / 0x20 / 0x51");
-        }
-        Wire.end();
-        delay(80);
+        if ((addr & 0x1F) == 0x1F) delay(5);
     }
-    log_i("[ui] scl-verification scan total ACKs across all candidates: %d",
-          total_hits);
-    log_i("[ui] ===== END ROUND 10 SCL VERIFICATION SCAN =====");
-    delay(100);
+    log_i("[ui] bus enumeration: %d device(s) ACKed", enum_hits);
+    if (enum_hits < 3) {
+        log_e("[ui] expected at least 0x15/0x20/0x51 — bus may be mis-wired "
+              "or a reset line is held. Check display_pins.h.");
+    }
+    Wire.end();
+    log_i("[ui] ===== END I2C BUS ENUMERATION =====");
+    delay(50);
 
     step("Wire.begin() [primary from display_pins.h]");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
@@ -594,9 +557,9 @@ void begin(BoatState& state) {
         }
     }
 
-    step("CH422G.begin()");
+    step("TCA9554.begin()");
     if (!g_expander.begin()) {
-        log_e("[ui] CH422G not responding on I2C - backlight + resets "
+        log_e("[ui] TCA9554 not responding on I2C - backlight + resets "
               "won't be driven. Check I2C pins / board rev.");
     }
 
