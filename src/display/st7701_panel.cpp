@@ -61,227 +61,146 @@ constexpr uint8_t kCmdSlpout = 0x11;
 constexpr uint8_t kCmdDispon = 0x29;
 
 // ---------------------------------------------------------------------------
-// Round-19 ST7701 init sequence — ported verbatim from espressif's
-// esp-iot-solution/components/display/lcd/esp_lcd_st7701/esp_lcd_st7701_rgb.c
-// `vendor_specific_init_default[]` table (commit on master, 2026-04).
+// Round 30 — init sequence replaced VERBATIM with the authoritative
+// Waveshare config from esp-arduino-libs/ESP32_Display_Panel, file
+// `src/board/supported/waveshare/BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_1.h`,
+// macro `ESP_PANEL_BOARD_LCD_VENDOR_INIT_CMD()`.
 //
-// Why the full port: rounds 13–18 used an init table stitched together from
-// Nicolai-Electronics/esp32-component-st7701 and the generic ST7701S
-// datasheet sequence. That sequence turns the panel on but the photo from
-// round 18 shows a uniform blue background with a column of green+blue
-// vertical stripes spanning the middle ~1/3 of the screen. That symptom is
-// a textbook gate-in-panel (GIP) timing mismatch: most columns of the
-// panel's source drivers never get the right gate pulse, so they stay in
-// their power-on (blue) state, while a narrow column band actually scans
-// the data we're sending.
+// That header is the library's Waveshare-board profile and was
+// cross-validated against our `display_pins.h`: data pins, sync pins,
+// I2C pins, IO-expander address all match byte-for-byte (data pins
+// 5/45/48/47/21/14/13/12/11/10/9/46/3/8/18/17, sync 38/39/40/41, I2C
+// SDA=15/SCL=7, TCA9554 at 0x20). Pair that with the reference's
+// timings (HPW 8 / HBP 10 / HFP 50 / VPW 3 / VBP 8 / VFP 8, PCLK
+// 16 MHz) applied in initRgbPanel() this round, and the round-30
+// config IS Waveshare's shipped config for our exact board variant.
 //
-// Cross-checking our init against espressif's surfaced three systemic
-// problems beyond individual byte differences:
+// Systemic deltas from round 29's init (all being corrected this
+// round rather than tuned):
 //
-//   (1) Our init opened with `{0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0}`
-//       then sent `{0x13, {}, 0, 0}`. We intended 0x13 as a Command2 BK3
-//       selector but sent it as the standalone MIPI command NORON (Normal
-//       Display Mode On). Espressif instead opens with
-//       `{0xFF, {0x77, 0x01, 0x00, 0x00, 0x13}, 5, 0}` — BK3 selected via
-//       the 0xFF parameter — and then sends `{0xEF, {0x08}, 1, 0}` in BK3
-//       (our 0xEF landed in normal mode, where the command has no effect).
+//   (1) BK3 ordering. Round 19 opened the init with BK3 before BK0.
+//       Waveshare's sequence runs BK3 AFTER BK1/BK0, just before
+//       leaving CMD2 mode. Ordering matters because the 0xEF in BK3
+//       latches a source-driver bias that references the BK1 GIP
+//       state; sending BK3's 0xEF before BK1 is set up means the
+//       bias is taken against the panel's reset defaults, not our
+//       configured GIP.
 //
-//   (2) Our 0xE0..0xED GIP block had panel-specific timing values that
-//       don't match this cell. The GIP block tells the panel's gate
-//       drivers when to pulse each row; wrong values → rows that never
-//       activate → columns stuck in reset → the exact mid-band stripe we
-//       see. Espressif's values are the known-good ones for the 480×480
-//       Waveshare ST7701 boards.
+//   (2) Gamma polynomials (0xB0/0xB1 in BK0). Round 19 used
+//       espressif's generic 480×480-ST7701 polynomials, which are
+//       tuned for espressif's reference panel module. Waveshare's
+//       values are tuned for the actual IPS cell in our module.
 //
-//   (3) Rounds 17/18 added a 0x3A COLMOD command (0x66 then 0x55) on the
-//       theory that pixel-format was wrong. But espressif's init OMITS
-//       0x3A entirely — the panel's power-on default pixel format is
-//       correct for its hardware strapping, and explicitly setting it to
-//       a non-default value silently misaligns bits on the RGB bus. Round
-//       19 removes the 0x3A addition.
+//   (3) Power-rail trims (BK1 0xB0/B1/B2/B5/B8). Round 19's values
+//       were espressif's; Waveshare's single-byte trims differ by
+//       up to ~10 hex per register, which shifts VOP / VCOM / gate
+//       voltages by several hundred mV — enough to change whether
+//       the source drivers correctly pulse all 480 columns.
 //
-// Aside from the three above, the byte-for-byte differences between rounds
-// 13–18 and espressif's reference are too many to list inline; rather than
-// ship another "mostly correct" variant, round 19 replaces the entire
-// table with a verbatim port. If the panel still doesn't paint after this,
-// the suspect shifts from "software init" to "RGB bus / timing" and we
-// pivot to pin-order and porch experiments.
+//   (4) 0xC1 / 0xC2 in BK0. Round 19 had {0x10, 0x02} and {0x20,
+//       0x06}. Waveshare: {0x0B, 0x02} and {0x07, 0x02}. The 0xC2
+//       discrepancy in particular was the subject of rounds 25/26
+//       (we swapped between {0x20, 0x06} and {0x07, 0x0A}, the
+//       latter turning out worse); neither value was the actually-
+//       shipped one.
+//
+//   (5) GIP block 0xE0..0xED. This is the largest class of change.
+//       Every byte of 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7,
+//       0xE8, 0xEB, 0xED differs between round 19's espressif
+//       values and Waveshare's shipped values. Round 29's final
+//       note correctly predicted this would be the next lever if
+//       COLMOD=0x66 didn't fix colour; round 30 addresses it in
+//       the same pass.
+//
+//   (6) 0xCD (BK0) added. Round 19 had only 0xCC; Waveshare sends
+//       a companion 0xCD = 0x08 right after 0xCC = 0x10. This pair
+//       controls the gate-scan and source-output direction together.
+//
+//   (7) 0x36 MADCTL added (= 0x00, no row/col swap, BGR off).
+//       Round 19 omitted this; Waveshare sends it explicitly after
+//       leaving CMD2 so the panel's memory scan direction is
+//       deterministic regardless of its reset default.
+//
+//   (8) SLPOUT post-delay 120 → 480 ms. ST7701 datasheet says ≥120;
+//       Waveshare uses 480 for extra margin on this module's TFT.
+//
+//   (9) 0x20 INVOFF added between SLPOUT and DISPON (with its own
+//       120 ms post-delay). Round 19 omitted this. The datasheet
+//       default for INV state depends on sub-module strap; Waveshare
+//       sends 0x20 (normal, not inverted) explicitly.
+//
+//  (10) 0x3A COLMOD kept at 0x66 (as round 29). Waveshare confirms
+//       this: their `ESP_PANEL_BOARD_LCD_RGB_PIXEL_BITS` is defined
+//       `RGB565` for the peripheral side, but the panel-side COLMOD
+//       is `0x66` (18-bit). Round 29's isolated COLMOD change
+//       regressed only because the rest of the init was wrong; the
+//       0x66 setting itself was correct and stays.
 // ---------------------------------------------------------------------------
 const St7701InitCmd kInitCmds[] = {
-    // Enter Command2 BK3 and send its one-byte reserved setting.
+    // Enter CMD2 BK0 — display size, voltages, inversion, gamma.
+    {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
+    {0xC0, {0x3B, 0x00}, 2, 0},
+    {0xC1, {0x0B, 0x02}, 2, 0},
+    {0xC2, {0x07, 0x02}, 2, 0},
+    {0xCC, {0x10}, 1, 0},
+    {0xCD, {0x08}, 1, 0},
+    // Positive-polarity gamma (BK0 0xB0).
+    {0xB0, {0x00, 0x11, 0x16, 0x0E, 0x11, 0x06, 0x05, 0x09,
+            0x08, 0x21, 0x06, 0x13, 0x10, 0x29, 0x31, 0x18}, 16, 0},
+    // Negative-polarity gamma (BK0 0xB1).
+    {0xB1, {0x00, 0x11, 0x16, 0x0E, 0x11, 0x07, 0x05, 0x09,
+            0x09, 0x21, 0x05, 0x13, 0x11, 0x2A, 0x31, 0x18}, 16, 0},
+
+    // Enter CMD2 BK1 — power-rail trims, VCOM, GIP.
+    {0xFF, {0x77, 0x01, 0x00, 0x00, 0x11}, 5, 0},
+    {0xB0, {0x6D}, 1, 0},        // VOP amplitude
+    {0xB1, {0x37}, 1, 0},        // VCOM amplitude
+    {0xB2, {0x81}, 1, 0},
+    {0xB3, {0x80}, 1, 0},
+    {0xB5, {0x43}, 1, 0},
+    {0xB7, {0x85}, 1, 0},
+    {0xB8, {0x20}, 1, 0},
+    {0xC1, {0x78}, 1, 0},
+    {0xC2, {0x78}, 1, 0},
+    {0xD0, {0x88}, 1, 0},        // (Waveshare has no post-delay here; round 19 had 100 ms)
+
+    // GIP (Gate-In-Panel). Waveshare-shipped values; every byte
+    // differs from the espressif generic reference we used in round 19.
+    {0xE0, {0x00, 0x00, 0x02}, 3, 0},
+    {0xE1, {0x03, 0xA0, 0x00, 0x00, 0x04, 0xA0, 0x00, 0x00,
+            0x00, 0x20, 0x20}, 11, 0},
+    {0xE2, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00}, 13, 0},
+    {0xE3, {0x00, 0x00, 0x11, 0x00}, 4, 0},
+    {0xE4, {0x22, 0x00}, 2, 0},
+    {0xE5, {0x05, 0xEC, 0xA0, 0xA0, 0x07, 0xEE, 0xA0, 0xA0,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 16, 0},
+    {0xE6, {0x00, 0x00, 0x11, 0x00}, 4, 0},
+    {0xE7, {0x22, 0x00}, 2, 0},
+    {0xE8, {0x06, 0xED, 0xA0, 0xA0, 0x08, 0xEF, 0xA0, 0xA0,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 16, 0},
+    {0xEB, {0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x00}, 7, 0},
+    {0xED, {0xFF, 0xFF, 0xFF, 0xBA, 0x0A, 0xBF, 0x45, 0xFF,
+            0xFF, 0x54, 0xFB, 0xA0, 0xAB, 0xFF, 0xFF, 0xFF}, 16, 0},
+    {0xEF, {0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F}, 6, 0},
+
+    // Enter CMD2 BK3 AFTER BK1 (Waveshare ordering, not espressif's).
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x13}, 5, 0},
     {0xEF, {0x08}, 1, 0},
 
-    // Enter Command2 BK0: display size, voltages, inversion, gamma.
-    {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
-    {0xC0, {0x3B, 0x00}, 2, 0},  // NL = 59 → 480 display lines, SCN = 0
-    {0xC1, {0x10, 0x02}, 2, 0},  // VBP = 16, VFP = 2
-    // Round 26 — REVERT round 25. Round 25 swapped 0xC2 from espressif's
-    // {0x20, 0x06} to Waveshare's factory-firmware {0x07, 0x0A} to chase
-    // the vertical-stripe symptom. The round-25 photos (IMG_1820-1824)
-    // came back dramatically WORSE than round 24: the panel regressed to
-    // the rounds 15-20 pattern where only the middle ~1/3 of columns
-    // show any data at all and the outer 2/3 stay black. Worse, the
-    // RED (IMG_1820) and GREEN (IMG_1821) phases showed only BLUE
-    // stripes in the middle, the BLUE phase (IMG_1822) showed correct
-    // full-screen blue with GREEN stripes in the middle, and the WHITE
-    // phase (IMG_1823) showed blue instead of white. That colour-channel
-    // pattern says the upper data bits (R0..R4 on DB[15..11] and most of
-    // G0..G5 on DB[10..5]) stopped reaching the source drivers entirely
-    // — only the low-5-bit blue data on DB[4..0] was making it through.
-    //
-    // That can't be explained by "just" picking a different inversion
-    // scheme; it means {0x07, 0x0A} has a side-effect on this panel's
-    // source-driver routing that disables the upper bit lanes. Rolling
-    // back. Round 24's state (full-screen solid fills with in-band
-    // vertical stripes from the middle-column coherency issue) was
-    // strictly closer to working than round 25.
-    {0xC2, {0x20, 0x06}, 2, 0},  // inversion type — espressif reference
-    {0xCC, {0x10}, 1, 0},        // gate scan direction / source swap
-    // Positive & negative gamma (BK0 0xB0 / 0xB1) — panel-specific
-    // polynomial coefficients for the on-panel voltage→gray-level mapping.
-    {0xB0, {0x00, 0x13, 0x5A, 0x0F, 0x12, 0x07, 0x09, 0x08,
-            0x08, 0x24, 0x07, 0x13, 0x12, 0x6B, 0x73, 0xFF}, 16, 0},
-    {0xB1, {0x00, 0x13, 0x5A, 0x0F, 0x12, 0x07, 0x09, 0x08,
-            0x08, 0x24, 0x07, 0x13, 0x12, 0x6B, 0x73, 0xFF}, 16, 0},
-
-    // Enter Command2 BK1: power-rail trims, VCOM, GIP.
-    {0xFF, {0x77, 0x01, 0x00, 0x00, 0x11}, 5, 0},
-    {0xB0, {0x8D}, 1, 0},        // VOP amplitude
-    {0xB1, {0x48}, 1, 0},        // VCOM amplitude
-    {0xB2, {0x89}, 1, 0},
-    {0xB3, {0x80}, 1, 0},
-    {0xB5, {0x49}, 1, 0},
-    {0xB7, {0x85}, 1, 0},
-    {0xB8, {0x32}, 1, 0},        // (our old init had 0xB9 here; espressif drops it)
-    {0xC1, {0x78}, 1, 0},
-    {0xC2, {0x78}, 1, 0},
-    {0xD0, {0x88}, 1, 100},      // +100 ms before the big GIP block
-
-    // GIP (Gate In Panel) sequence — drives the panel's integrated row
-    // scan and timing. These are the values that failed us in rounds
-    // 13–18; the stripe pattern was the gate drivers mis-pulsing without
-    // these specific numbers.
-    {0xE0, {0x00, 0x00, 0x02}, 3, 0},
-    {0xE1, {0x05, 0xC0, 0x07, 0xC0, 0x04, 0xC0, 0x06, 0xC0,
-            0x00, 0x44, 0x44}, 11, 0},
-    {0xE2, {0x00, 0x00, 0x33, 0x33, 0x01, 0xC0, 0x00, 0x00,
-            0x01, 0xC0, 0x00, 0x00, 0x00}, 13, 0},
-    {0xE3, {0x00, 0x00, 0x11, 0x11}, 4, 0},
-    {0xE4, {0x44, 0x44}, 2, 0},
-    {0xE5, {0x0D, 0xF1, 0x10, 0x98, 0x0F, 0xF3, 0x10, 0x98,
-            0x09, 0xED, 0x10, 0x98, 0x0B, 0xEF, 0x10, 0x98}, 16, 0},
-    {0xE6, {0x00, 0x00, 0x11, 0x11}, 4, 0},
-    {0xE7, {0x44, 0x44}, 2, 0},
-    {0xE8, {0x0C, 0xF0, 0x10, 0x98, 0x0E, 0xF2, 0x10, 0x98,
-            0x08, 0xEC, 0x10, 0x98, 0x0A, 0xEE, 0x10, 0x98}, 16, 0},
-    {0xEB, {0x00, 0x01, 0xE4, 0xE4, 0x44, 0x88, 0x00}, 7, 0},
-    {0xED, {0xFF, 0x04, 0x56, 0x7F, 0xBA, 0x2F, 0xFF, 0xFF,
-            0xFF, 0xFF, 0xF2, 0xAB, 0xF7, 0x65, 0x40, 0xFF}, 16, 0},
-    // 0xEF in BK1 is a 6-byte "source timing fine-trim" block the
-    // datasheet leaves unnamed; present in espressif's init, absent in
-    // ours up to round 18.
-    {0xEF, {0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F}, 6, 0},
-
-    // Leave vendor mode, set pixel format, and turn the pixel pipeline on.
-    //
-    // Round 22: re-add 0x3A COLMOD = 0x55 (16-bit RGB565 on the RGB
-    // interface). Round 21's colour-bar diagnostic replaced the previous
-    // rounds' LVGL-centred-content confusion with a clean full-screen
-    // solid-fill test, and the photos came back showing DIAGONAL stripes
-    // across the whole panel — not a centred column, which was the round
-    // 15–20 red herring — plus a hard inversion of the pattern when the
-    // WHITE phase (0xFFFF) drove every DB pin HIGH. Both symptoms are the
-    // textbook fingerprint of a pixel-format mismatch: the panel is
-    // latching 18 bits per pixel (its reset-default) while we send 16,
-    // so every row picks up its data at a different sub-pixel phase and
-    // the offset accumulates into diagonals; when all DB pins go HIGH at
-    // once, the panel's "extra" two bits (which the PCB pulls LOW or
-    // leaves floating for 16-line boards) suddenly matter and the
-    // rendered pattern inverts.
-    //
-    // Round 19 removed 0x3A on the rationale that espressif's own
-    // esp_lcd_st7701 BSP omits it. That's true, but espressif's reference
-    // design straps IM[3:0] differently — their panel power-ons into
-    // 16-bit mode without needing COLMOD. Waveshare's ESP32-S3-Touch-LCD-2.1
-    // panel module evidently power-ons into the datasheet default of 0x66
-    // (18-bit RGB666), which is what ST7701S section 10.2.19 lists as the
-    // reset value. Explicitly programming COLMOD = 0x55 switches the RGB
-    // interface to 16-bit 5-6-5: DB[15..11]=R[4..0], DB[10..5]=G[5..0],
-    // DB[4..0]=B[4..0] — which is exactly how data_gpio_nums[] is laid
-    // out in initRgbPanel().
-    //
-    // Rounds 17 and 18 also sent 0x3A but with the WRONG values for this
-    // wiring. Round 17 sent 0x66 (18-bit), which told the panel "expect
-    // 18 bits" while we drove 16 — the same underlying mismatch we're
-    // fixing now, just made more explicit. Round 18 sent 0x55 (16-bit) —
-    // the right value — but all six GIP blocks 0xE0..0xED in that init
-    // table were wrong, so the gate drivers misbehaved and hid the
-    // COLMOD fix behind a separate failure. Round 19 then threw out both
-    // the bad GIP values AND the 0x55 COLMOD, keeping only the espressif
-    // verbatim GIP block. Round 22 brings back the 0x55 COLMOD on top of
-    // round 19's good GIP, which is the combination we never actually
-    // shipped.
+    // Leave CMD2 mode.
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
-    // Round 29: COLMOD 0x55 → 0x66. Round 28's sanity-bar photos
-    // (IMG_1868-1877) showed the outer 2/3 of the panel scanning
-    // coherently for the first time — RED renders dark, GREEN renders
-    // dark, BLUE renders bright blue. But WHITE renders BLUE (not
-    // white) and RED/GREEN are dark instead of coloured, meaning our
-    // R and G data bits produce no visible output from the panel's
-    // R and G sub-pixels. Only the B channel makes it onto screen.
-    //
-    // That fingerprint is the textbook signature of a COLMOD pixel-
-    // format mismatch on a ST7701 with interface-strapping that
-    // forces 18-bit RGB666 at the TFT glass. Round 22 set COLMOD=0x55
-    // (16-bit RGB565) under the theory the panel power-ons into 18-
-    // bit and we drive 16 lines. That theory worked to eliminate
-    // round 21's diagonal stripes (the pixel-bit-alignment fix), but
-    // on this PCB the panel's internal data path is hardwired for
-    // 18-bit regardless of what COLMOD says. With COLMOD=0x55 the
-    // ST7701 packs 16-bit RGB565 into the 18-bit interface by
-    // zero-padding the low bits, so our pixel bit 15 (R4) lands on
-    // internal DB17 (R5), bit 14 (R3) lands on DB16 (R4), ... bit 11
-    // (R0) lands on DB13 (R1), bit 10 (G5) lands on DB12 (G5), and
-    // so on down. On this PCB DB17..DB16 are NC (not connected at
-    // the glass), so our upper R bits disappear; and the rest of our
-    // R bits land on G source drivers. That's exactly the pattern
-    // we see: R data produces no R light and bleeds into G at the
-    // shifted positions, G data shifts into B territory where it's
-    // invisible under the panel's blue-dominant bias.
-    //
-    // 0x66 = 18-bit RGB666 explicit. Even if the TFT is 18-bit-
-    // strapped, programming COLMOD=0x66 tells the ST7701 to align
-    // our data lines exactly onto DB[15:0] of the 18-bit bus with
-    // DB[17:16] left as panel-side zero-pad. That maps our bit 15
-    // (R4) → DB15 (R3 of the 6-bit R channel in 18-bit mode) →
-    // panel's most-significant wired R bit; bit 11 (R0) → DB11
-    // (G5) — wait, that's still cross-channel.
-    //
-    // Clarification: the ST7701S datasheet §7.3.1 Table 7-4 RGB
-    // interface bit layout says the channel boundaries are hardwired
-    // in the controller: R always takes the top 5 or 6 bits, G the
-    // middle 6, B the bottom 5 or 6, regardless of COLMOD. COLMOD
-    // only selects whether to USE 5-6-5 or 6-6-6 within that layout.
-    // In 0x66 mode the panel expects DB[17:12]=R[5:0], DB[11:6]=G[5:0],
-    // DB[5:0]=B[5:0]. Our 16 wires carry DB[15:0], so in 0x66 the
-    // panel receives: R[5:2] on our DB[15:12] (bit 15..12 of the
-    // pixel word → R4..R1 of a conceptual 6-bit R channel), R[1:0]
-    // effectively zero (DB[17:16] NC), G[5:0] on our DB[11:6]
-    // (bit 11..6 of the pixel word), B[5:0] on our DB[5:0]
-    // (bit 5..0 of the pixel word).
-    //
-    // If round 29 shows RED 0xF800 producing red, GREEN 0x07E0
-    // producing green, WHITE 0xFFFF producing white — COLMOD was
-    // the remaining issue and 0x66 is the right setting. If instead
-    // the colour response is even less coherent (e.g. RED shows as
-    // random bright colours), 0x66 isn't right for this board either
-    // and round 30 moves to the Waveshare-factory GIP block in the
-    // 0xE0..0xED region, which is the one big block we carried from
-    // espressif's reference without a Waveshare-specific cross-check.
-    {0x3A, {0x66}, 1, 0},           // COLMOD: 18bpp RGB666 on the RGB interface (round 29)
-    {kCmdSlpout, {0x00}, 0, 120},   // sleep out — panel needs 120 ms
-    {kCmdDispon, {0x00}, 0, 0},     // display on (no post-delay per espressif)
+
+    // Memory access / pixel format.
+    {0x36, {0x00}, 1, 0},        // MADCTL: no row/col swap, RGB order
+    {0x3A, {0x66}, 1, 0},        // COLMOD: 18bpp RGB666 on the RGB interface
+
+    // Sleep out + 480 ms stabilisation.
+    {kCmdSlpout, {0x00}, 0, 480},
+    // Inversion off + 120 ms.
+    {0x20, {0x00}, 0, 120},
+    // Display on (no post-delay per Waveshare).
+    {kCmdDispon, {0x00}, 0, 0},
 };
 
 }  // namespace
@@ -396,49 +315,27 @@ bool St7701Panel::initRgbPanel() {
     cfg.timings.h_res             = PANEL_WIDTH;
     cfg.timings.v_res             = PANEL_HEIGHT;
 
-    // Porch / pulse widths.
+    // Porch / pulse widths — Round 30.
     //
-    // Round 28: REVERT round 20. After seven more rounds chasing the
-    // persistent mid-band stripe pattern through inversion registers
-    // (0xC2 at rounds 25/26), framebuffer write patterns (round 24
-    // single-call fillColor), COLMOD (rounds 22/23), and a full 16-
-    // phase walking-bit bus diagnostic (round 27), the pattern still
-    // hasn't changed shape. Round 27's contact sheet shows every
-    // walking-bit phase produces roughly the same blue vertical-stripe
-    // pattern with the panel's middle third behaving differently than
-    // its edges — e.g. 0xFFFF (WHITE) renders blue peripherally but
-    // with green/teal tint in the middle third. That pattern is the
-    // gate-in-panel / source-scan signature: the panel is only
-    // coherently scanning a narrow horizontal slice and the rest stays
-    // at its power-on default. It persists across every init-register
-    // change we've tried, which means the variable that isn't being
-    // tuned (timings) is the one we have to move.
-    //
-    // Round 20 swapped the FatihErtugral sibling-2.8"-ST7701-board
-    // timings (pulse 8/2, back 10/18, front 50/8) for "Espressif
-    // typical 480×480 ST7701" values (pulse 10/10, back 20/10, front
-    // 20/10). The rationale at the time was that front 50 was ~5× the
-    // Espressif reference; but Espressif's reference is for a
-    // DIFFERENT panel module, not the Waveshare-sourced one on our
-    // board. The sibling 2.8" ST7701 board that FatihErtugral tested
-    // uses the SAME panel vendor's cell with SAME GIP, so its timings
-    // are the nearest-neighbour known-good set we have access to.
-    //
-    // Round 20's other change — PCLK 14 MHz → 10 MHz — was made at
-    // the same time as the porch swap, so we've never tested the
-    // FatihErtugral porches at the slower PCLK. This round pairs the
-    // FatihErtugral porches with PCLK 14 MHz (see RGB_PCLK_HZ in
-    // display_pins.h) to reconstruct the exact sibling-board config.
-    // Total per-frame clocks: 548 × 508 = 278,384 @ 14 MHz → 50 Hz
-    // refresh. If this finally yields coherent full-screen fills we
-    // can tune either PCLK or porch downward for stability later;
-    // the priority right now is to see any single configuration that
-    // produces a solid uniform fill.
+    // HPW 8 / HBP 10 / HFP 50 / VFP 8 already matched the authoritative
+    // Waveshare config (`BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_1.h` in
+    // esp-arduino-libs/ESP32_Display_Panel, which maps our pins exactly
+    // and is the library Waveshare themselves link from the product
+    // wiki). Two deltas remain: VPW was 2 in round 28, Waveshare uses 3;
+    // VBP was 18 (FatihErtugral's sibling-2.8" value), Waveshare uses 8.
+    // Bringing both to the Waveshare values gives a total vertical
+    // blanking of 3+8+8 = 19 lines → 499 lines/frame; horizontal
+    // 480+8+10+50 = 548 PCLKs/line; 499 × 548 = 273,452 PCLKs/frame
+    // @ 16 MHz → ~58.5 Hz refresh. This matches the combination shipped
+    // in Waveshare's own demo code, so if it doesn't yield coherent
+    // full-screen fills, the remaining degree of freedom is the init
+    // sequence (which round 30 also replaces verbatim, see kInitCmds
+    // above).
     cfg.timings.hsync_pulse_width = 8;
     cfg.timings.hsync_back_porch  = 10;
     cfg.timings.hsync_front_porch = 50;
-    cfg.timings.vsync_pulse_width = 2;
-    cfg.timings.vsync_back_porch  = 18;
+    cfg.timings.vsync_pulse_width = 3;
+    cfg.timings.vsync_back_porch  = 8;
     cfg.timings.vsync_front_porch = 8;
 
     // Polarity flags (round 16 fix).

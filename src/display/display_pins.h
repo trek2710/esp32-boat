@@ -165,22 +165,21 @@ static constexpr int RGB_PIN_B4    = 21;
 // Waveshare module because faster rates introduce jitter on the PCLK trace.
 // Stay conservative during bring-up; we can try bumping once pixels appear.
 //
-// Round 28: 10 MHz → 14 MHz. REVERTS round 20's drop. Rounds 20–27 ran
-// at 10 MHz with Espressif-typical porches (pulse 10/10, back 20/10,
-// front 20/10), and the mid-band stripe pattern never cleared. Round 28
-// also reverts the porches to FatihErtugral's sibling-2.8"-ST7701-board
-// values (pulse 8/2, back 10/18, front 50/8) — see st7701_panel.cpp. The
-// PCLK and porches were tuned together on FatihErtugral's working
-// config, so they belong together: at 14 MHz + those porches we get
-// 548 × 508 = 278,384 clocks/frame → 50 Hz refresh, which is what the
-// working sibling-board config ran at.
-//
-// If stripes persist at 14 MHz + FatihErtugral porches, PCLK is *not*
-// the variable and the next round should go after the init sequence
-// again (most likely the 0xE0..0xED GIP block, which is the only major
-// block we've inherited verbatim from espressif rather than Waveshare
-// factory values). But we need to test one variable at a time.
-static constexpr int RGB_PCLK_HZ   = 14 * 1000 * 1000;
+// Round 30: 14 MHz → 16 MHz, to match the verbatim Waveshare config in
+// esp-arduino-libs/ESP32_Display_Panel's board profile
+// `BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_1.h`, which is the official
+// library Waveshare themselves link from the ESP32-S3-Touch-LCD-2.1 wiki
+// and whose pin assignments match our display_pins.h byte-for-byte
+// (data pins 5/45/48/47/21/14/13/12/11/10/9/46/3/8/18/17, sync 38/39/40/41,
+// I2C 15/7). That reference defines `ESP_PANEL_BOARD_LCD_RGB_CLK_HZ (16 *
+// 1000 * 1000)` alongside HPW 8 / HBP 10 / HFP 50 / VPW 3 / VBP 8 / VFP 8
+// and COLMOD 0x66. Rounds 13–29 were all built on second-hand reference
+// fragments (FatihErtugral's sibling 2.8" board, espressif's generic
+// esp_lcd_st7701, Nicolai-Electronics port) that had pin-identical
+// siblings but panel-cell-specific differences in gamma/GIP/voltages. The
+// pivot this round is to take the authoritative Waveshare-for-this-board
+// values verbatim instead of continuing to splice between near-matches.
+static constexpr int RGB_PCLK_HZ   = 16 * 1000 * 1000;
 
 // ST7701 3-wire SPI init bus (software-bit-banged). On this board, LCD_CS is
 // on TCA9554 IO3 (see TCA9554_BIT_LCD_CS below) — it is NOT a GPIO, so we
