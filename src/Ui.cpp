@@ -594,10 +594,34 @@ void begin(BoatState& state) {
         log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
     } else {
+        // Round-23 refresh of the round-21 boot diagnostic: same colour
+        // sequence, but each phase now dwells for 5 s and logs BOTH
+        // before and after fillColor returns. The round-22 photos
+        // (IMG_1812/13/14) showed three distinct patterns instead of
+        // round 21's one uniform pattern — progress — plus a large
+        // solid-blue region with a sharp diagonal cutoff in IMG_1814.
+        // That diagonal cutoff is almost certainly a frame-transition
+        // artifact: the ESP32-S3 RGB peripheral in IDF 4.4.7 uses a
+        // single in-place framebuffer with no double-buffer, so a
+        // 460 KB PSRAM rewrite during an ongoing scan produces tearing
+        // at the line where the scan pointer caught up to the write
+        // pointer. The user's observation that "the display change lags
+        // the monitor log by ~1 s" fits the same root cause — our
+        // row-by-row fillColor takes many hundreds of ms on its own,
+        // and each phase then has only 2 s total, so photographing the
+        // steady state requires near-perfect timing. 5 s per phase
+        // gives at least 4 full seconds of known-steady-state after
+        // the frame settles, and the paired before/after log lines
+        // let the user time photos against the monitor with confidence.
+        //
+        // The original round-21 narrative below still applies — the
+        // diagnostic is the same, only the dwell time and logging
+        // changed.
+        //
         // Round-21 boot diagnostic: fill the whole panel with each of
-        // RED / GREEN / BLUE / WHITE / BLACK for 2 seconds apiece BEFORE
-        // LVGL takes over. This disambiguates the round-17..20 stripe
-        // symptom:
+        // RED / GREEN / BLUE / WHITE / BLACK for 5 seconds apiece
+        // (was 2 s in round 21) BEFORE LVGL takes over. This
+        // disambiguates the round-17..20 stripe symptom:
         //
         //   * If each phase fills the ENTIRE 480×480 round panel with the
         //     named solid colour → panel geometry and RGB bus are healthy.
@@ -627,21 +651,26 @@ void begin(BoatState& state) {
         // the hardware we have — one reboot cycle, no scope or logic
         // analyser needed, and the photos from each phase uniquely
         // identify which of three distinct failure modes we're in.
-        step("ST7701 color bar: RED");
+        step("ST7701 color bar: RED starting");
         g_panel.fillColor(0xF800);  // RGB565: R=31, G=0,  B=0
-        delay(2000);
-        step("ST7701 color bar: GREEN");
+        step("ST7701 color bar: RED settled — photograph now");
+        delay(5000);
+        step("ST7701 color bar: GREEN starting");
         g_panel.fillColor(0x07E0);  // RGB565: R=0,  G=63, B=0
-        delay(2000);
-        step("ST7701 color bar: BLUE");
+        step("ST7701 color bar: GREEN settled — photograph now");
+        delay(5000);
+        step("ST7701 color bar: BLUE starting");
         g_panel.fillColor(0x001F);  // RGB565: R=0,  G=0,  B=31
-        delay(2000);
-        step("ST7701 color bar: WHITE");
+        step("ST7701 color bar: BLUE settled — photograph now");
+        delay(5000);
+        step("ST7701 color bar: WHITE starting");
         g_panel.fillColor(0xFFFF);  // RGB565: R=31, G=63, B=31
-        delay(2000);
-        step("ST7701 color bar: BLACK");
+        step("ST7701 color bar: WHITE settled — photograph now");
+        delay(5000);
+        step("ST7701 color bar: BLACK starting");
         g_panel.fillColor(0x0000);
-        delay(1000);
+        step("ST7701 color bar: BLACK settled — photograph now");
+        delay(3000);
     }
 
     step("lv_init()");
