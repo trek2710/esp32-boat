@@ -223,7 +223,63 @@ const St7701InitCmd kInitCmds[] = {
     // round 19's good GIP, which is the combination we never actually
     // shipped.
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
-    {0x3A, {0x55}, 1, 0},           // COLMOD: 16bpp RGB565 on the RGB interface
+    // Round 29: COLMOD 0x55 → 0x66. Round 28's sanity-bar photos
+    // (IMG_1868-1877) showed the outer 2/3 of the panel scanning
+    // coherently for the first time — RED renders dark, GREEN renders
+    // dark, BLUE renders bright blue. But WHITE renders BLUE (not
+    // white) and RED/GREEN are dark instead of coloured, meaning our
+    // R and G data bits produce no visible output from the panel's
+    // R and G sub-pixels. Only the B channel makes it onto screen.
+    //
+    // That fingerprint is the textbook signature of a COLMOD pixel-
+    // format mismatch on a ST7701 with interface-strapping that
+    // forces 18-bit RGB666 at the TFT glass. Round 22 set COLMOD=0x55
+    // (16-bit RGB565) under the theory the panel power-ons into 18-
+    // bit and we drive 16 lines. That theory worked to eliminate
+    // round 21's diagonal stripes (the pixel-bit-alignment fix), but
+    // on this PCB the panel's internal data path is hardwired for
+    // 18-bit regardless of what COLMOD says. With COLMOD=0x55 the
+    // ST7701 packs 16-bit RGB565 into the 18-bit interface by
+    // zero-padding the low bits, so our pixel bit 15 (R4) lands on
+    // internal DB17 (R5), bit 14 (R3) lands on DB16 (R4), ... bit 11
+    // (R0) lands on DB13 (R1), bit 10 (G5) lands on DB12 (G5), and
+    // so on down. On this PCB DB17..DB16 are NC (not connected at
+    // the glass), so our upper R bits disappear; and the rest of our
+    // R bits land on G source drivers. That's exactly the pattern
+    // we see: R data produces no R light and bleeds into G at the
+    // shifted positions, G data shifts into B territory where it's
+    // invisible under the panel's blue-dominant bias.
+    //
+    // 0x66 = 18-bit RGB666 explicit. Even if the TFT is 18-bit-
+    // strapped, programming COLMOD=0x66 tells the ST7701 to align
+    // our data lines exactly onto DB[15:0] of the 18-bit bus with
+    // DB[17:16] left as panel-side zero-pad. That maps our bit 15
+    // (R4) → DB15 (R3 of the 6-bit R channel in 18-bit mode) →
+    // panel's most-significant wired R bit; bit 11 (R0) → DB11
+    // (G5) — wait, that's still cross-channel.
+    //
+    // Clarification: the ST7701S datasheet §7.3.1 Table 7-4 RGB
+    // interface bit layout says the channel boundaries are hardwired
+    // in the controller: R always takes the top 5 or 6 bits, G the
+    // middle 6, B the bottom 5 or 6, regardless of COLMOD. COLMOD
+    // only selects whether to USE 5-6-5 or 6-6-6 within that layout.
+    // In 0x66 mode the panel expects DB[17:12]=R[5:0], DB[11:6]=G[5:0],
+    // DB[5:0]=B[5:0]. Our 16 wires carry DB[15:0], so in 0x66 the
+    // panel receives: R[5:2] on our DB[15:12] (bit 15..12 of the
+    // pixel word → R4..R1 of a conceptual 6-bit R channel), R[1:0]
+    // effectively zero (DB[17:16] NC), G[5:0] on our DB[11:6]
+    // (bit 11..6 of the pixel word), B[5:0] on our DB[5:0]
+    // (bit 5..0 of the pixel word).
+    //
+    // If round 29 shows RED 0xF800 producing red, GREEN 0x07E0
+    // producing green, WHITE 0xFFFF producing white — COLMOD was
+    // the remaining issue and 0x66 is the right setting. If instead
+    // the colour response is even less coherent (e.g. RED shows as
+    // random bright colours), 0x66 isn't right for this board either
+    // and round 30 moves to the Waveshare-factory GIP block in the
+    // 0xE0..0xED region, which is the one big block we carried from
+    // espressif's reference without a Waveshare-specific cross-check.
+    {0x3A, {0x66}, 1, 0},           // COLMOD: 18bpp RGB666 on the RGB interface (round 29)
     {kCmdSlpout, {0x00}, 0, 120},   // sleep out — panel needs 120 ms
     {kCmdDispon, {0x00}, 0, 0},     // display on (no post-delay per espressif)
 };
