@@ -165,17 +165,22 @@ static constexpr int RGB_PIN_B4    = 21;
 // Waveshare module because faster rates introduce jitter on the PCLK trace.
 // Stay conservative during bring-up; we can try bumping once pixels appear.
 //
-// Round 20: 14 MHz → 10 MHz. Rounds 15–19 used 14 MHz (value FatihErtugral
-// ships for the sibling 2.8" ST7701 board) but every round's photo showed
-// the same symptom: data stuffed into the middle ~1/3 of the screen,
-// background showing the panel's power-on state. That symptom is
-// consistent with PCLK outrunning the panel's source-driver sampling
-// window for the porch values we use — the panel only successfully
-// samples a narrow horizontal slice of each line. 10 MHz is well inside
-// the ST7701S guaranteed band and leaves headroom on both ends. If the
-// image finally coheres at 10 MHz we can step back up to 12–14 MHz in
-// a later round.
-static constexpr int RGB_PCLK_HZ   = 10 * 1000 * 1000;
+// Round 28: 10 MHz → 14 MHz. REVERTS round 20's drop. Rounds 20–27 ran
+// at 10 MHz with Espressif-typical porches (pulse 10/10, back 20/10,
+// front 20/10), and the mid-band stripe pattern never cleared. Round 28
+// also reverts the porches to FatihErtugral's sibling-2.8"-ST7701-board
+// values (pulse 8/2, back 10/18, front 50/8) — see st7701_panel.cpp. The
+// PCLK and porches were tuned together on FatihErtugral's working
+// config, so they belong together: at 14 MHz + those porches we get
+// 548 × 508 = 278,384 clocks/frame → 50 Hz refresh, which is what the
+// working sibling-board config ran at.
+//
+// If stripes persist at 14 MHz + FatihErtugral porches, PCLK is *not*
+// the variable and the next round should go after the init sequence
+// again (most likely the 0xE0..0xED GIP block, which is the only major
+// block we've inherited verbatim from espressif rather than Waveshare
+// factory values). But we need to test one variable at a time.
+static constexpr int RGB_PCLK_HZ   = 14 * 1000 * 1000;
 
 // ST7701 3-wire SPI init bus (software-bit-banged). On this board, LCD_CS is
 // on TCA9554 IO3 (see TCA9554_BIT_LCD_CS below) — it is NOT a GPIO, so we

@@ -342,35 +342,48 @@ bool St7701Panel::initRgbPanel() {
 
     // Porch / pulse widths.
     //
-    // Round 20 retuning. Rounds 14–19 used FatihErtugral's timings from
-    // the sibling Waveshare 2.8" ST7701 board: pulse 8/2, back 10/18,
-    // front 50/8. Every round's photo showed the same persistent symptom
-    // regardless of what we changed in the init sequence — data packed
-    // into the middle ~1/3 of the screen, the rest showing the panel's
-    // power-on state. That's the signature of the panel's DE (data-
-    // enable) window not matching what we're driving: if the back porch
-    // is too tight the panel misses the first block of pixels on each
-    // line, if the front porch is too wide the panel's HSYNC resync
-    // arrives late and pixels at the end of the previous line bleed in.
-    // An hsync_front_porch of 50 in particular is ~5× the value Espressif
-    // ships for their comparable 480×480 ST7701 BSP (typical value
-    // around 10–20), so it's the most suspect single number.
+    // Round 28: REVERT round 20. After seven more rounds chasing the
+    // persistent mid-band stripe pattern through inversion registers
+    // (0xC2 at rounds 25/26), framebuffer write patterns (round 24
+    // single-call fillColor), COLMOD (rounds 22/23), and a full 16-
+    // phase walking-bit bus diagnostic (round 27), the pattern still
+    // hasn't changed shape. Round 27's contact sheet shows every
+    // walking-bit phase produces roughly the same blue vertical-stripe
+    // pattern with the panel's middle third behaving differently than
+    // its edges — e.g. 0xFFFF (WHITE) renders blue peripherally but
+    // with green/teal tint in the middle third. That pattern is the
+    // gate-in-panel / source-scan signature: the panel is only
+    // coherently scanning a narrow horizontal slice and the rest stays
+    // at its power-on default. It persists across every init-register
+    // change we've tried, which means the variable that isn't being
+    // tuned (timings) is the one we have to move.
     //
-    // Round 20 moves all six values to Espressif's typical Waveshare
-    // 480×480 ST7701 setpoints: pulse 10/10, back 20/10, front 20/10.
-    // Combined with the round-20 PCLK drop from 14 MHz to 10 MHz, this
-    // gives the panel ample sampling margin on every pixel and sync edge.
-    // The total per-frame clock count goes from 548 × 508 = 278,384 @
-    // 14 MHz (50 Hz refresh) to 530 × 510 = 270,300 @ 10 MHz (37 Hz
-    // refresh). 37 Hz is visibly flickery on a bench but perfectly fine
-    // for bring-up and there's nothing stopping us from tightening the
-    // porches once the image is coherent.
-    cfg.timings.hsync_pulse_width = 10;
-    cfg.timings.hsync_back_porch  = 20;
-    cfg.timings.hsync_front_porch = 20;
-    cfg.timings.vsync_pulse_width = 10;
-    cfg.timings.vsync_back_porch  = 10;
-    cfg.timings.vsync_front_porch = 10;
+    // Round 20 swapped the FatihErtugral sibling-2.8"-ST7701-board
+    // timings (pulse 8/2, back 10/18, front 50/8) for "Espressif
+    // typical 480×480 ST7701" values (pulse 10/10, back 20/10, front
+    // 20/10). The rationale at the time was that front 50 was ~5× the
+    // Espressif reference; but Espressif's reference is for a
+    // DIFFERENT panel module, not the Waveshare-sourced one on our
+    // board. The sibling 2.8" ST7701 board that FatihErtugral tested
+    // uses the SAME panel vendor's cell with SAME GIP, so its timings
+    // are the nearest-neighbour known-good set we have access to.
+    //
+    // Round 20's other change — PCLK 14 MHz → 10 MHz — was made at
+    // the same time as the porch swap, so we've never tested the
+    // FatihErtugral porches at the slower PCLK. This round pairs the
+    // FatihErtugral porches with PCLK 14 MHz (see RGB_PCLK_HZ in
+    // display_pins.h) to reconstruct the exact sibling-board config.
+    // Total per-frame clocks: 548 × 508 = 278,384 @ 14 MHz → 50 Hz
+    // refresh. If this finally yields coherent full-screen fills we
+    // can tune either PCLK or porch downward for stability later;
+    // the priority right now is to see any single configuration that
+    // produces a solid uniform fill.
+    cfg.timings.hsync_pulse_width = 8;
+    cfg.timings.hsync_back_porch  = 10;
+    cfg.timings.hsync_front_porch = 50;
+    cfg.timings.vsync_pulse_width = 2;
+    cfg.timings.vsync_back_porch  = 18;
+    cfg.timings.vsync_front_porch = 8;
 
     // Polarity flags (round 16 fix).
     //
