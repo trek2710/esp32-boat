@@ -594,83 +594,104 @@ void begin(BoatState& state) {
         log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
     } else {
-        // Round-23 refresh of the round-21 boot diagnostic: same colour
-        // sequence, but each phase now dwells for 5 s and logs BOTH
-        // before and after fillColor returns. The round-22 photos
-        // (IMG_1812/13/14) showed three distinct patterns instead of
-        // round 21's one uniform pattern — progress — plus a large
-        // solid-blue region with a sharp diagonal cutoff in IMG_1814.
-        // That diagonal cutoff is almost certainly a frame-transition
-        // artifact: the ESP32-S3 RGB peripheral in IDF 4.4.7 uses a
-        // single in-place framebuffer with no double-buffer, so a
-        // 460 KB PSRAM rewrite during an ongoing scan produces tearing
-        // at the line where the scan pointer caught up to the write
-        // pointer. The user's observation that "the display change lags
-        // the monitor log by ~1 s" fits the same root cause — our
-        // row-by-row fillColor takes many hundreds of ms on its own,
-        // and each phase then has only 2 s total, so photographing the
-        // steady state requires near-perfect timing. 5 s per phase
-        // gives at least 4 full seconds of known-steady-state after
-        // the frame settles, and the paired before/after log lines
-        // let the user time photos against the monitor with confidence.
+        // Round-27 walking-bit diagnostic. Replaces the round-21..23
+        // RED/GREEN/BLUE/WHITE/BLACK solid-colour bar.
         //
-        // The original round-21 narrative below still applies — the
-        // diagnostic is the same, only the dwell time and logging
-        // changed.
+        // Why a walking-bit test now: rounds 22-26 chased the persistent
+        // "stripes + wrong colour" symptom through COLMOD, dwell time,
+        // framebuffer write pattern, and inversion-control registers. The
+        // round-26 photos (IMG_1825-1829) told us something the coarse
+        // RGB bar couldn't: pixel value 0x001F (BLUE, only bits 0-4 HIGH)
+        // renders as a bright full-screen blue, but pixel value 0xFFFF
+        // (ALL bits HIGH) renders as the same bright full-screen blue,
+        // not white. If every data line were reaching the panel we'd see
+        // white on 0xFFFF. We don't. That means pixel bits 5-15 (the
+        // upper 11 lines — G0..G5 and R0..R4 in our RGB565 layout) are
+        // not reaching the panel's source drivers. Only bits 0-4 (B0..B4)
+        // work. This is a bus-level fault, not a panel-register fault,
+        // so the right next step is to map the bus bit-by-bit rather
+        // than tweak more registers.
         //
-        // Round-21 boot diagnostic: fill the whole panel with each of
-        // RED / GREEN / BLUE / WHITE / BLACK for 5 seconds apiece
-        // (was 2 s in round 21) BEFORE LVGL takes over. This
-        // disambiguates the round-17..20 stripe symptom:
+        // Implementation: 16 phases, one per pixel bit. Each phase sends
+        // a pixel word with exactly one bit HIGH (0x0001, 0x0002, 0x0004,
+        // ..., 0x8000) across the entire frame and dwells 3 seconds for
+        // the user to photograph. The log line for each phase names the
+        // bit position AND the panel-channel-pin that bit is wired to
+        // via data_gpio_nums[] in st7701_panel.cpp::initRgbPanel(), so
+        // the photo+log pair for each phase directly maps bit N →
+        // panel-pin → visible-or-dark, without needing a scope.
         //
-        //   * If each phase fills the ENTIRE 480×480 round panel with the
-        //     named solid colour → panel geometry and RGB bus are healthy.
-        //     The "stripes in the middle" we've been photographing since
-        //     round 15 were just LVGL's centred UI widgets (every label on
-        //     the Overview page uses LV_ALIGN_*_MID, so all visible
-        //     content sits in a narrow vertical band). The dark blue
-        //     "background" colour was LVGL's black screen rendered through
-        //     a miswired bit lane. Round 22 then tackles colour mapping
-        //     only.
+        // The mapping string below mirrors st7701_panel.cpp exactly: slots
+        // 0..4 are B0..B4, slots 5..10 are G0..G5, slots 11..15 are
+        // R0..R4. If round-27 photos show only bits 0..4 producing any
+        // panel output (dim blue shades), the fault is confirmed to be on
+        // the 11 GPIOs carrying slots 5..15 — which in display_pins.h are
+        // G0=14, G1=13, G2=12, G3=11, G4=10, G5=9, R0=46, R1=3, R2=8,
+        // R3=18, R4=17. Next step then pivots to checking those GPIOs
+        // against the actual Waveshare PCB schematic (our display_pins.h
+        // was populated from LovyanGFX community discussion #630 which
+        // may be for a slightly different panel revision) and/or testing
+        // each GPIO individually with a multimeter during a known phase.
         //
-        //   * If each phase shows only a narrow middle band of the named
-        //     colour and the rest stays in its power-on state → geometry
-        //     is actually broken: the panel is accepting data for only a
-        //     subset of horizontal pixels per line. Round 22 then tackles
-        //     horizontal addressing (panel partial-display mode, 0xC0
-        //     byte 2 SCN bits, or interface-mode mismatch) instead.
-        //
-        //   * If the colour we fill does NOT match what appears on-screen
-        //     (e.g. RED fill shows BLUE, BLUE fill shows RED) → RGB data
-        //     pins are cross-wired on the PCB/array. The specific mapping
-        //     of "fill colour → visible colour" tells us exactly which
-        //     channels are swapped and round 22 shuffles the five-entry
-        //     R/G/B sub-blocks inside data_gpio_nums[] accordingly.
-        //
-        // This is the single most information-dense flash we can do with
-        // the hardware we have — one reboot cycle, no scope or logic
-        // analyser needed, and the photos from each phase uniquely
-        // identify which of three distinct failure modes we're in.
-        step("ST7701 color bar: RED starting");
-        g_panel.fillColor(0xF800);  // RGB565: R=31, G=0,  B=0
-        step("ST7701 color bar: RED settled — photograph now");
-        delay(5000);
-        step("ST7701 color bar: GREEN starting");
-        g_panel.fillColor(0x07E0);  // RGB565: R=0,  G=63, B=0
-        step("ST7701 color bar: GREEN settled — photograph now");
-        delay(5000);
-        step("ST7701 color bar: BLUE starting");
-        g_panel.fillColor(0x001F);  // RGB565: R=0,  G=0,  B=31
-        step("ST7701 color bar: BLUE settled — photograph now");
-        delay(5000);
-        step("ST7701 color bar: WHITE starting");
-        g_panel.fillColor(0xFFFF);  // RGB565: R=31, G=63, B=31
-        step("ST7701 color bar: WHITE settled — photograph now");
-        delay(5000);
-        step("ST7701 color bar: BLACK starting");
+        // Total dwell: 16 × 3 s = 48 s of bit-walk, followed by a short
+        // 5-phase RGB sanity bar (2 s each = 10 s) for comparison
+        // against round 26's IMG_1825-1829. Grand total diagnostic boot
+        // ~1 minute before LVGL takes over. User is expected to
+        // photograph each of the 16 bit-walk phases individually — the
+        // log prompt "BIT N (<pin-name>): settled — photograph now"
+        // fires right after fillColor returns.
+        static const char* const kBitNames[16] = {
+            "slot00 B0 (GPIO5)",   "slot01 B1 (GPIO45)",
+            "slot02 B2 (GPIO48)",  "slot03 B3 (GPIO47)",
+            "slot04 B4 (GPIO21)",
+            "slot05 G0 (GPIO14)",  "slot06 G1 (GPIO13)",
+            "slot07 G2 (GPIO12)",  "slot08 G3 (GPIO11)",
+            "slot09 G4 (GPIO10)",  "slot10 G5 (GPIO9)",
+            "slot11 R0 (GPIO46)",  "slot12 R1 (GPIO3)",
+            "slot13 R2 (GPIO8)",   "slot14 R3 (GPIO18)",
+            "slot15 R4 (GPIO17)",
+        };
+        for (int bit = 0; bit < 16; ++bit) {
+            char starting_msg[96];
+            char settled_msg[96];
+            std::snprintf(starting_msg, sizeof(starting_msg),
+                          "walking-bit: BIT %02d %s starting",
+                          bit, kBitNames[bit]);
+            std::snprintf(settled_msg, sizeof(settled_msg),
+                          "walking-bit: BIT %02d %s settled — photograph now",
+                          bit, kBitNames[bit]);
+            step(starting_msg);
+            g_panel.fillColor(static_cast<uint16_t>(1u << bit));
+            step(settled_msg);
+            delay(3000);
+        }
+
+        // Short RGB sanity bar afterwards — only 2 s per phase because we
+        // already have round-26 IMG_1825-1829 photos of these exact pixel
+        // values to cross-reference against. If the 16 walking-bit phases
+        // above implicate specific bits, round 28's pinout fix can be
+        // validated against this abbreviated color bar without needing
+        // yet another 5-phase, 5-second run.
+        step("ST7701 sanity bar: RED starting");
+        g_panel.fillColor(0xF800);
+        step("ST7701 sanity bar: RED settled — photograph now");
+        delay(2000);
+        step("ST7701 sanity bar: GREEN starting");
+        g_panel.fillColor(0x07E0);
+        step("ST7701 sanity bar: GREEN settled — photograph now");
+        delay(2000);
+        step("ST7701 sanity bar: BLUE starting");
+        g_panel.fillColor(0x001F);
+        step("ST7701 sanity bar: BLUE settled — photograph now");
+        delay(2000);
+        step("ST7701 sanity bar: WHITE starting");
+        g_panel.fillColor(0xFFFF);
+        step("ST7701 sanity bar: WHITE settled — photograph now");
+        delay(2000);
+        step("ST7701 sanity bar: BLACK starting");
         g_panel.fillColor(0x0000);
-        step("ST7701 color bar: BLACK settled — photograph now");
-        delay(3000);
+        step("ST7701 sanity bar: BLACK settled — photograph now");
+        delay(2000);
     }
 
     step("lv_init()");
