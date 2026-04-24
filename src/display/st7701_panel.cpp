@@ -192,7 +192,19 @@ const St7701InitCmd kInitCmds[] = {
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
 
     // Memory access / pixel format.
-    {0x36, {0x00}, 1, 0},        // MADCTL: no row/col swap, RGB order
+    //
+    // Round 31: MADCTL 0x00 → 0xC0 (MY=1, MX=1 → 180° rotation).
+    // Round 30's photos (IMG_1888) showed LVGL rendering upside-down:
+    // HDG/COG, which Ui.cpp places at LV_ALIGN_BOTTOM_MID -15, appeared
+    // at the top of the photo; the wind compass (LV_ALIGN_TOP_MID) at
+    // the bottom. That's the classic "panel mounted in the opposite
+    // orientation to the controller's default scan direction" — the
+    // Waveshare module evidently glues the TFT cell with the gate-driver
+    // side opposite to ST7701's default MADCTL=0x00 assumption. Bits:
+    // MY (0x80) flips row order, MX (0x40) flips column order; combined
+    // (0xC0) gives a full 180° rotation. Other bits stay 0 (RGB order,
+    // no MV swap, no ML).
+    {0x36, {0xC0}, 1, 0},        // MADCTL: 180° rotate (MY+MX), RGB order
     {0x3A, {0x66}, 1, 0},        // COLMOD: 18bpp RGB666 on the RGB interface
 
     // Sleep out + 480 ms stabilisation.
