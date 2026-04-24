@@ -141,7 +141,21 @@ const St7701InitCmd kInitCmds[] = {
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
     {0xC0, {0x3B, 0x00}, 2, 0},
     {0xC1, {0x0B, 0x02}, 2, 0},
-    {0xC2, {0x07, 0x02}, 2, 0},
+    // Round 33: 0xC2 byte 0 0x07 → 0x37 to attack the wide brightness
+    // bands on solid fills (IMG_1895/1896/1897/1900). 0xC2 is the ST7701
+    // Display Inversion Control register: byte 0 bits [5:4] select the
+    // inversion scheme (00=column, 01=1-line, 10=1-dot, 11=column/alt),
+    // byte 1 is the RTN timing. Waveshare ships {0x07, 0x02} = bits [5:4]
+    // = 00 = column inversion, which is producing the bands we see.
+    // Setting byte 0 to 0x37 (= 0x07 | 0x30) flips bits [5:4] to 11 —
+    // the alternate inversion scheme that Espressif's generic ST7701
+    // references (e.g. {0x37, 0x05}) use successfully on other 480x480
+    // panels. Round 25 also touched 0xC2 but ONLY byte 1 (0x06 → 0x0A),
+    // which leaves the inversion mode identical and only changes the
+    // RTN timing — that's why round 25 didn't flatten banding and did
+    // regress other symptoms. Round 33 keeps byte 1 at 0x02 (Waveshare-
+    // stable RTN) and changes ONLY the mode bits for a clean signal.
+    {0xC2, {0x37, 0x02}, 2, 0},
     {0xCC, {0x10}, 1, 0},
     {0xCD, {0x08}, 1, 0},
     // Positive-polarity gamma (BK0 0xB0).
