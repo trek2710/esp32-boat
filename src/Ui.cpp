@@ -368,11 +368,38 @@ void refreshFromState() {
 
 // --- Display driver glue ---------------------------------------------------
 
-// LVGL -> ST77916 glue. LVGL hands us a partial-screen rectangle of RGB565
-// pixels (LV_COLOR_DEPTH=16, LV_COLOR_16_SWAP=1); we forward it straight to
-// the panel. lv_disp_flush_ready tells LVGL the buffer is reusable.
+// LVGL -> ST7701 glue. LVGL hands us a partial-screen rectangle of RGB565
+// pixels (LV_COLOR_DEPTH=16, LV_COLOR_16_SWAP=1); we forward it to the panel.
+//
+// Round 32: apply a 180° rotation in software. Rounds 30/31 showed that
+// ST7701's MADCTL bits don't affect the displayed image when the chip is
+// driven through the 16-bit RGB parallel interface (host pixels bypass
+// GRAM), so the Waveshare module's physical orientation leaves LVGL
+// rendering upside-down. LVGL's own lv_disp_set_rotation(LV_DISP_ROT_180)
+// requires a full-framebuffer draw_buf, but we use a 40-row partial buffer
+// for PSRAM budget reasons — so we rotate here instead: reverse the pixel
+// buffer in place (180° == reading the rectangle end-to-start) and flip
+// the destination rectangle to (W-1-x2, H-1-y2, W-1-x1, H-1-y1). This is
+// an O(N) in-place swap, negligible next to the existing DMA write.
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
-    g_panel.drawBitmap(area->x1, area->y1, area->x2, area->y2, color_p);
+    const int32_t w = area->x2 - area->x1 + 1;
+    const int32_t h = area->y2 - area->y1 + 1;
+    const int32_t n = w * h;
+
+    // Reverse pixel buffer in place: pixel (x, y) in the old rect moves to
+    // (w-1-x, h-1-y) in the rotated rect, which is exactly position
+    // n-1-(y*w+x). So swap i with n-1-i for the first half.
+    for (int32_t i = 0, j = n - 1; i < j; ++i, --j) {
+        lv_color_t tmp = color_p[i];
+        color_p[i] = color_p[j];
+        color_p[j] = tmp;
+    }
+
+    const int32_t x1 = DISPLAY_WIDTH  - 1 - area->x2;
+    const int32_t y1 = DISPLAY_HEIGHT - 1 - area->y2;
+    const int32_t x2 = DISPLAY_WIDTH  - 1 - area->x1;
+    const int32_t y2 = DISPLAY_HEIGHT - 1 - area->y1;
+    g_panel.drawBitmap(x1, y1, x2, y2, color_p);
     lv_disp_flush_ready(drv);
 }
 

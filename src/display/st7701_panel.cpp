@@ -193,18 +193,20 @@ const St7701InitCmd kInitCmds[] = {
 
     // Memory access / pixel format.
     //
-    // Round 31: MADCTL 0x00 → 0xC0 (MY=1, MX=1 → 180° rotation).
-    // Round 30's photos (IMG_1888) showed LVGL rendering upside-down:
-    // HDG/COG, which Ui.cpp places at LV_ALIGN_BOTTOM_MID -15, appeared
-    // at the top of the photo; the wind compass (LV_ALIGN_TOP_MID) at
-    // the bottom. That's the classic "panel mounted in the opposite
-    // orientation to the controller's default scan direction" — the
-    // Waveshare module evidently glues the TFT cell with the gate-driver
-    // side opposite to ST7701's default MADCTL=0x00 assumption. Bits:
-    // MY (0x80) flips row order, MX (0x40) flips column order; combined
-    // (0xC0) gives a full 180° rotation. Other bits stay 0 (RGB order,
-    // no MV swap, no ML).
-    {0x36, {0xC0}, 1, 0},        // MADCTL: 180° rotate (MY+MX), RGB order
+    // Round 32: MADCTL 0xC0 → 0x00 (revert to Waveshare default).
+    // Round 31 set MADCTL to 0xC0 (MY+MX = 180°) to correct the
+    // upside-down rendering seen in round 30's IMG_1888. The reflash
+    // in round 31 (IMG_1894) showed IDENTICAL orientation — HDG/COG
+    // still at top-of-photo, mirror-reversed — meaning MADCTL had no
+    // visible effect on the displayed image. Reason: on ST7701 driven
+    // through the 16-bit RGB parallel interface, host pixels stream
+    // directly to the source drivers and bypass internal GRAM; the
+    // MADCTL bits (MY/MX/MV/ML) only re-order GRAM access, so they
+    // don't rotate the displayed frame. Rotation therefore has to be
+    // applied on the host side. Round 32 reverts MADCTL to the factory
+    // default and implements the 180° flip in Ui.cpp::flushCb instead
+    // (reverse pixel buffer + flip draw rectangle).
+    {0x36, {0x00}, 1, 0},        // MADCTL: factory default (rotation done in flushCb)
     {0x3A, {0x66}, 1, 0},        // COLMOD: 18bpp RGB666 on the RGB interface
 
     // Sleep out + 480 ms stabilisation.
