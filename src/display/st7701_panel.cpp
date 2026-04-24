@@ -163,20 +163,49 @@ const St7701InitCmd kInitCmds[] = {
     // ours up to round 18.
     {0xEF, {0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F}, 6, 0},
 
-    // Leave vendor mode and turn the pixel pipeline on.
-    // Note: NO 0x3A COLMOD here. The panel's power-on default pixel
-    // format is correct for this board's IM[3:0] strapping (16-bit RGB
-    // interface on the 16 DB pins the Waveshare PCB wires). Rounds 17
-    // and 18 added a 0x3A command with values 0x66 and 0x55 respectively,
-    // trying to match espressif's reference for an 18-line RGB board —
-    // but this Waveshare 2.1" board strictly wires 16 lines, so any
-    // explicit COLMOD silently mis-programs the DB bit mapping. The
-    // symptom across both values was "uniform blue + green stripe band
-    // in the middle 1/3 of the screen", consistent with cross-channel
-    // bit drift from the mis-programmed format.
+    // Leave vendor mode, set pixel format, and turn the pixel pipeline on.
+    //
+    // Round 22: re-add 0x3A COLMOD = 0x55 (16-bit RGB565 on the RGB
+    // interface). Round 21's colour-bar diagnostic replaced the previous
+    // rounds' LVGL-centred-content confusion with a clean full-screen
+    // solid-fill test, and the photos came back showing DIAGONAL stripes
+    // across the whole panel — not a centred column, which was the round
+    // 15–20 red herring — plus a hard inversion of the pattern when the
+    // WHITE phase (0xFFFF) drove every DB pin HIGH. Both symptoms are the
+    // textbook fingerprint of a pixel-format mismatch: the panel is
+    // latching 18 bits per pixel (its reset-default) while we send 16,
+    // so every row picks up its data at a different sub-pixel phase and
+    // the offset accumulates into diagonals; when all DB pins go HIGH at
+    // once, the panel's "extra" two bits (which the PCB pulls LOW or
+    // leaves floating for 16-line boards) suddenly matter and the
+    // rendered pattern inverts.
+    //
+    // Round 19 removed 0x3A on the rationale that espressif's own
+    // esp_lcd_st7701 BSP omits it. That's true, but espressif's reference
+    // design straps IM[3:0] differently — their panel power-ons into
+    // 16-bit mode without needing COLMOD. Waveshare's ESP32-S3-Touch-LCD-2.1
+    // panel module evidently power-ons into the datasheet default of 0x66
+    // (18-bit RGB666), which is what ST7701S section 10.2.19 lists as the
+    // reset value. Explicitly programming COLMOD = 0x55 switches the RGB
+    // interface to 16-bit 5-6-5: DB[15..11]=R[4..0], DB[10..5]=G[5..0],
+    // DB[4..0]=B[4..0] — which is exactly how data_gpio_nums[] is laid
+    // out in initRgbPanel().
+    //
+    // Rounds 17 and 18 also sent 0x3A but with the WRONG values for this
+    // wiring. Round 17 sent 0x66 (18-bit), which told the panel "expect
+    // 18 bits" while we drove 16 — the same underlying mismatch we're
+    // fixing now, just made more explicit. Round 18 sent 0x55 (16-bit) —
+    // the right value — but all six GIP blocks 0xE0..0xED in that init
+    // table were wrong, so the gate drivers misbehaved and hid the
+    // COLMOD fix behind a separate failure. Round 19 then threw out both
+    // the bad GIP values AND the 0x55 COLMOD, keeping only the espressif
+    // verbatim GIP block. Round 22 brings back the 0x55 COLMOD on top of
+    // round 19's good GIP, which is the combination we never actually
+    // shipped.
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}, 5, 0},
-    {kCmdSlpout, {0x00}, 0, 120},  // sleep out — panel needs 120 ms
-    {kCmdDispon, {0x00}, 0, 0},    // display on (no post-delay per espressif)
+    {0x3A, {0x55}, 1, 0},           // COLMOD: 16bpp RGB565 on the RGB interface
+    {kCmdSlpout, {0x00}, 0, 120},   // sleep out — panel needs 120 ms
+    {kCmdDispon, {0x00}, 0, 0},     // display on (no post-delay per espressif)
 };
 
 }  // namespace
