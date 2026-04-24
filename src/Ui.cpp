@@ -594,8 +594,54 @@ void begin(BoatState& state) {
         log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
     } else {
-        step("ST7701 fillColor(black)");
+        // Round-21 boot diagnostic: fill the whole panel with each of
+        // RED / GREEN / BLUE / WHITE / BLACK for 2 seconds apiece BEFORE
+        // LVGL takes over. This disambiguates the round-17..20 stripe
+        // symptom:
+        //
+        //   * If each phase fills the ENTIRE 480×480 round panel with the
+        //     named solid colour → panel geometry and RGB bus are healthy.
+        //     The "stripes in the middle" we've been photographing since
+        //     round 15 were just LVGL's centred UI widgets (every label on
+        //     the Overview page uses LV_ALIGN_*_MID, so all visible
+        //     content sits in a narrow vertical band). The dark blue
+        //     "background" colour was LVGL's black screen rendered through
+        //     a miswired bit lane. Round 22 then tackles colour mapping
+        //     only.
+        //
+        //   * If each phase shows only a narrow middle band of the named
+        //     colour and the rest stays in its power-on state → geometry
+        //     is actually broken: the panel is accepting data for only a
+        //     subset of horizontal pixels per line. Round 22 then tackles
+        //     horizontal addressing (panel partial-display mode, 0xC0
+        //     byte 2 SCN bits, or interface-mode mismatch) instead.
+        //
+        //   * If the colour we fill does NOT match what appears on-screen
+        //     (e.g. RED fill shows BLUE, BLUE fill shows RED) → RGB data
+        //     pins are cross-wired on the PCB/array. The specific mapping
+        //     of "fill colour → visible colour" tells us exactly which
+        //     channels are swapped and round 22 shuffles the five-entry
+        //     R/G/B sub-blocks inside data_gpio_nums[] accordingly.
+        //
+        // This is the single most information-dense flash we can do with
+        // the hardware we have — one reboot cycle, no scope or logic
+        // analyser needed, and the photos from each phase uniquely
+        // identify which of three distinct failure modes we're in.
+        step("ST7701 color bar: RED");
+        g_panel.fillColor(0xF800);  // RGB565: R=31, G=0,  B=0
+        delay(2000);
+        step("ST7701 color bar: GREEN");
+        g_panel.fillColor(0x07E0);  // RGB565: R=0,  G=63, B=0
+        delay(2000);
+        step("ST7701 color bar: BLUE");
+        g_panel.fillColor(0x001F);  // RGB565: R=0,  G=0,  B=31
+        delay(2000);
+        step("ST7701 color bar: WHITE");
+        g_panel.fillColor(0xFFFF);  // RGB565: R=31, G=63, B=31
+        delay(2000);
+        step("ST7701 color bar: BLACK");
         g_panel.fillColor(0x0000);
+        delay(1000);
     }
 
     step("lv_init()");
