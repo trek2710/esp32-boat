@@ -164,7 +164,18 @@ static constexpr int RGB_PIN_B4    = 21;
 // theoretically; the LGFX community converged on 14 MHz for this specific
 // Waveshare module because faster rates introduce jitter on the PCLK trace.
 // Stay conservative during bring-up; we can try bumping once pixels appear.
-static constexpr int RGB_PCLK_HZ   = 14 * 1000 * 1000;
+//
+// Round 20: 14 MHz → 10 MHz. Rounds 15–19 used 14 MHz (value FatihErtugral
+// ships for the sibling 2.8" ST7701 board) but every round's photo showed
+// the same symptom: data stuffed into the middle ~1/3 of the screen,
+// background showing the panel's power-on state. That symptom is
+// consistent with PCLK outrunning the panel's source-driver sampling
+// window for the porch values we use — the panel only successfully
+// samples a narrow horizontal slice of each line. 10 MHz is well inside
+// the ST7701S guaranteed band and leaves headroom on both ends. If the
+// image finally coheres at 10 MHz we can step back up to 12–14 MHz in
+// a later round.
+static constexpr int RGB_PCLK_HZ   = 10 * 1000 * 1000;
 
 // ST7701 3-wire SPI init bus (software-bit-banged). On this board, LCD_CS is
 // on TCA9554 IO3 (see TCA9554_BIT_LCD_CS below) — it is NOT a GPIO, so we

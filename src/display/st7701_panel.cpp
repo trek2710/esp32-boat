@@ -291,18 +291,37 @@ bool St7701Panel::initRgbPanel() {
     cfg.timings.h_res             = PANEL_WIDTH;
     cfg.timings.v_res             = PANEL_HEIGHT;
 
-    // Porch / pulse widths. Values taken from FatihErtugral's working
-    // ESP-IDF driver for the Waveshare ESP32-S3-Touch-LCD-2.8 (sibling
-    // ST7701 board — same panel controller, different physical size).
-    // Our round 15 used vsync_pulse_width=8 which works on the 2.8" board
-    // too, but vsync_pulse_width=2 is the exact value the reference ships
-    // with, so we use that to stay on the known-good side of the fence.
-    cfg.timings.hsync_pulse_width = 8;
-    cfg.timings.hsync_back_porch  = 10;
-    cfg.timings.hsync_front_porch = 50;
-    cfg.timings.vsync_pulse_width = 2;
-    cfg.timings.vsync_back_porch  = 18;
-    cfg.timings.vsync_front_porch = 8;
+    // Porch / pulse widths.
+    //
+    // Round 20 retuning. Rounds 14–19 used FatihErtugral's timings from
+    // the sibling Waveshare 2.8" ST7701 board: pulse 8/2, back 10/18,
+    // front 50/8. Every round's photo showed the same persistent symptom
+    // regardless of what we changed in the init sequence — data packed
+    // into the middle ~1/3 of the screen, the rest showing the panel's
+    // power-on state. That's the signature of the panel's DE (data-
+    // enable) window not matching what we're driving: if the back porch
+    // is too tight the panel misses the first block of pixels on each
+    // line, if the front porch is too wide the panel's HSYNC resync
+    // arrives late and pixels at the end of the previous line bleed in.
+    // An hsync_front_porch of 50 in particular is ~5× the value Espressif
+    // ships for their comparable 480×480 ST7701 BSP (typical value
+    // around 10–20), so it's the most suspect single number.
+    //
+    // Round 20 moves all six values to Espressif's typical Waveshare
+    // 480×480 ST7701 setpoints: pulse 10/10, back 20/10, front 20/10.
+    // Combined with the round-20 PCLK drop from 14 MHz to 10 MHz, this
+    // gives the panel ample sampling margin on every pixel and sync edge.
+    // The total per-frame clock count goes from 548 × 508 = 278,384 @
+    // 14 MHz (50 Hz refresh) to 530 × 510 = 270,300 @ 10 MHz (37 Hz
+    // refresh). 37 Hz is visibly flickery on a bench but perfectly fine
+    // for bring-up and there's nothing stopping us from tightening the
+    // porches once the image is coherent.
+    cfg.timings.hsync_pulse_width = 10;
+    cfg.timings.hsync_back_porch  = 20;
+    cfg.timings.hsync_front_porch = 20;
+    cfg.timings.vsync_pulse_width = 10;
+    cfg.timings.vsync_back_porch  = 10;
+    cfg.timings.vsync_front_porch = 10;
 
     // Polarity flags (round 16 fix).
     //
