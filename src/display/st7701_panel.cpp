@@ -116,35 +116,27 @@ const St7701InitCmd kInitCmds[] = {
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
     {0xC0, {0x3B, 0x00}, 2, 0},  // NL = 59 → 480 display lines, SCN = 0
     {0xC1, {0x10, 0x02}, 2, 0},  // VBP = 16, VFP = 2
-    // Round 25: switch 0xC2 (inversion control) from espressif's {0x20, 0x06}
-    // to Waveshare's factory-firmware value {0x07, 0x0A}.
+    // Round 26 — REVERT round 25. Round 25 swapped 0xC2 from espressif's
+    // {0x20, 0x06} to Waveshare's factory-firmware {0x07, 0x0A} to chase
+    // the vertical-stripe symptom. The round-25 photos (IMG_1820-1824)
+    // came back dramatically WORSE than round 24: the panel regressed to
+    // the rounds 15-20 pattern where only the middle ~1/3 of columns
+    // show any data at all and the outer 2/3 stay black. Worse, the
+    // RED (IMG_1820) and GREEN (IMG_1821) phases showed only BLUE
+    // stripes in the middle, the BLUE phase (IMG_1822) showed correct
+    // full-screen blue with GREEN stripes in the middle, and the WHITE
+    // phase (IMG_1823) showed blue instead of white. That colour-channel
+    // pattern says the upper data bits (R0..R4 on DB[15..11] and most of
+    // G0..G5 on DB[10..5]) stopped reaching the source drivers entirely
+    // — only the low-5-bit blue data on DB[4..0] was making it through.
     //
-    // Rounds 22–24 chased the persistent vertical-stripe / "middle column
-    // shows previous phase's colour" symptom through the pixel-format
-    // (COLMOD 0x55) and the framebuffer write-path (single full-screen
-    // draw_bitmap instead of 480 row writes). Neither changed the stripe
-    // pattern materially. Round 24's photos come back unchanged from
-    // round 23 — the stripes are stable across both write strategies,
-    // which rules out cache/DMA race conditions as the cause.
-    //
-    // What DOES cause stable vertical stripes on a solid-colour fill is
-    // the panel's own per-frame polarity-inversion scheme mis-matching
-    // the TFT glass. The ST7701 supports column-inversion, 1-dot,
-    // 2-dot, and 4-dot inversion patterns via 0xC2 bits [6:5]; each
-    // pattern needs the source-driver amplifiers to be voltage-balanced
-    // against the pattern it's asked to produce, and a mismatch shows
-    // up as steady vertical bands where every second column
-    // (or every second column-pair) drifts darker or lighter than its
-    // neighbour because the + and − polarity drives aren't symmetric.
-    //
-    // Espressif's reference BSP uses {0x20, 0x06} (1-dot inversion with
-    // a 6-frame inversion period). Waveshare's own
-    // ESP32-S3-Touch-LCD-2.1 factory firmware uses {0x07, 0x0A} —
-    // column inversion (bits [6:5] = 00), a different lower-byte timing
-    // trim — which is what their specific glass was tuned for at
-    // factory. This is the single most suspect register we haven't
-    // tried, and it specifically targets the vertical-stripe symptom.
-    {0xC2, {0x07, 0x0A}, 2, 0},
+    // That can't be explained by "just" picking a different inversion
+    // scheme; it means {0x07, 0x0A} has a side-effect on this panel's
+    // source-driver routing that disables the upper bit lanes. Rolling
+    // back. Round 24's state (full-screen solid fills with in-band
+    // vertical stripes from the middle-column coherency issue) was
+    // strictly closer to working than round 25.
+    {0xC2, {0x20, 0x06}, 2, 0},  // inversion type — espressif reference
     {0xCC, {0x10}, 1, 0},        // gate scan direction / source swap
     // Positive & negative gamma (BK0 0xB0 / 0xB1) — panel-specific
     // polynomial coefficients for the on-panel voltage→gray-level mapping.
