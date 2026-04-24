@@ -116,7 +116,35 @@ const St7701InitCmd kInitCmds[] = {
     {0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}, 5, 0},
     {0xC0, {0x3B, 0x00}, 2, 0},  // NL = 59 → 480 display lines, SCN = 0
     {0xC1, {0x10, 0x02}, 2, 0},  // VBP = 16, VFP = 2
-    {0xC2, {0x20, 0x06}, 2, 0},  // inversion type / dot inversion
+    // Round 25: switch 0xC2 (inversion control) from espressif's {0x20, 0x06}
+    // to Waveshare's factory-firmware value {0x07, 0x0A}.
+    //
+    // Rounds 22–24 chased the persistent vertical-stripe / "middle column
+    // shows previous phase's colour" symptom through the pixel-format
+    // (COLMOD 0x55) and the framebuffer write-path (single full-screen
+    // draw_bitmap instead of 480 row writes). Neither changed the stripe
+    // pattern materially. Round 24's photos come back unchanged from
+    // round 23 — the stripes are stable across both write strategies,
+    // which rules out cache/DMA race conditions as the cause.
+    //
+    // What DOES cause stable vertical stripes on a solid-colour fill is
+    // the panel's own per-frame polarity-inversion scheme mis-matching
+    // the TFT glass. The ST7701 supports column-inversion, 1-dot,
+    // 2-dot, and 4-dot inversion patterns via 0xC2 bits [6:5]; each
+    // pattern needs the source-driver amplifiers to be voltage-balanced
+    // against the pattern it's asked to produce, and a mismatch shows
+    // up as steady vertical bands where every second column
+    // (or every second column-pair) drifts darker or lighter than its
+    // neighbour because the + and − polarity drives aren't symmetric.
+    //
+    // Espressif's reference BSP uses {0x20, 0x06} (1-dot inversion with
+    // a 6-frame inversion period). Waveshare's own
+    // ESP32-S3-Touch-LCD-2.1 factory firmware uses {0x07, 0x0A} —
+    // column inversion (bits [6:5] = 00), a different lower-byte timing
+    // trim — which is what their specific glass was tuned for at
+    // factory. This is the single most suspect register we haven't
+    // tried, and it specifically targets the vertical-stripe symptom.
+    {0xC2, {0x07, 0x0A}, 2, 0},
     {0xCC, {0x10}, 1, 0},        // gate scan direction / source swap
     // Positive & negative gamma (BK0 0xB0 / 0xB1) — panel-specific
     // polynomial coefficients for the on-panel voltage→gray-level mapping.
@@ -492,21 +520,49 @@ void St7701Panel::drawBitmap(int x1, int y1, int x2, int y2,
 
 void St7701Panel::fillColor(uint16_t rgb565) {
     if (!ready_ || !panel_) return;
-    // Build one row in PSRAM (PANEL_WIDTH × 2 bytes) and repeat it line by
-    // line. Keeps stack use bounded and costs PANEL_HEIGHT draw calls —
-    // only done once at bring-up, so the throughput hit is irrelevant.
-    uint16_t* row = static_cast<uint16_t*>(
-        heap_caps_malloc(PANEL_WIDTH * sizeof(uint16_t),
-                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!row) {
-        log_e("[st7701] fillColor: PSRAM alloc failed");
+    //
+    // Round-24 rewrite. The earlier version built a single 960-byte row
+    // in PSRAM and issued 480 back-to-back esp_lcd_panel_draw_bitmap()
+    // calls, one per scanline. That seemed innocent and kept peak
+    // memory low, but the round-23 colour-bar photos told a different
+    // story: every phase left the middle third of the screen showing
+    // the PREVIOUS phase's colour (IMG_1815 RED phase showed blue
+    // stripes in the middle, IMG_1816 GREEN showed blue, IMG_1817 BLUE
+    // showed GREEN, IMG_1818 WHITE showed darker-blue, IMG_1819 BLACK
+    // showed greenish-dark). Outer columns were always correct, middle
+    // third always stale. That pattern is the fingerprint of an
+    // IDF 4.4.7-era PSRAM-framebuffer coherency hole: the RGB peripheral
+    // reads the PSRAM framebuffer in fixed-size DMA bursts, the CPU
+    // writes rows through the cache, and with 480 small writes the
+    // cache-to-DMA sync can drop the middle of each line (the bursts
+    // that straddle the 160-column and 320-column boundaries).
+    //
+    // Fix: allocate one full-screen 480×480×2 = 460 800-byte PSRAM
+    // buffer, fill it with the solid colour, and call
+    // esp_lcd_panel_draw_bitmap() exactly ONCE for the entire screen.
+    // IDF's internal memcpy-to-framebuffer then runs as a single
+    // contiguous operation and the cache/DMA sync happens once at
+    // known-good boundaries. 460 KB off PSRAM is cheap: we have 8 MB
+    // and the peripheral's own framebuffer is the same size, so peak
+    // usage during fillColor is ~920 KB + LVGL's ~77 KB double-buffer
+    // — under 1.1 MB total, comfortably inside budget.
+    //
+    // The buffer is freed immediately after the draw call; this is not
+    // a hot path (five calls total, only at bring-up), so the alloc
+    // churn does not matter.
+    //
+    const size_t total_px    = static_cast<size_t>(PANEL_WIDTH) * PANEL_HEIGHT;
+    const size_t total_bytes = total_px * sizeof(uint16_t);
+    uint16_t* fb = static_cast<uint16_t*>(
+        heap_caps_malloc(total_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!fb) {
+        log_e("[st7701] fillColor: PSRAM alloc failed (%u bytes)",
+              static_cast<unsigned>(total_bytes));
         return;
     }
-    for (int i = 0; i < PANEL_WIDTH; ++i) row[i] = rgb565;
-    for (int y = 0; y < PANEL_HEIGHT; ++y) {
-        drawBitmap(0, y, PANEL_WIDTH - 1, y, row);
-    }
-    heap_caps_free(row);
+    for (size_t i = 0; i < total_px; ++i) fb[i] = rgb565;
+    drawBitmap(0, 0, PANEL_WIDTH - 1, PANEL_HEIGHT - 1, fb);
+    heap_caps_free(fb);
 }
 
 }  // namespace display
