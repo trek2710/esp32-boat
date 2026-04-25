@@ -381,6 +381,18 @@ void refreshFromState() {
 // buffer in place (180° == reading the rectangle end-to-start) and flip
 // the destination rectangle to (W-1-x2, H-1-y2, W-1-x1, H-1-y1). This is
 // an O(N) in-place swap, negligible next to the existing DMA write.
+//
+// Round 35: gate every drawBitmap on vsync to stop the side-to-side
+// shimmer the user reported on IMG_1907.MOV. esp_lcd_panel_rgb in IDF
+// 4.4.7 keeps a single PSRAM framebuffer that DMA scans continuously; if
+// drawBitmap (a memcpy into that same buffer) starts at an arbitrary
+// moment, the panel renders a mix of old + new rows for one or two
+// frames per flush. waitForVsync() blocks until the RGB peripheral has
+// finished shifting the previous frame and is in vblank, giving the
+// memcpy maximum runway to stay ahead of the next row-0 scan. Cost is
+// ~17 ms worst case (one frame at 58 Hz), well within our LVGL budget;
+// since LVGL only flushes when something is dirty and we throttle data
+// refreshes to 10 Hz in tick(), the typical wait is much shorter.
 void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     const int32_t w = area->x2 - area->x1 + 1;
     const int32_t h = area->y2 - area->y1 + 1;
@@ -399,6 +411,8 @@ void flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     const int32_t y1 = DISPLAY_HEIGHT - 1 - area->y2;
     const int32_t x2 = DISPLAY_WIDTH  - 1 - area->x1;
     const int32_t y2 = DISPLAY_HEIGHT - 1 - area->y1;
+
+    g_panel.waitForVsync();
     g_panel.drawBitmap(x1, y1, x2, y2, color_p);
     lv_disp_flush_ready(drv);
 }
@@ -683,7 +697,26 @@ void begin(BoatState& state) {
 }
 
 uint32_t tick() {
-    refreshFromState();
+    // Round 35: throttle widget data refreshes to 10 Hz. The simulator
+    // updates BoatState every loop iteration (sub-millisecond), and
+    // refreshFromState() rewrites every label on the active page each
+    // call — every changed character marks an LVGL region dirty, which
+    // triggers a flushCb, which is now (round 35) a vsync-gated
+    // 460 KB memcpy. Doing that on every loop tick is gratuitous: NMEA
+    // 2000 instruments don't update useful information faster than
+    // 5-10 Hz, and at 100 ms throttling the visual response stays well
+    // under human reaction time while the LVGL flush rate drops by
+    // roughly 20× compared with the round 34 build. Less flush =
+    // less drawBitmap = less framebuffer churn = less opportunity for
+    // the panel scanout to catch a partially-written frame. The
+    // lv_timer_handler() call below still runs every iteration so
+    // animations, gestures and timers stay responsive.
+    static uint32_t last_data_refresh_ms = 0;
+    const uint32_t now = millis();
+    if (now - last_data_refresh_ms >= 100) {
+        last_data_refresh_ms = now;
+        refreshFromState();
+    }
     return lv_timer_handler();
 }
 

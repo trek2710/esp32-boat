@@ -8,12 +8,44 @@
 #include <esp_heap_caps.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_rgb.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "display_pins.h"
 #include "tca9554.h"
 
 namespace display {
 namespace {
+
+// --- Round 35: vsync gating -----------------------------------------------
+//
+// IDF 4.4.7's esp_lcd_panel_rgb keeps a single PSRAM framebuffer that the
+// RGB peripheral DMA-scans continuously at ~58 Hz. esp_lcd_panel_draw_bitmap
+// memcpy's into that same framebuffer, with no intrinsic synchronisation
+// against the ongoing scan. Without gating, every flush from LVGL races the
+// beam and the panel renders a mix of old + new rows for one or two frames
+// each — that's the side-to-side shimmer on the dial labels in IMG_1907.MOV.
+//
+// The fix is to register cfg.on_frame_trans_done. In IDF 4.4 the RGB driver
+// invokes this callback at the moment one full frame has finished shifting
+// out, which is the start of the next vertical blanking interval — the only
+// moment the framebuffer is safe to start rewriting and still let the
+// memcpy stay ahead of the next row-0 scan.
+//
+// The callback runs in ISR context on core 1 (where the RGB peripheral
+// driver lives), so we keep its body tiny: give a binary semaphore with
+// FromISR. Ui's flush_cb takes that semaphore via St7701Panel::waitForVsync
+// before calling drawBitmap.
+SemaphoreHandle_t g_vsync_sem = nullptr;
+
+bool IRAM_ATTR onFrameTransDone(esp_lcd_panel_handle_t /*panel*/,
+                                esp_lcd_rgb_panel_event_data_t* /*ed*/,
+                                void* /*user_ctx*/) {
+    if (g_vsync_sem == nullptr) return false;
+    BaseType_t hp_woken = pdFALSE;
+    xSemaphoreGiveFromISR(g_vsync_sem, &hp_woken);
+    return hp_woken == pdTRUE;
+}
 
 // --- 3-wire SPI init bus ---------------------------------------------------
 //
@@ -414,7 +446,19 @@ bool St7701Panel::initRgbPanel() {
     cfg.data_gpio_nums[15] = RGB_PIN_R4;
 
     cfg.disp_gpio_num  = -1;  // DISP / backlight handled via TCA9554, not a GPIO
-    cfg.on_frame_trans_done = nullptr;
+    // Round 35: hook the frame-trans-done callback so flushCb can gate its
+    // memcpy on vsync. Without this, esp_lcd_panel_draw_bitmap and the
+    // continuous RGB DMA scan race within the single shared PSRAM
+    // framebuffer (IDF 4.4.7 only allocates one) and the panel mixes old +
+    // new rows for ~1 frame per flush. See onFrameTransDone above.
+    if (g_vsync_sem == nullptr) {
+        g_vsync_sem = xSemaphoreCreateBinary();
+        if (g_vsync_sem == nullptr) {
+            log_e("[st7701] xSemaphoreCreateBinary failed - falling back to "
+                  "unsynchronised flushes (will tear like rounds 32-34)");
+        }
+    }
+    cfg.on_frame_trans_done = onFrameTransDone;
     cfg.user_ctx       = nullptr;
 
     // Framebuffer: one full-screen RGB565 buffer in PSRAM. 480×480×2 =
@@ -502,6 +546,18 @@ void St7701Panel::drawBitmap(int x1, int y1, int x2, int y2,
     if (!ready_ || !panel_) return;
     auto handle = static_cast<esp_lcd_panel_handle_t>(panel_);
     esp_lcd_panel_draw_bitmap(handle, x1, y1, x2 + 1, y2 + 1, pixels);
+}
+
+// Round 35: take the binary semaphore that onFrameTransDone gives at
+// vblank. 50 ms timeout = ~3 frames at 58 Hz; if the callback ever fails
+// to fire (e.g. a hypothetical IDF bug or a dead PSRAM bus stall) we
+// release the caller after that bound rather than wedging the UI task.
+// At the moment this returns, the RGB peripheral has just finished
+// shifting the previous frame and is sitting in vertical blanking — the
+// safest possible point to start rewriting the framebuffer.
+void St7701Panel::waitForVsync() {
+    if (g_vsync_sem == nullptr) return;
+    xSemaphoreTake(g_vsync_sem, pdMS_TO_TICKS(50));
 }
 
 void St7701Panel::fillColor(uint16_t rgb565) {

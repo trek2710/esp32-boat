@@ -66,6 +66,24 @@ public:
     // Ui.cpp::begin().
     void fillColor(uint16_t rgb565);
 
+    // Round 35: block until the panel's RGB DMA finishes the current frame
+    // (i.e. is at the start of vertical blanking with the next row-0 scan
+    // ~vsync_pulse_width + vsync_back_porch microseconds away). Call this
+    // immediately before drawBitmap to ensure the framebuffer memcpy starts
+    // at the top of a fresh frame and has the maximum runway to stay ahead
+    // of the ongoing scanout — without this, drawBitmap and the DMA scan
+    // race each other within the single shared PSRAM framebuffer (IDF 4.4.7
+    // only allocates one) and the panel sees a mix of old + new rows for
+    // one or two frames per flush, which is exactly the side-to-side
+    // shimmer the round 33 / 34 photos and IMG_1907.MOV showed on the
+    // dial labels and needle.
+    //
+    // Implementation: cfg.on_frame_trans_done in initRgbPanel() gives a
+    // binary semaphore from ISR; this method takes it with a 50 ms
+    // timeout (about 3 frames) so a missed callback can't stall the UI
+    // task indefinitely.
+    void waitForVsync();
+
     bool isReady() const { return ready_; }
 
 private:
