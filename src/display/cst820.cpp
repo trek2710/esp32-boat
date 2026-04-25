@@ -56,15 +56,29 @@ bool Cst820::begin(Tca9554& expander) {
 bool Cst820::read(uint16_t* x, uint16_t* y) {
     if (!ready_ || x == nullptr || y == nullptr) return false;
 
-    // Set the register pointer to 0x00. Some CST820 ports skip this and
-    // assume the chip auto-resets the pointer on every NACK, but the
-    // datasheet doesn't promise that and we've seen Hynitron-family chips
-    // hang onto the pointer across reads.
+    // Round 37 fix: start the read at register 0x01, not 0x00.
+    //
+    // Round 36's first cut read 6 bytes from 0x00, putting the gesture byte
+    // (reg 0x01) at buf[0] and finger count (reg 0x02) at buf[1] — except
+    // it actually put reg 0x00 at buf[0], gesture at buf[1], and finger
+    // count at buf[2]. Result: `if (fingers == 0)` was reading the
+    // *gesture* register, which is 0 unless a recognised gesture just
+    // fired, so single-finger taps and drags were being silently dropped.
+    //
+    // Waveshare's CST820 demo for the ESP32-S3-Touch-LCD-2.1 documents the
+    // register layout as:
+    //   0x01  Gesture
+    //   0x02  Number of fingers (0 or 1)
+    //   0x03  X high  (top 4 bits in low nibble; event flag in high nibble)
+    //   0x04  X low
+    //   0x05  Y high  (top 4 bits in low nibble)
+    //   0x06  Y low
+    //
+    // Read 6 bytes starting at 0x01 → [gesture, fingers, xH, xL, yH, yL].
     Wire.beginTransmission(TP_I2C_ADDR);
-    Wire.write(static_cast<uint8_t>(0x00));
+    Wire.write(static_cast<uint8_t>(0x01));
     if (Wire.endTransmission(false) != 0) return false;  // repeated start
 
-    // Request 6 bytes: gesture, finger count, X-hi, X-lo, Y-hi, Y-lo.
     constexpr size_t kNeeded = 6;
     const size_t got = Wire.requestFrom(static_cast<int>(TP_I2C_ADDR),
                                         static_cast<int>(kNeeded));

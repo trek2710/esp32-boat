@@ -8,6 +8,8 @@ For the authoritative history (including merges, tags, and author info) see
 `git log` or <https://github.com/trek2710/esp32-boat/commits/main>.
 
 <!-- entries below, newest first -->
+- **2026-04-25** — Round 37: CST820 register pointer off-by-one — start read at reg 0x01 so finger count lands at buf[1] instead of the gesture register.
+- **2026-04-25** — Round 37: fix CST820 register offset — read 6 bytes from reg 0x01 (gesture/fingers/xH/xL/yH/yL); finger count was reading the gesture register.
 - **2026-04-25** — Round 36: B&G-style Overview redesign — central compass + boat outline + 8 perimeter tiles; add CST820 touch driver wired as LVGL pointer input.
 
 - **2026-04-25** — Round 36: B&G-style Overview redesign (central compass + boat outline + 8 perimeter tiles); add CST820 touch driver wired as LVGL pointer input.

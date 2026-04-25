@@ -9,21 +9,22 @@
 //
 // Register layout (from the CST820 register map distributed with Waveshare's
 // touch demo for this board family — also matches the Hynitron CST816S which
-// shares its protocol):
+// shares its protocol). Note the +1 offset compared to the CST816S "register
+// pointer starts at 0" docs floating around online: the CST820 puts gesture
+// at reg 0x01, not 0x00. Round 36 mis-read this and round 37 corrected it.
 //
-//   0x00  Gesture (1=swipe up, 2=swipe down, 3=swipe left, 4=swipe right,
+//   0x01  Gesture (1=swipe up, 2=swipe down, 3=swipe left, 4=swipe right,
 //                  5=single tap, 11=double tap, 12=long press)
-//   0x01  Number of fingers detected (0 or 1)
-//   0x02  X position high byte (top 4 bits in low nibble)
-//   0x03  X position low  byte
-//   0x04  Y position high byte (top 4 bits in low nibble)
-//   0x05  Y position low  byte
-//   0x06  reserved
-//   0x07  reserved
+//   0x02  Number of fingers detected (0 or 1)
+//   0x03  X position high byte (top 4 bits in low nibble; event flag in
+//         the high nibble)
+//   0x04  X position low  byte
+//   0x05  Y position high byte (top 4 bits in low nibble)
+//   0x06  Y position low  byte
 //
-// X and Y are 12-bit values; the high nibbles of bytes 0x02/0x04 hold the
-// upper 4 bits of the 12-bit coordinate. We read 6 bytes starting at
-// register 0x00.
+// X and Y are 12-bit values; the high nibbles of bytes 0x03/0x05 hold the
+// upper 4 bits of the 12-bit coordinate. read() requests 6 bytes starting
+// at register 0x01.
 //
 // Coordinate system: native panel orientation is X=0..479, Y=0..479. We
 // rotate 180° in flushCb to fix the upside-down panel, so callers want

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 36: B&G-style Overview redesign — central compass + boat outline + 8 perimeter tiles; add CST820 touch driver wired as LVGL pointer input."
+DEFAULT_MSG="Round 37: CST820 register pointer off-by-one — start read at reg 0x01 so finger count lands at buf[1] instead of the gesture register."
 
 set -euo pipefail
 
