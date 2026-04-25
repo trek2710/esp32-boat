@@ -60,9 +60,10 @@ uint32_t tick() {
 
 #include <cstdio>
 
-#include "display/tca9554.h"
+#include "display/cst820.h"
 #include "display/display_pins.h"
 #include "display/st7701_panel.h"
+#include "display/tca9554.h"
 
 namespace ui {
 namespace {
@@ -74,6 +75,7 @@ namespace {
 // file-local statics so LVGL's flush_cb can reach g_panel without plumbing.
 display::Tca9554     g_expander;
 display::St7701Panel g_panel;
+display::Cst820      g_touch;
 
 lv_disp_draw_buf_t draw_buf;
 lv_color_t*        buf1 = nullptr;
@@ -85,15 +87,47 @@ BoatState* g_state = nullptr;
 
 constexpr int kNumPages = 3;
 
-// ---- Overview page ----
+// ---- Overview page (round 36, B&G-style) ----
+//
+// Layout target — adapted from the user's B&G/Raymarine reference image
+// (project memory: project_overview_layout_target.md). The reference is
+// rectangular with two stacked columns of 5 tiles each flanking a central
+// wind compass; we have a 480×480 round panel whose visible area is the
+// inscribed circle (corners hidden by bezel), so we keep:
+//
+//   * Central round compass dial with boat-outline silhouette inside.
+//   * Big BOAT-SPD value rendered inside the boat silhouette.
+//   * Red AWA needle + green reference (centerline / 0°) line.
+//   * 8 perimeter data tiles arranged at the cardinal + inter-cardinal
+//     positions inside the inscribed circle. Each tile = small grey title
+//     line ("AWS  kn") above a large white value ("16.4").
+//
+// The rest of the reference's tiles (the ones we couldn't fit on a circular
+// panel without crowding) live on Page 2 — Data already covers them.
+struct OverviewTile {
+    lv_obj_t* root;
+    lv_obj_t* title_lbl;   // small grey label, e.g. "AWS  kn"
+    lv_obj_t* value_lbl;   // large white value, e.g. "16.4"
+};
+
 struct OverviewPage {
     lv_obj_t* root;
-    lv_obj_t* wind_meter;               // lv_meter (compass rose)
-    lv_meter_indicator_t* wind_needle;  // AWA needle
-    lv_obj_t* wind_center_lbl;          // AWS inside the compass
-    lv_obj_t* sog_big_lbl;              // big SOG number
-    lv_obj_t* sog_unit_lbl;             // "kn SOG" below the big number
-    lv_obj_t* hdg_small_lbl;            // HDG/COG under SOG
+    lv_obj_t* compass;                  // lv_meter (central rose)
+    lv_meter_indicator_t* awa_needle;   // red — apparent wind
+    lv_meter_indicator_t* ref_needle;   // green — bow / 0° reference
+    lv_obj_t* boat_outline;             // simple silhouette inside compass
+    lv_obj_t* spd_big_lbl;              // big BOAT SPD inside the compass
+    lv_obj_t* spd_unit_lbl;             // "kn" below the big number
+
+    // Perimeter tiles — slot order is fixed by buildOverviewPage().
+    OverviewTile awa;   // top-left
+    OverviewTile aws;   // left
+    OverviewTile hdg;   // bottom-left
+    OverviewTile sog;   // bottom
+    OverviewTile vmg;   // bottom-right
+    OverviewTile twa;   // right
+    OverviewTile tws;   // top-right
+    OverviewTile twd;   // top
 };
 OverviewPage overview;
 
@@ -137,53 +171,142 @@ lv_obj_t* makeLabel(lv_obj_t* parent,
 
 // --- Page construction ------------------------------------------------------
 
+// Build one perimeter tile: a fixed-size 110×64 transparent container with
+// the small grey title on top and the large white value below. Positioning
+// is the caller's responsibility — different tile slots sit at different
+// (dx, dy) offsets from screen centre to fit inside the inscribed circle.
+//
+// Tile rendering matches the B&G reference's typographic pattern:
+//   * Title line (e.g. "AWS  kn") in font_14, GREY palette.
+//   * Value line ("16.4") in font_36, white.
+//   * Container is borderless and transparent so the screen's black bg
+//     shows through (the reference uses a slightly lifted dark tile, but
+//     on a round panel the tile boundaries fight the curvature, so we
+//     drop the box and let the typography carry the layout).
+OverviewTile buildOverviewTile(lv_obj_t* parent,
+                               int dx, int dy,
+                               const char* title) {
+    OverviewTile t{};
+    constexpr int kTileW = 110;
+    constexpr int kTileH = 64;
+
+    lv_obj_t* root = lv_obj_create(parent);
+    lv_obj_set_size(root, kTileW, kTileH);
+    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(root, LV_ALIGN_CENTER, dx, dy);
+
+    t.title_lbl = makeLabel(root, &lv_font_montserrat_14,
+                            lv_palette_main(LV_PALETTE_GREY), title);
+    lv_obj_align(t.title_lbl, LV_ALIGN_TOP_MID, 0, 0);
+
+    // _36 isn't compiled into LVGL on this board (see include/lv_conf.h —
+     // available sizes: 12/14/16/20/24/28/48). Use _28 for tile values.
+    t.value_lbl = makeLabel(root, &lv_font_montserrat_28,
+                            lv_color_white(), "--");
+    lv_obj_align(t.value_lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    t.root = root;
+    return t;
+}
+
 void buildOverviewPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
     overview.root = scr;
 
-    // Wind meter (compass rose) — 280×280, positioned at the top of the
-    // round 480×480 display. 0° at the top = bow; positive = starboard.
-    lv_obj_t* meter = lv_meter_create(scr);
-    lv_obj_set_size(meter, 280, 280);
-    lv_obj_align(meter, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_set_style_bg_color(meter, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_border_width(meter, 0, LV_PART_MAIN);
+    // ----- Central compass + boat outline + big BOAT-SPD -----
+    //
+    // 240-px diameter compass sits in the centre of the inscribed circle
+    // (panel radius = 240, so a 240-px-diameter compass at the centre
+    // leaves 60-px ring of perimeter real-estate for tiles before hitting
+    // the edge — enough for two-line tiles at the cardinal points).
+    constexpr int kCompassSize = 240;
+    lv_obj_t* compass = lv_meter_create(scr);
+    lv_obj_set_size(compass, kCompassSize, kCompassSize);
+    lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(compass, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(compass, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(compass, lv_palette_darken(LV_PALETTE_GREY, 2),
+                                  LV_PART_MAIN);
+    lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_meter_scale_t* scale = lv_meter_add_scale(meter);
-    // 360° scale, 0 at top, clockwise. Rotate 270 so angle 0 points up.
-    lv_meter_set_scale_ticks(meter, scale, 37, 2, 8, lv_palette_main(LV_PALETTE_GREY));
-    lv_meter_set_scale_major_ticks(meter, scale, 3, 4, 14, lv_color_white(), 15);
-    lv_meter_set_scale_range(meter, scale, 0, 360, 360, 270);
-    overview.wind_needle = lv_meter_add_needle_line(
-        meter, scale, 4, lv_palette_main(LV_PALETTE_RED), -10);
-    lv_meter_set_indicator_value(meter, overview.wind_needle, 0);
-    overview.wind_meter = meter;
+    lv_meter_scale_t* scale = lv_meter_add_scale(compass);
+    // 360° scale, 0 at top (bow), clockwise. rotate=270 → angle 0 points up.
+    lv_meter_set_scale_ticks(compass, scale, 37, 2, 6,
+                             lv_palette_main(LV_PALETTE_GREY));
+    lv_meter_set_scale_major_ticks(compass, scale, 3, 3, 10,
+                                   lv_color_white(), 15);
+    lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
 
-    // Wind speed (AWS) — shown large inside the compass centre.
-    overview.wind_center_lbl = makeLabel(meter, &lv_font_montserrat_48,
-                                         lv_color_white(), "--");
-    lv_obj_align(overview.wind_center_lbl, LV_ALIGN_CENTER, 0, -6);
+    // Green reference needle = bow / 0° (matches the green dashed line in
+    // the user's B&G reference). Drawn first so the red AWA needle sits
+    // on top of it when both happen to align.
+    overview.ref_needle = lv_meter_add_needle_line(
+        compass, scale, 2, lv_palette_main(LV_PALETTE_GREEN), -8);
+    lv_meter_set_indicator_value(compass, overview.ref_needle, 0);
 
-    // "kn AWS" unit just below the wind speed.
-    lv_obj_t* aws_unit = makeLabel(meter, &lv_font_montserrat_20,
-                                   lv_palette_main(LV_PALETTE_GREY), "kn AWS");
-    lv_obj_align(aws_unit, LV_ALIGN_CENTER, 0, 38);
+    // Red AWA needle (apparent wind angle).
+    overview.awa_needle = lv_meter_add_needle_line(
+        compass, scale, 4, lv_palette_main(LV_PALETTE_RED), -8);
+    lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
+    overview.compass = compass;
 
-    // SOG — very large, lower part of the screen.
-    overview.sog_big_lbl = makeLabel(scr, &lv_font_montserrat_48,
+    // Boat-outline silhouette — simple downward-pointing diamond/oval cue
+    // inside the compass. Rendered as a borderless rounded-rect placeholder
+    // (60×120, dark grey fill) until we have time to draw a proper SVG hull.
+    // The big BOAT-SPD label sits in front of it.
+    lv_obj_t* hull = lv_obj_create(compass);
+    lv_obj_set_size(hull, 60, 120);
+    lv_obj_align(hull, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(hull, 30, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(hull, lv_palette_darken(LV_PALETTE_GREY, 4),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(hull, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_set_style_border_width(hull, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(hull, lv_palette_main(LV_PALETTE_GREY),
+                                  LV_PART_MAIN);
+    lv_obj_clear_flag(hull, LV_OBJ_FLAG_SCROLLABLE);
+    overview.boat_outline = hull;
+
+    // Big BOAT-SPD inside the silhouette.
+    overview.spd_big_lbl = makeLabel(compass, &lv_font_montserrat_48,
                                      lv_color_white(), "--");
-    lv_obj_align(overview.sog_big_lbl, LV_ALIGN_BOTTOM_MID, 0, -80);
+    lv_obj_align(overview.spd_big_lbl, LV_ALIGN_CENTER, 0, -6);
 
-    overview.sog_unit_lbl = makeLabel(scr, &lv_font_montserrat_20,
-                                      lv_palette_main(LV_PALETTE_GREY), "kn SOG");
-    lv_obj_align(overview.sog_unit_lbl, LV_ALIGN_BOTTOM_MID, 0, -50);
+    overview.spd_unit_lbl = makeLabel(compass, &lv_font_montserrat_14,
+                                      lv_palette_main(LV_PALETTE_GREY), "kn");
+    lv_obj_align(overview.spd_unit_lbl, LV_ALIGN_CENTER, 0, 30);
 
-    // Heading / COG — smaller, at the very bottom.
-    overview.hdg_small_lbl = makeLabel(scr, &lv_font_montserrat_20,
-                                       lv_palette_main(LV_PALETTE_GREY),
-                                       "HDG --   COG --");
-    lv_obj_align(overview.hdg_small_lbl, LV_ALIGN_BOTTOM_MID, 0, -15);
+    // ----- 8 perimeter tiles at cardinal + inter-cardinal positions -----
+    //
+    // Each tile centre lives on a circle of radius ~190 from screen centre.
+    // For a 480×480 panel that's 50 px shy of the bezel, leaving comfortable
+    // margins on every side even after the round corners are clipped. The
+    // (dx, dy) offsets below are the same on every cardinal axis to keep the
+    // grid visually balanced. Tile mapping mirrors the B&G reference layout:
+    //
+    //     TWS_top-right       TWD_top         AWA_top-left
+    //     TWA_right           [compass]       AWS_left
+    //     VMG_bottom-right    SOG_bottom      HDG_bottom-left
+    //
+    // (note that "left" / "right" in the reference becomes top/bottom on a
+    // round panel because we don't have horizontal real estate beyond the
+    // compass — so we lay the same 10 columns out as a clock face instead).
+    constexpr int kRadial = 190;   // from screen centre to tile centre
+    // Approximate cosine/sine of 45° as 0.7071 → 134 ≈ 190 * 0.7071.
+    constexpr int kDiag   = 134;
+
+    overview.twd = buildOverviewTile(scr,        0, -kRadial,  "TWD  \xC2\xB0");
+    overview.tws = buildOverviewTile(scr,  kDiag,  -kDiag,     "TWS  kn");
+    overview.twa = buildOverviewTile(scr,  kRadial,      0,    "TWA  \xC2\xB0");
+    overview.vmg = buildOverviewTile(scr,  kDiag,   kDiag,     "VMG  kn");
+    overview.sog = buildOverviewTile(scr,        0,  kRadial,  "SOG  kn");
+    overview.hdg = buildOverviewTile(scr, -kDiag,   kDiag,     "HDG  \xC2\xB0");
+    overview.aws = buildOverviewTile(scr, -kRadial,      0,    "AWS  kn");
+    overview.awa = buildOverviewTile(scr, -kDiag,  -kDiag,     "AWA  \xC2\xB0");
 }
 
 void buildDataPage() {
@@ -233,42 +356,69 @@ void swipeHandler(lv_event_t* /*e*/) {
 
 // --- Refresh ---------------------------------------------------------------
 
+// Set a tile's value label, formatted or "--" if NaN.
+void setTileValue(OverviewTile& t, double v, const char* fmt) {
+    if (isnan(v)) {
+        lv_label_set_text(t.value_lbl, "--");
+    } else {
+        char buf[12];
+        snprintf(buf, sizeof(buf), fmt, v);
+        lv_label_set_text(t.value_lbl, buf);
+    }
+}
+
+// True-wind direction: derive from heading + true-wind angle when both are
+// present. TWA is +/- relative to the bow; TWD is degrees-true 0..360.
+double computeTwd(double heading_true_deg, double twa) {
+    if (isnan(heading_true_deg) || isnan(twa)) return NAN;
+    double d = heading_true_deg + twa;
+    while (d <    0.0) d += 360.0;
+    while (d >= 360.0) d -= 360.0;
+    return d;
+}
+
+// Velocity made good: best-effort estimate from STW + TWA when nothing on
+// the bus is publishing it directly. cos(TWA) where TWA is in degrees.
+double computeVmg(double stw, double twa) {
+    if (isnan(stw) || isnan(twa)) return NAN;
+    return stw * cos(twa * M_PI / 180.0);
+}
+
 void refreshOverview(const Instruments& s) {
     // Wind needle: AWA is -180..180 with + starboard. Meter scale is 0..360
     // with 0=bow, so shift by +360 when negative.
     if (!isnan(s.awa)) {
         double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
-        lv_meter_set_indicator_value(overview.wind_meter,
-                                     overview.wind_needle,
+        lv_meter_set_indicator_value(overview.compass,
+                                     overview.awa_needle,
                                      static_cast<int32_t>(deg));
     }
+    // Reference needle stays pinned to 0° (bow).
+    lv_meter_set_indicator_value(overview.compass, overview.ref_needle, 0);
 
-    // AWS in the meter centre.
-    if (isnan(s.aws)) {
-        lv_label_set_text(overview.wind_center_lbl, "--");
+    // BOAT-SPD inside the silhouette — prefer STW (speed-through-water) since
+    // the reference shows BOAT SPD from a paddlewheel; fall back to SOG.
+    const double boat_spd = !isnan(s.stw) ? s.stw : s.sog;
+    if (isnan(boat_spd)) {
+        lv_label_set_text(overview.spd_big_lbl, "--");
     } else {
         char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", s.aws);
-        lv_label_set_text(overview.wind_center_lbl, buf);
+        snprintf(buf, sizeof(buf), "%.1f", boat_spd);
+        lv_label_set_text(overview.spd_big_lbl, buf);
     }
 
-    // Big SOG
-    if (isnan(s.sog)) {
-        lv_label_set_text(overview.sog_big_lbl, "--");
-    } else {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", s.sog);
-        lv_label_set_text(overview.sog_big_lbl, buf);
-    }
-
-    // HDG + COG secondary line
-    char hdg_buf[16], cog_buf[16];
-    if (isnan(s.heading_true_deg)) snprintf(hdg_buf, sizeof(hdg_buf), "--");
-    else snprintf(hdg_buf, sizeof(hdg_buf), "%.0f\xC2\xB0", s.heading_true_deg);
-    if (isnan(s.cog))              snprintf(cog_buf, sizeof(cog_buf), "--");
-    else snprintf(cog_buf, sizeof(cog_buf), "%.0f\xC2\xB0", s.cog);
-    lv_label_set_text_fmt(overview.hdg_small_lbl,
-                          "HDG %s   COG %s", hdg_buf, cog_buf);
+    // Perimeter tiles. Format strings match the B&G reference's typography:
+    //   * AWA / TWA — signed integer degrees (e.g. "-27", "+40")
+    //   * AWS / TWS / SOG / VMG — one decimal knot (e.g. "16.4")
+    //   * HDG / TWD — integer degrees, 0..360 (e.g. "000", "320")
+    setTileValue(overview.awa, s.awa,              "%+.0f");
+    setTileValue(overview.aws, s.aws,              "%.1f");
+    setTileValue(overview.hdg, s.heading_true_deg, "%03.0f");
+    setTileValue(overview.sog, s.sog,              "%.1f");
+    setTileValue(overview.twa, s.twa,              "%+.0f");
+    setTileValue(overview.tws, s.tws,              "%.1f");
+    setTileValue(overview.vmg, computeVmg(s.stw, s.twa), "%.1f");
+    setTileValue(overview.twd, computeTwd(s.heading_true_deg, s.twa), "%03.0f");
 }
 
 // Format "value or --"; caller provides buffer, precision format string.
@@ -364,6 +514,39 @@ void refreshFromState() {
         case 1: refreshData(s, ais_count); break;
         case 2: refreshDebug();            break;
     }
+}
+
+// --- LVGL input device (CST820 touch) -------------------------------------
+
+// Read one touch sample from the CST820 and feed it back to LVGL.
+//
+// Coordinate rotation: flushCb does an in-place 180° rotation on every
+// pixel buffer (so what LVGL renders as "(0, 0) top-left" actually ends up
+// at the panel's bottom-right pixel). The CST820 returns coordinates in
+// the panel's native frame, so we need to apply the inverse rotation here:
+// (x, y) -> (W-1-x, H-1-y). That matches the rotation in flushCb so a tap
+// on the visually-top-left tile ends up at LVGL's (small, small) instead
+// of at the screen's bottom-right.
+//
+// LVGL polls this from lv_timer_handler() at the indev refresh period
+// (default 30 ms). g_touch.read() over 100 kHz I2C is ~800 µs — cheap
+// enough that we don't need to gate it on the TP_INT line.
+void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
+    static int16_t last_x = 0;
+    static int16_t last_y = 0;
+
+    uint16_t raw_x = 0, raw_y = 0;
+    if (g_touch.read(&raw_x, &raw_y)) {
+        last_x = static_cast<int16_t>(DISPLAY_WIDTH  - 1 - raw_x);
+        last_y = static_cast<int16_t>(DISPLAY_HEIGHT - 1 - raw_y);
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+    // LVGL expects a coordinate even on release events (it uses it to pin
+    // the release point against the last move event).
+    data->point.x = last_x;
+    data->point.y = last_y;
 }
 
 // --- Display driver glue ---------------------------------------------------
@@ -635,6 +818,12 @@ void begin(BoatState& state) {
         log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
     }
+
+    step("CST820.begin()");
+    if (!g_touch.begin(g_expander)) {
+        log_w("[ui] CST820 bring-up failed - touch input disabled this boot. "
+              "Swipe nav will not work; check I2C / TP_RST wiring.");
+    }
     // Round 34: the 5-phase RGB+W+K boot sanity bar from rounds 28-33 is
     // removed. Display bring-up is complete (round 30 nailed colours +
     // timings via Waveshare's verbatim init, round 32 flipped the image
@@ -682,6 +871,18 @@ void begin(BoatState& state) {
     disp_drv.flush_cb = flushCb;
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
+
+    // Register the CST820 as an LVGL pointer input device. We do this even
+    // when g_touch.begin() failed — the read_cb just returns RELEASED in
+    // that case (g_touch.read() returns false because ready_ stays false),
+    // so swipe nav is dead but nothing crashes. This way one corrupt boot
+    // doesn't take the whole UI offline.
+    step("lv_indev_drv_register (touch)");
+    static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type    = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = touchReadCb;
+    lv_indev_drv_register(&indev_drv);
 
     step("build pages");
     buildOverviewPage();
