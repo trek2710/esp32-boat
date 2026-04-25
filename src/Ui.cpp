@@ -87,40 +87,47 @@ BoatState* g_state = nullptr;
 
 constexpr int kNumPages = 3;
 
-// ---- Overview page (round 40, B&G-reference compass-only) ----
+// ---- Overview page (round 42 — second B&G reference, black dial) ----
 //
-// Round 40 dropped the perimeter tiles introduced in round 36. The user
-// pointed at the middle section of the B&G/Raymarine reference image and
-// asked for "exactly that" — i.e. the central instrument only:
+// Round 42 replaces the round-40/41 design (light-grey dial, hull
+// silhouette, big speed-circle on the bow) after the user pointed at a
+// second B&G-style reference image and asked for that look "exactly":
 //
-//   * Outer dial: light-grey ring, ~60 px wide, with degree tick marks
-//     and labels every 30° (000, 030, ..., 330). Reads clockwise so the
-//     bow always points up at "000".
-//   * Red/green close-hauled sectors at the top of the dial (the no-go
-//     zone is fixed at ±20° around the bow for v1 — eventually it'll
-//     follow TWA).
+//   * Outer dial: BLACK ring, ~60 px wide, with WHITE tick marks and
+//     WHITE numerical labels at 30° intervals. Reads clockwise from
+//     0° at the top.
+//   * Red/green close-hauled tick markers at the top — implemented as
+//     SCALE_LINES indicators that re-colour the existing tick marks in
+//     the ±40° window around the bow, instead of overlaying a solid arc
+//     (the reference has discrete coloured tick lines, not a filled
+//     bar).
 //   * Inner black disc covering the centre.
-//   * Boat-outline silhouette in white, drawn with lv_line.
-//   * White-bordered speed circle inside the hull, holding the big
-//     BOAT-SPD value.
-//   * "000" heading box at top of the inner area (current heading).
-//   * Red AWA needle (apparent wind angle) + green reference needle.
-//   * "°M" magnetic-indicator label at top-right of the inner area.
-//   * "Var: 16°W" magnetic-variation label at bottom-left.
+//   * Wind pointer (apparent wind direction): white-bordered fat
+//     pointer, drawn as two stacked lv_meter needles — a wide white
+//     needle (width 16) with a narrower navy fill (width 10) on top.
+//     Reads as a triangle-ish indicator from the rim toward the
+//     centre. Pivots are hidden by the inner disc.
+//   * Centre stack: small white-bordered pill at the top showing
+//     "x.x k DRIFT" (boat speed-through-water; "drift" matches the
+//     reference's labelling), and a bigger box below showing "xx.x k
+//     AWS" — apparent wind speed.
+//   * Small white triangle at the bottom of the inner disc — a stylised
+//     heading / reference marker pointing UP toward the bow.
 //
-// The 10 metrics from the reference's flanking columns now live on Page 2
-// (sparkline grid, also added round 40).
+// What got dropped vs round 41: the boat-outline polyline (the new
+// reference doesn't have one), the 0° reference needle, the heading-
+// box label, and the °M / Var: 16°W small text. The 9-metric
+// sparkline grid on Page 2 is unchanged.
 struct OverviewPage {
     lv_obj_t* root;
-    lv_obj_t* compass;                   // lv_meter — outer dial + ticks + needles
-    lv_meter_indicator_t* awa_needle;    // red — apparent wind
-    lv_meter_indicator_t* ref_needle;    // green — bow / 0° reference
-    lv_meter_indicator_t* port_sector;   // red close-hauled sector (top-left)
-    lv_meter_indicator_t* stbd_sector;   // green close-hauled sector (top-right)
+    lv_obj_t* compass;                       // lv_meter — outer dial + ticks
+    lv_meter_indicator_t* awa_needle_outer;  // white — wide border
+    lv_meter_indicator_t* awa_needle_inner;  // navy — narrower fill on top
+    lv_meter_indicator_t* port_red_ticks;    // SCALE_LINES — port close-hauled
+    lv_meter_indicator_t* stbd_green_ticks;  // SCALE_LINES — stbd close-hauled
 
-    lv_obj_t* spd_big_lbl;               // big BOAT SPD inside the speed circle
-    lv_obj_t* hdg_box_lbl;               // "000" inside the heading box at top
-    // Static decoration — built once, never updated; no handles needed.
+    lv_obj_t* drift_value_lbl;               // STW value inside the DRIFT pill
+    lv_obj_t* aws_value_lbl;                 // AWS value inside the wind box
 };
 OverviewPage overview;
 
@@ -281,23 +288,26 @@ lv_obj_t* makeLabel(lv_obj_t* parent,
 // --- Page construction ------------------------------------------------------
 
 // Build the full-screen compass instrument that fills the Overview page.
+// See the OverviewPage doc-comment higher up for the round-42 design
+// intent (black dial, white ticks/labels, tick-coloured close-hauled
+// markers, white-bordered fat wind pointer, DRIFT pill + AWS box,
+// heading triangle — drop the hull silhouette).
 //
-// Z-order (back to front, which equals child-creation order in LVGL):
-//   1. Outer dial — light-grey ring with tick marks + degree labels.
-//      Implemented as an lv_meter widget with a grey background.
-//   2. Red/green close-hauled sectors at the top of the dial (lv_meter
-//      arc indicators). Fixed at ±20° around the bow for v1.
-//   3. AWA red needle + green reference needle.
-//   4. Inner black disc — covers the centre, leaving the tick ring
-//      visible. Positioned as a child of the meter so it draws after
-//      the meter's tick marks AND its needles → effectively crops the
-//      needles to "outside the boat" on screen, matching how a real
-//      B&G display has the needle pivot hidden under the boat.
-//   5. Boat-outline silhouette (lv_line) inside the inner disc.
-//   6. White-bordered speed circle, holding the BOAT-SPD label.
-//   7. Heading box "000" at the top of the inner disc.
-//   8. "°M" magnetic indicator at top-right of the inner disc.
-//   9. "Var: 16°W" label at bottom-left of the inner disc.
+// Z-order (back to front = LVGL child-creation order):
+//   1. Outer black dial with white minor + major ticks and white labels.
+//   2. Red / green close-hauled tick lines (SCALE_LINES indicators) —
+//      they re-colour the existing tick marks in the ±40° window
+//      around the bow rather than drawing a solid arc.
+//   3. Wind pointer: stacked needle pair (wide white below, narrower
+//      navy on top) — looks like a triangular pointer outlined in
+//      white.
+//   4. Inner black disc — covers the centre and crops the inner half
+//      of both needles (so the pointer appears to emerge from the rim).
+//   5. (deleted in round 42 — was the boat-outline silhouette)
+//   6. DRIFT pill at upper-mid of the disc (small) and AWS box at
+//      lower-mid (big white-bordered black box).
+//   7. Small white triangle at the bottom of the disc — heading marker
+//      pointing toward the bow.
 void buildOverviewPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
@@ -311,21 +321,22 @@ void buildOverviewPage() {
     // inner-disc child (step 4) covers everything inside radius ~140 so
     // we end up with a visible grey *annulus* of width ~90 px — enough for
     // the major-tick degree labels.
-    constexpr int kCompassSize    = 460;
+    constexpr int kCompassSize    = 460;   // outer dial diameter
     constexpr int kInnerDiscSize  = 320;   // inner black disc diameter
-    constexpr int kSpdCircleSize  = 120;   // white-bordered speed circle
-    constexpr int kHdgBoxW        = 64;
-    constexpr int kHdgBoxH        = 30;
 
     lv_obj_t* compass = lv_meter_create(scr);
     lv_obj_set_size(compass, kCompassSize, kCompassSize);
     lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(compass,
-                              lv_palette_lighten(LV_PALETTE_GREY, 2),
-                              LV_PART_MAIN);
+    // Round 42: dial is BLACK (was light grey) to match the second B&G
+    // reference. Tick lines + tick labels are then drawn in white below.
+    lv_obj_set_style_bg_color(compass, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_border_width(compass, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(compass, 0, LV_PART_MAIN);
     lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
+    // Tick LABELS (the 30/60/90/... numerals) take their colour + font
+    // from LV_PART_TICKS text style on the meter itself.
+    lv_obj_set_style_text_color(compass, lv_color_white(), LV_PART_TICKS);
+    lv_obj_set_style_text_font(compass, &lv_font_montserrat_20, LV_PART_TICKS);
 
     lv_meter_scale_t* scale = lv_meter_add_scale(compass);
     // Round 41 (per user feedback "add more angles"): tick density doubled
@@ -334,9 +345,9 @@ void buildOverviewPage() {
     // thicker so the cardinal positions still pop through the denser
     // minor field. Result reads visibly more like the B&G reference,
     // which has very fine angular resolution around the rim.
-    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_black());
+    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_white());
     lv_meter_set_scale_major_ticks(compass, scale, 12, 3, 16,
-                                   lv_color_black(), 18);
+                                   lv_color_white(), 18);
     lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
     overview.compass = compass;
 
@@ -352,28 +363,44 @@ void buildOverviewPage() {
     // on the dial. Port = red on the left of bow (320..360°), starboard
     // = green on the right (0..40°). For v1 these are pinned; a future
     // round will follow TWA so the no-go zone tracks the live wind.
-    overview.port_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_palette_main(LV_PALETTE_RED), -22);
-    lv_meter_set_indicator_start_value(compass, overview.port_sector, 320);
-    lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
+    // Round 42 (per the new B&G reference): switch from solid lv_meter_add_arc
+    // bars to SCALE_LINES indicators. SCALE_LINES recolours every existing
+    // tick line whose value falls within [start, end] — so the result is
+    // discrete coloured tick marks (red on port, green on starboard) which
+    // is what the reference shows, not a filled arc.
+    overview.port_red_ticks = lv_meter_add_scale_lines(
+        compass, scale,
+        lv_palette_main(LV_PALETTE_RED),
+        lv_palette_main(LV_PALETTE_RED),
+        false, 0);
+    lv_meter_set_indicator_start_value(compass, overview.port_red_ticks, 320);
+    lv_meter_set_indicator_end_value  (compass, overview.port_red_ticks, 360);
 
-    overview.stbd_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_palette_main(LV_PALETTE_GREEN), -22);
-    lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
-    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 40);
+    overview.stbd_green_ticks = lv_meter_add_scale_lines(
+        compass, scale,
+        lv_palette_main(LV_PALETTE_GREEN),
+        lv_palette_main(LV_PALETTE_GREEN),
+        false, 0);
+    lv_meter_set_indicator_start_value(compass, overview.stbd_green_ticks, 0);
+    lv_meter_set_indicator_end_value  (compass, overview.stbd_green_ticks, 40);
 
-    // ----- (3) Needles -----
+    // ----- (3) Wind pointer (stacked needle pair) -----
     //
-    // Green reference (bow / 0°) drawn first so the red AWA needle sits
-    // on top when both align. r_mod = -22 keeps the needle tip 22 px shy
-    // of the tick marks.
-    overview.ref_needle = lv_meter_add_needle_line(
-        compass, scale, 3, lv_palette_main(LV_PALETTE_GREEN), -28);
-    lv_meter_set_indicator_value(compass, overview.ref_needle, 0);
+    // Round 42: replace the round-41 thin red+green needles with a wider,
+    // white-bordered fat pointer matching the new reference. Implemented
+    // as two needles at the same value: a 16-px white needle drawn first
+    // (forms the white border) and a 10-px navy needle drawn on top. The
+    // visual result is a fat navy line outlined in white — reads as a
+    // triangular pointer toward the rim. The slightly more-negative
+    // r_mod on the inner needle (-32 vs -28) makes it just shy of the
+    // outer one, so the white border is visible at the tip too.
+    overview.awa_needle_outer = lv_meter_add_needle_line(
+        compass, scale, 16, lv_color_white(), -28);
+    lv_meter_set_indicator_value(compass, overview.awa_needle_outer, 0);
 
-    overview.awa_needle = lv_meter_add_needle_line(
-        compass, scale, 4, lv_palette_main(LV_PALETTE_RED), -28);
-    lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
+    overview.awa_needle_inner = lv_meter_add_needle_line(
+        compass, scale, 10, lv_color_hex(0x1A2740), -32);
+    lv_meter_set_indicator_value(compass, overview.awa_needle_inner, 0);
 
     // ----- (4) Inner black disc -----
     //
@@ -391,110 +418,96 @@ void buildOverviewPage() {
     lv_obj_set_style_pad_all(inner, 0, LV_PART_MAIN);
     lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ----- (5) Boat-outline silhouette -----
+    // ----- (5) Boat-outline silhouette removed in round 42 -----
     //
-    // 8-point polyline shaped like a stylised hull: pointed bow, broad
-    // shoulders, gently tapered stern. Drawn inside the inner disc so
-    // its coordinates are relative to the disc's top-left corner, not
-    // the screen.
+    // The round-40/41 design had a smooth 32-point teardrop hull inside
+    // the inner disc. The new reference image doesn't have a hull at
+    // all — it has a stack of two readout boxes (DRIFT pill + AWS box)
+    // and a small heading-marker triangle. Hull code is fully removed
+    // here; revert this commit if we ever want it back.
+
+    // ----- (6) DRIFT pill + AWS box (replace the round-41 speed circle) -----
     //
-    // Reference image shows the hull centred horizontally and slightly
-    // below the inner disc's geometric centre, leaving room for the
-    // heading box at the top. We use the same proportions: hull is
-    // 130 px wide, 240 px tall, centred at (160, 130) within the disc.
-    // Round 41 (per user feedback "make sure the boat is without bends"):
-    // generate the hull as a smooth 32-point parametric teardrop instead
-    // of the round-40 11-point polygon. The polygon had visible elbows
-    // at every vertex; with 32 evenly-sampled points along a continuous
-    // curve and rounded line joins the silhouette reads as one smooth
-    // shape with a pointed bow and rounded transom — the classic B&G
-    // hull-icon look.
-    //
-    // Curve: an ellipse with bow taller than the stern (tear-drop) and
-    // an extra lateral taper near the bow so it points cleanly. All
-    // float math is constexpr-friendly inputs so the compiler folds the
-    // builder into a quick init pass.
-    //
-    // The static array survives across re-entries; lv_line stores the
-    // pointer (not a copy) so persistent storage is mandatory here.
-    constexpr int kHullPoints = 33;          // 32 around + 1 closing point
-    static lv_point_t hull_pts[kHullPoints];
-    static bool hull_built = false;
-    if (!hull_built) {
-        constexpr float cx         = 160.0f; // hull centre X within inner disc
-        constexpr float cy         = 145.0f; // hull centre Y (slightly above
-                                             // disc geo centre — leaves room
-                                             // for the heading box at the top)
-        constexpr float beam_half  = 60.0f;  // half-beam at maximum width
-        constexpr float bow_dist   = 130.0f; // cy → bow tip
-        constexpr float stern_dist = 115.0f; // cy → transom centre
-        for (int i = 0; i < 32; ++i) {
-            const float a = static_cast<float>(i) / 32.0f
-                            * 2.0f * static_cast<float>(M_PI);
-            const float s = sinf(a);    // ±1 horizontally
-            const float c = cosf(a);    // +1 at bow, −1 at stern
-            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
-            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
-            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
-            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
-        }
-        hull_pts[32] = hull_pts[0];     // close the loop back to the bow
-        hull_built = true;
-    }
-    lv_obj_t* hull = lv_line_create(inner);
-    lv_line_set_points(hull, hull_pts, kHullPoints);
-    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_line_width(hull, 2, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
+    // The new reference image has TWO stacked readout boxes inside the
+    // dial — a small white-bordered pill at the top showing "1.2 k DRIFT"
+    // and a bigger black box below showing "14.2 k AWS". We mirror that
+    // layout. We don't have a real drift PGN (drift / leeway estimates
+    // aren't standard NMEA 2000) so the DRIFT pill shows STW (the
+    // closest analogue — speed of the boat through the water) and the
+    // AWS box shows live apparent wind speed.
 
-    // ----- (6) White-bordered speed circle -----
-    //
-    // Sits at the boat's foredeck (slightly above geometric centre of
-    // the hull) so the big BOAT-SPD value reads cleanly without
-    // overlapping the AWA needle's tip when wind is dead-ahead.
-    lv_obj_t* spd_circle = lv_obj_create(inner);
-    lv_obj_set_size(spd_circle, kSpdCircleSize, kSpdCircleSize);
-    lv_obj_align(spd_circle, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(spd_circle, kSpdCircleSize / 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(spd_circle, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_border_width(spd_circle, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(spd_circle, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(spd_circle, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(spd_circle, LV_OBJ_FLAG_SCROLLABLE);
-
-    overview.spd_big_lbl = makeLabel(spd_circle, &lv_font_montserrat_48,
-                                     lv_color_white(), "--");
-    lv_obj_align(overview.spd_big_lbl, LV_ALIGN_CENTER, 0, 0);
-
-    // ----- (7) Heading box at top of inner disc -----
-    lv_obj_t* hdg_box = lv_obj_create(inner);
-    lv_obj_set_size(hdg_box, kHdgBoxW, kHdgBoxH);
-    lv_obj_align(hdg_box, LV_ALIGN_TOP_MID, 0, 8);
-    lv_obj_set_style_radius(hdg_box, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(hdg_box, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_border_width(hdg_box, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(hdg_box, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(hdg_box, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(hdg_box, LV_OBJ_FLAG_SCROLLABLE);
-
-    overview.hdg_box_lbl = makeLabel(hdg_box, &lv_font_montserrat_20,
-                                     lv_color_black(), "000");
-    lv_obj_align(overview.hdg_box_lbl, LV_ALIGN_CENTER, 0, 0);
-
-    // ----- (8) "°M" magnetic indicator (top-right) -----
+    // (6a) DRIFT pill — small, upper centre.
     {
-        lv_obj_t* m = makeLabel(inner, &lv_font_montserrat_16,
-                                lv_palette_main(LV_PALETTE_GREY),
-                                "\xC2\xB0M");
-        lv_obj_align(m, LV_ALIGN_TOP_RIGHT, -22, 14);
+        constexpr int W = 110;
+        constexpr int H = 50;
+        lv_obj_t* box = lv_obj_create(inner);
+        lv_obj_set_size(box, W, H);
+        lv_obj_align(box, LV_ALIGN_CENTER, 0, -55);
+        lv_obj_set_style_radius(box, H / 2, LV_PART_MAIN);   // pill
+        lv_obj_set_style_bg_color(box, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_border_width(box, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(box, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+        overview.drift_value_lbl = makeLabel(box, &lv_font_montserrat_24,
+                                             lv_color_white(), "--");
+        lv_obj_align(overview.drift_value_lbl, LV_ALIGN_CENTER, -8, -4);
+
+        lv_obj_t* unit = makeLabel(box, &lv_font_montserrat_14,
+                                   lv_color_white(), "k");
+        lv_obj_align(unit, LV_ALIGN_CENTER, 22, -6);
+
+        lv_obj_t* sub = makeLabel(box, &lv_font_montserrat_12,
+                                  lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                  "DRIFT");
+        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 14);
     }
 
-    // ----- (9) "Var: 16°W" label (bottom-left) -----
+    // (6b) AWS box — bigger, lower centre. Apparent wind speed at
+    // montserrat_48 with "k" superscript and "AWS" subtitle.
     {
-        lv_obj_t* var_lbl = makeLabel(inner, &lv_font_montserrat_14,
-                                      lv_palette_main(LV_PALETTE_GREY),
-                                      "Var: 16\xC2\xB0W");
-        lv_obj_align(var_lbl, LV_ALIGN_BOTTOM_LEFT, 22, -14);
+        constexpr int W = 170;
+        constexpr int H = 80;
+        lv_obj_t* box = lv_obj_create(inner);
+        lv_obj_set_size(box, W, H);
+        lv_obj_align(box, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_set_style_radius(box, 8, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(box, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_border_width(box, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(box, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+        overview.aws_value_lbl = makeLabel(box, &lv_font_montserrat_48,
+                                           lv_color_white(), "--");
+        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -10, -8);
+
+        lv_obj_t* unit = makeLabel(box, &lv_font_montserrat_20,
+                                   lv_color_white(), "k");
+        lv_obj_align(unit, LV_ALIGN_TOP_RIGHT, -10, 8);
+
+        lv_obj_t* sub = makeLabel(box, &lv_font_montserrat_14,
+                                  lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                  "AWS");
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -4);
+    }
+
+    // ----- (7) Heading marker — small white triangle at bottom of disc -----
+    {
+        static const lv_point_t tri_pts[] = {
+            {10,  0},
+            {20, 18},
+            { 0, 18},
+            {10,  0},
+        };
+        lv_obj_t* tri = lv_line_create(inner);
+        lv_line_set_points(tri, tri_pts,
+                           sizeof(tri_pts) / sizeof(tri_pts[0]));
+        lv_obj_set_style_line_color(tri, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_line_width(tri, 2, LV_PART_MAIN);
+        lv_obj_set_style_line_rounded(tri, true, LV_PART_MAIN);
+        lv_obj_align(tri, LV_ALIGN_BOTTOM_MID, 0, -14);
     }
 }
 
@@ -657,37 +670,48 @@ double computeVmg(double stw, double twa) {
 }
 
 void refreshOverview(const Instruments& s) {
-    // Wind needle: AWA is -180..180 with + starboard. Meter scale is 0..360
-    // with 0=bow, so shift by +360 when negative.
+    // Round 42 (flicker mitigation, bounce-buffer fallback path): dedup
+    // wind-pointer redraws. lv_meter_set_indicator_value unconditionally
+    // marks the entire meter widget dirty, which on our 460×460 dial is
+    // a ~423 KB flush — too big for vblank, so the memcpy races the RGB
+    // scan and we get the side-to-side shimmer. Skipping the call when
+    // the integer angle hasn't changed cuts redraws by 5-10× in steady
+    // state (the simulator and the real bus both deliver sub-degree
+    // jitter at 10 Hz, but the visible angle rarely steps more than
+    // 1-2°/s).
+    static int32_t last_awa = INT32_MIN;
     if (!isnan(s.awa)) {
         double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
-        lv_meter_set_indicator_value(overview.compass,
-                                     overview.awa_needle,
-                                     static_cast<int32_t>(deg));
-    }
-    // Reference needle stays pinned to 0° (bow).
-    lv_meter_set_indicator_value(overview.compass, overview.ref_needle, 0);
-
-    // Big BOAT-SPD inside the speed circle — prefer STW (paddlewheel)
-    // since the reference shows boat-through-water speed; fall back to
-    // SOG when STW is missing.
-    const double boat_spd = !isnan(s.stw) ? s.stw : s.sog;
-    if (isnan(boat_spd)) {
-        lv_label_set_text(overview.spd_big_lbl, "--");
-    } else {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%.1f", boat_spd);
-        lv_label_set_text(overview.spd_big_lbl, buf);
+        const int32_t v = static_cast<int32_t>(deg);
+        if (v != last_awa) {
+            lv_meter_set_indicator_value(overview.compass,
+                                         overview.awa_needle_outer, v);
+            lv_meter_set_indicator_value(overview.compass,
+                                         overview.awa_needle_inner, v);
+            last_awa = v;
+        }
     }
 
-    // Heading box at the top of the inner disc — three-digit zero-padded
-    // degrees (000..359), or "---" if no fix yet.
-    if (isnan(s.heading_true_deg)) {
-        lv_label_set_text(overview.hdg_box_lbl, "---");
+    // DRIFT pill — speed-through-water (paddlewheel). The reference's
+    // "DRIFT" label technically refers to current/leeway, which we don't
+    // get on the bus; STW (with SOG fallback) is the closest analogue
+    // and matches what the user wants to see at a glance.
+    const double drift = !isnan(s.stw) ? s.stw : s.sog;
+    if (isnan(drift)) {
+        lv_label_set_text(overview.drift_value_lbl, "--");
     } else {
         char buf[8];
-        snprintf(buf, sizeof(buf), "%03.0f", s.heading_true_deg);
-        lv_label_set_text(overview.hdg_box_lbl, buf);
+        snprintf(buf, sizeof(buf), "%.1f", drift);
+        lv_label_set_text(overview.drift_value_lbl, buf);
+    }
+
+    // AWS box — apparent wind speed in knots, one decimal.
+    if (isnan(s.aws)) {
+        lv_label_set_text(overview.aws_value_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", s.aws);
+        lv_label_set_text(overview.aws_value_lbl, buf);
     }
 }
 
@@ -1296,7 +1320,15 @@ uint32_t tick() {
     static uint32_t last_data_refresh_ms = 0;
     static uint32_t last_history_ms      = 0;
     const uint32_t now = millis();
-    if (now - last_data_refresh_ms >= 100) {
+    // Round 42: throttle dropped from 100 ms (10 Hz, round 35) to 250 ms
+    // (4 Hz). Reasoning: the bounce-buffer flicker fix didn't make it
+    // (IDF struct in this Arduino-ESP32 release lacks the field), so
+    // every full refresh still risks a beam-race when the lv_meter
+    // recomposites. Quartering the refresh rate quarters the flicker
+    // opportunity without making the readout feel laggy — boat
+    // instruments at 4 Hz are still well under any human reaction
+    // threshold for "is the wind pointer moving?".
+    if (now - last_data_refresh_ms >= 250) {
         last_data_refresh_ms = now;
         refreshFromState();
     }

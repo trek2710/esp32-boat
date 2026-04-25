@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 41: B&G fidelity pass — sectors widened to ±40° / 26 px, compass ticks doubled to 145 @ 2.5°, boat hull replaced with smooth 32-point teardrop. Page 2 redrawn as round-table (centre BSPD font-48, four cardinals HDG/AWS/TWS/AWA font-28 with charts, four diagonals TWA/TWD/VMG/SOG font-20 value-only); sparklines now 20-bar zero-padded histograms (area-fill look at readable resolution); titles upsized + brightened."
+DEFAULT_MSG="Round 42: black-dial Overview redesign to match new B&G reference (white tick lines + white labels, red/green close-hauled markers via SCALE_LINES tick recolouring instead of solid arcs, stacked white-bordered fat wind pointer, central DRIFT pill + AWS box stack, drop hull silhouette + heading box). Flicker mitigation: bounce-buffer struct fields aren't in this Arduino-ESP32 IDF fork — reverted; instead dedup lv_meter wind-pointer updates (skip when integer angle unchanged) and slow refreshFromState from 10 Hz to 4 Hz to cut redraw amplification."
 
 set -euo pipefail
 

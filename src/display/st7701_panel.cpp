@@ -464,14 +464,16 @@ bool St7701Panel::initRgbPanel() {
     // Framebuffer: one full-screen RGB565 buffer in PSRAM. 480×480×2 =
     // 460,800 bytes, well under our 8 MB budget.
     //
-    // Note on the missing bounce_buffer_size_px field: IDF 5.x added a
-    // "bounce buffer" fast path that keeps a small SRAM staging buffer in
-    // front of the PSRAM framebuffer to work around PSRAM bus stalls at
-    // high PCLK. Arduino-ESP32 2.0.16 ships with IDF 4.4.7, which predates
-    // that feature — the struct doesn't have the field, so we can't set
-    // it here. At 14 MHz PCLK this is fine; if we ever push PCLK past
-    // ~20 MHz and see tearing, the fix is to bump the core to IDF 5.x
-    // (Arduino-ESP32 3.x) rather than to add back this line.
+    // Round 42 attempted to enable bounce-buffer mode here (
+    // cfg.bounce_buffer_size_px / cfg.flags.bb_invalidate_cache) — it
+    // would have decoupled PSRAM framebuffer writes from the RGB scan,
+    // killing the residual shimmer round 35's vsync gate can't catch on
+    // big LVGL redraws. But the Arduino-ESP32 2.0.16 IDF fork's
+    // esp_lcd_rgb_panel_config_t doesn't include those fields (they
+    // landed in mainline IDF 4.3, but this Arduino-ESP32 release pins
+    // an older snapshot). Compile failure: "no member named
+    // bounce_buffer_size_px". Reverted; mitigation moved to Ui.cpp
+    // (dedup'ed indicator updates + slower visible-page refresh).
     cfg.flags.fb_in_psram       = 1;
     cfg.flags.disp_active_low   = 0;
     cfg.flags.relax_on_idle     = 0;
