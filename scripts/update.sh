@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 42: black-dial Overview redesign to match new B&G reference (white tick lines + white labels, red/green close-hauled markers via SCALE_LINES tick recolouring instead of solid arcs, stacked white-bordered fat wind pointer, central DRIFT pill + AWS box stack, drop hull silhouette + heading box). Flicker mitigation: bounce-buffer struct fields aren't in this Arduino-ESP32 IDF fork — reverted; instead dedup lv_meter wind-pointer updates (skip when integer angle unchanged) and slow refreshFromState from 10 Hz to 4 Hz to cut redraw amplification."
+DEFAULT_MSG="Round 43: visual fixes after round 42 — SCALE_LINES didn't paint, reverted red/green to solid lv_meter_add_arc bars; wind needles widened from 16/10 to 32/22 px; round-41 teardrop hull back as faint LV_OPA_40 outline; new static cyan chevron on the dial annulus port-beam position as drift-direction marker. Flicker: PCLK dropped 16 → 12 MHz (refresh ~44 Hz) for less PSRAM-bus contention with the framebuffer memcpy."
 
 set -euo pipefail
 

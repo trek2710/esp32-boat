@@ -123,8 +123,8 @@ struct OverviewPage {
     lv_obj_t* compass;                       // lv_meter — outer dial + ticks
     lv_meter_indicator_t* awa_needle_outer;  // white — wide border
     lv_meter_indicator_t* awa_needle_inner;  // navy — narrower fill on top
-    lv_meter_indicator_t* port_red_ticks;    // SCALE_LINES — port close-hauled
-    lv_meter_indicator_t* stbd_green_ticks;  // SCALE_LINES — stbd close-hauled
+    lv_meter_indicator_t* port_sector;       // solid red arc — port close-hauled
+    lv_meter_indicator_t* stbd_sector;       // solid green arc — stbd close-hauled
 
     lv_obj_t* drift_value_lbl;               // STW value inside the DRIFT pill
     lv_obj_t* aws_value_lbl;                 // AWS value inside the wind box
@@ -363,43 +363,36 @@ void buildOverviewPage() {
     // on the dial. Port = red on the left of bow (320..360°), starboard
     // = green on the right (0..40°). For v1 these are pinned; a future
     // round will follow TWA so the no-go zone tracks the live wind.
-    // Round 42 (per the new B&G reference): switch from solid lv_meter_add_arc
-    // bars to SCALE_LINES indicators. SCALE_LINES recolours every existing
-    // tick line whose value falls within [start, end] — so the result is
-    // discrete coloured tick marks (red on port, green on starboard) which
-    // is what the reference shows, not a filled arc.
-    overview.port_red_ticks = lv_meter_add_scale_lines(
-        compass, scale,
-        lv_palette_main(LV_PALETTE_RED),
-        lv_palette_main(LV_PALETTE_RED),
-        false, 0);
-    lv_meter_set_indicator_start_value(compass, overview.port_red_ticks, 320);
-    lv_meter_set_indicator_end_value  (compass, overview.port_red_ticks, 360);
+    // Round 43: SCALE_LINES indicators (round 42 attempt) didn't paint
+    // visibly on the panel — user reported "no red/green colors". Reverted
+    // to solid lv_meter_add_arc bars (round-41 method, known good): width
+    // 26 px, port red 320..360°, starboard green 0..40°, both pulled
+    // 22 px inside the tick ring via r_mod = -22.
+    overview.port_sector = lv_meter_add_arc(
+        compass, scale, 26, lv_palette_main(LV_PALETTE_RED), -22);
+    lv_meter_set_indicator_start_value(compass, overview.port_sector, 320);
+    lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
 
-    overview.stbd_green_ticks = lv_meter_add_scale_lines(
-        compass, scale,
-        lv_palette_main(LV_PALETTE_GREEN),
-        lv_palette_main(LV_PALETTE_GREEN),
-        false, 0);
-    lv_meter_set_indicator_start_value(compass, overview.stbd_green_ticks, 0);
-    lv_meter_set_indicator_end_value  (compass, overview.stbd_green_ticks, 40);
+    overview.stbd_sector = lv_meter_add_arc(
+        compass, scale, 26, lv_palette_main(LV_PALETTE_GREEN), -22);
+    lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
+    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 40);
 
     // ----- (3) Wind pointer (stacked needle pair) -----
     //
-    // Round 42: replace the round-41 thin red+green needles with a wider,
-    // white-bordered fat pointer matching the new reference. Implemented
-    // as two needles at the same value: a 16-px white needle drawn first
-    // (forms the white border) and a 10-px navy needle drawn on top. The
-    // visual result is a fat navy line outlined in white — reads as a
-    // triangular pointer toward the rim. The slightly more-negative
-    // r_mod on the inner needle (-32 vs -28) makes it just shy of the
-    // outer one, so the white border is visible at the tip too.
+    // Round 43: needle widths doubled — round 42's 16/10 was reported as
+    // "next to no arrow". 32-px white outer + 22-px navy inner gives a
+    // chunky pointer with a clearly visible 5-px white border on each
+    // side, sized so it reads as the dominant feature on the dial like
+    // in the reference. Both needles share the same indicator value
+    // (set in refreshOverview) so they stay aligned and look like one
+    // fat white-rimmed pointer.
     overview.awa_needle_outer = lv_meter_add_needle_line(
-        compass, scale, 16, lv_color_white(), -28);
+        compass, scale, 32, lv_color_white(), -28);
     lv_meter_set_indicator_value(compass, overview.awa_needle_outer, 0);
 
     overview.awa_needle_inner = lv_meter_add_needle_line(
-        compass, scale, 10, lv_color_hex(0x1A2740), -32);
+        compass, scale, 22, lv_color_hex(0x1A2740), -32);
     lv_meter_set_indicator_value(compass, overview.awa_needle_inner, 0);
 
     // ----- (4) Inner black disc -----
@@ -418,13 +411,77 @@ void buildOverviewPage() {
     lv_obj_set_style_pad_all(inner, 0, LV_PART_MAIN);
     lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ----- (5) Boat-outline silhouette removed in round 42 -----
+    // ----- (5) Boat-outline silhouette (round 41 → removed round 42 → back round 43) -----
     //
-    // The round-40/41 design had a smooth 32-point teardrop hull inside
-    // the inner disc. The new reference image doesn't have a hull at
-    // all — it has a stack of two readout boxes (DRIFT pill + AWS box)
-    // and a small heading-marker triangle. Hull code is fully removed
-    // here; revert this commit if we ever want it back.
+    // Round 42 dropped the hull because the new reference image didn't
+    // appear to show one. User pushed back ("no boat shape") so it's
+    // back — but rendered as a FAINT white outline (LV_OPA_40) so it
+    // reads as a subtle "this is a boat instrument" backdrop without
+    // competing with the DRIFT pill / AWS box / wind pointer for
+    // attention.
+    //
+    // 32-point parametric teardrop curve, same as round 41: asymmetric
+    // ellipse (taller bow than stern) with extra lateral taper near the
+    // bow so it points cleanly. Drawn first inside the inner disc so
+    // the readouts overlay it.
+    constexpr int kHullPoints = 33;
+    static lv_point_t hull_pts[kHullPoints];
+    static bool hull_built = false;
+    if (!hull_built) {
+        constexpr float cx         = 160.0f;
+        constexpr float cy         = 145.0f;
+        constexpr float beam_half  = 60.0f;
+        constexpr float bow_dist   = 130.0f;
+        constexpr float stern_dist = 115.0f;
+        for (int i = 0; i < 32; ++i) {
+            const float a = static_cast<float>(i) / 32.0f
+                            * 2.0f * static_cast<float>(M_PI);
+            const float s = sinf(a);
+            const float c = cosf(a);
+            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
+            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
+            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
+            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
+        }
+        hull_pts[32] = hull_pts[0];
+        hull_built = true;
+    }
+    lv_obj_t* hull = lv_line_create(inner);
+    lv_line_set_points(hull, hull_pts, kHullPoints);
+    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(hull, 2, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
+    lv_obj_set_style_line_opa(hull, LV_OPA_40, LV_PART_MAIN);
+
+    // ----- (5b) Drift-direction chevron (cyan, dial annulus, port side) -----
+    //
+    // Round 43 (per user feedback "no inner arrow indicating drift"):
+    // small cyan chevron on the LEFT of the dial annulus pointing
+    // inward. In the reference image this marks the drift / leeway
+    // direction. We don't get drift on the bus, so for v1 it's pinned
+    // at the port-beam position (270°). Drawn as a child of the
+    // compass widget (NOT the inner disc) so it sits on the dark
+    // annulus, not on top of the readouts.
+    //
+    // Coordinates are in compass-local px (compass is 460×460, centre
+    // at (230,230)). Place at x ≈ 60 (port beam position) and align
+    // vertically with centre (y ≈ 220).
+    {
+        static const lv_point_t chevron_pts[] = {
+            { 14,  0},
+            {  0, 12},
+            { 14, 24},
+        };
+        lv_obj_t* drift = lv_line_create(compass);
+        lv_line_set_points(drift, chevron_pts,
+                           sizeof(chevron_pts) / sizeof(chevron_pts[0]));
+        lv_obj_set_style_line_color(drift,
+                                    lv_palette_main(LV_PALETTE_CYAN),
+                                    LV_PART_MAIN);
+        lv_obj_set_style_line_width(drift, 4, LV_PART_MAIN);
+        lv_obj_set_style_line_rounded(drift, true, LV_PART_MAIN);
+        lv_obj_set_pos(drift, 60, 218);
+    }
 
     // ----- (6) DRIFT pill + AWS box (replace the round-41 speed circle) -----
     //

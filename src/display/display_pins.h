@@ -179,7 +179,15 @@ static constexpr int RGB_PIN_B4    = 21;
 // siblings but panel-cell-specific differences in gamma/GIP/voltages. The
 // pivot this round is to take the authoritative Waveshare-for-this-board
 // values verbatim instead of continuing to splice between near-matches.
-static constexpr int RGB_PCLK_HZ   = 16 * 1000 * 1000;
+// Round 43 — drop from 16 MHz to 12 MHz for flicker mitigation. With
+// porches HPW 8 / HBP 10 / HFP 50 = 548 PCLKs/line and VPW 3 / VBP 8 /
+// VFP 8 + 480 = 499 lines/frame, refresh moves from 58.5 Hz to ~43.9 Hz —
+// still well above any flicker threshold. The slower scan reads from
+// PSRAM with less bandwidth contention against CPU writes, which gives
+// LVGL's framebuffer memcpy more headroom against the in-progress scan
+// (we can't use bounce-buffer mode on this Arduino-ESP32 IDF fork). The
+// ST7701 is rated 6-30 MHz PCLK so 12 MHz is comfortably mid-range.
+static constexpr int RGB_PCLK_HZ   = 12 * 1000 * 1000;
 
 // ST7701 3-wire SPI init bus (software-bit-banged). On this board, LCD_CS is
 // on TCA9554 IO3 (see TCA9554_BIT_LCD_CS below) — it is NOT a GPIO, so we
