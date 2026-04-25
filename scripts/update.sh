@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 40: B&G middle-section Overview (compass-only — outer dial + port/stbd close-hauled sectors + AWA/ref needles + inner disc + boat outline + speed circle + heading box + °M / Var labels) and new Page 2 = 3×3 sparkline grid (AWA/TWA/TWD, AWS/BSPD/TWS, HDG/SOG/VMG) backed by 5 min @ 1 Hz history rings."
+DEFAULT_MSG="Round 41: B&G fidelity pass — sectors widened to ±40° / 26 px, compass ticks doubled to 145 @ 2.5°, boat hull replaced with smooth 32-point teardrop. Page 2 redrawn as round-table (centre BSPD font-48, four cardinals HDG/AWS/TWS/AWA font-28 with charts, four diagonals TWA/TWD/VMG/SOG font-20 value-only); sparklines now 20-bar zero-padded histograms (area-fill look at readable resolution); titles upsized + brightened."
 
 set -euo pipefail
 

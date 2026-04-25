@@ -124,33 +124,48 @@ struct OverviewPage {
 };
 OverviewPage overview;
 
-// ---- Data page (round 40 — sparkline grid) ----
+// ---- Data page (round 41 — round-table layout) ----
 //
-// 3×3 grid of cells inside the round panel's inscribed area. Each cell
-// shows: a small grey label, a large white current value, and a 5-min
-// history sparkline at the bottom. Layout is metric-symmetric so the
-// most-watched values (boat speed, wind angle, wind speed) live in the
-// centre column where the eye lands first.
+// Round 40 used a uniform 3×3 grid; the user pushed back ("titles
+// unreadable, graphs bad, use a round table, more important data
+// bigger"). Round 41 replaces it with a radial layout that matches the
+// round display:
 //
-// The history buffer below is sampled at 1 Hz from tick(); each metric
-// gets 300 samples = 5 minutes of trail.
+//   * Centre tile (170×170, big rounded corners): BSPD — the headline
+//     boat-speed readout, montserrat_48.
+//   * Four cardinal tiles (130×80) at N/E/S/W on a 160 px radius:
+//     HDG, AWS, TWS, AWA — montserrat_28 value, 22 px area-fill chart.
+//   * Four diagonal tiles (90×60) at NE/SE/SW/NW on a 175 px radius:
+//     TWA, TWD, SOG, VMG — montserrat_20 value, value-only (no chart).
+//
+// Sizes scale with importance so the eye finds boat-speed first, then
+// the cardinals (sail-trim signals), then the secondary derived values.
+// Distances were chosen so the outermost tile corner sits ≈ 230 px from
+// screen centre — inside the 240 px round-panel usable radius with a
+// comfortable bezel margin.
+//
+// Each cell that has room shows a 20-bar area-fill sparkline of the
+// last 5 minutes — 300 history samples × 1 Hz from tick() averaged 15:1
+// into bars. Bars touch (no column padding) so adjacent bars merge into
+// a continuous coloured strip — the "fill area" look the user asked
+// for, with much less per-pixel resolution than the 100-point line in
+// round 40 so a 22 px tall strip stays readable.
 constexpr size_t kHistoryLen = 300;       // 5 min @ 1 Hz
-constexpr int    kGridCols   = 3;
-constexpr int    kGridRows   = 3;
-constexpr size_t kCellCount  = kGridCols * kGridRows;
+constexpr size_t kCellCount  = 9;         // 1 centre + 4 cardinals + 4 diagonals
 
-// Stable identity for each cell so we can key history buffers and refresh
-// without playing string-compare games. Order = grid order, row-major:
-//   row 0 (top):    AWA   TWA    TWD
-//   row 1 (mid):    AWS   BSPD   TWS
-//   row 2 (bottom): HDG   SOG    VMG
+// Stable identity for each cell so we can key history buffers and per-
+// cell build specs without playing string-compare games. Order is
+// importance-first so kSpecs[0] is the biggest tile:
+//   0    BSPD   centre
+//   1-4  HDG/AWS/TWS/AWA   cardinals
+//   5-8  TWD/TWA/VMG/SOG   diagonals
 enum class CellMetric : uint8_t {
-    AWA  = 0, TWA  = 1, TWD = 2,
-    AWS  = 3, BSPD = 4, TWS = 5,
-    HDG  = 6, SOG  = 7, VMG = 8,
+    BSPD = 0,
+    HDG  = 1, AWS = 2, TWS = 3, AWA = 4,
+    TWD  = 5, TWA = 6, VMG = 7, SOG = 8,
 };
-static_assert(static_cast<size_t>(CellMetric::VMG) + 1 == kCellCount,
-              "CellMetric layout must cover all grid cells");
+static_assert(static_cast<size_t>(CellMetric::SOG) + 1 == kCellCount,
+              "CellMetric layout must cover all cells");
 
 struct DataCell {
     lv_obj_t*  root;
@@ -313,13 +328,15 @@ void buildOverviewPage() {
     lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_meter_scale_t* scale = lv_meter_add_scale(compass);
-    // 73 ticks at 5° intervals, every 6th major (every 30°). Labels at
-    // distance 18 (in pixels from the major-tick inner end) put the
-    // numerals on the grey annulus, not on the inner black disc.
-    lv_meter_set_scale_ticks(compass, scale, 73, 1, 6, lv_color_black());
-    lv_meter_set_scale_major_ticks(compass, scale, 6, 2, 12,
+    // Round 41 (per user feedback "add more angles"): tick density doubled
+    // from 73 minor ticks @ 5° (round 40) to 145 minor ticks @ 2.5°. Major
+    // ticks stay at every 30° (every 12th tick) but are taller and
+    // thicker so the cardinal positions still pop through the denser
+    // minor field. Result reads visibly more like the B&G reference,
+    // which has very fine angular resolution around the rim.
+    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_black());
+    lv_meter_set_scale_major_ticks(compass, scale, 12, 3, 16,
                                    lv_color_black(), 18);
-    // Range 0..360, full sweep, rotated so 0 sits at the top.
     lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
     overview.compass = compass;
 
@@ -328,15 +345,22 @@ void buildOverviewPage() {
     // Width 16 px, drawn on the inside of the tick ring. Red on port
     // (340..360°), green on starboard (0..20°). For v1 these are pinned;
     // a future round can make them follow TWA so the no-go zone moves.
+    // Round 41 (per user feedback "Use red/green"): sectors widened from
+    // ±20° to ±40° around the bow and thickened from 18 to 26 px so the
+    // no-go zone reads as a dominant visual feature, matching the B&G
+    // reference where the red/green arcs are the most prominent thing
+    // on the dial. Port = red on the left of bow (320..360°), starboard
+    // = green on the right (0..40°). For v1 these are pinned; a future
+    // round will follow TWA so the no-go zone tracks the live wind.
     overview.port_sector = lv_meter_add_arc(
-        compass, scale, 18, lv_palette_main(LV_PALETTE_RED), -22);
-    lv_meter_set_indicator_start_value(compass, overview.port_sector, 340);
+        compass, scale, 26, lv_palette_main(LV_PALETTE_RED), -22);
+    lv_meter_set_indicator_start_value(compass, overview.port_sector, 320);
     lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
 
     overview.stbd_sector = lv_meter_add_arc(
-        compass, scale, 18, lv_palette_main(LV_PALETTE_GREEN), -22);
+        compass, scale, 26, lv_palette_main(LV_PALETTE_GREEN), -22);
     lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
-    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 20);
+    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 40);
 
     // ----- (3) Needles -----
     //
@@ -378,27 +402,50 @@ void buildOverviewPage() {
     // below the inner disc's geometric centre, leaving room for the
     // heading box at the top. We use the same proportions: hull is
     // 130 px wide, 240 px tall, centred at (160, 130) within the disc.
-    static const lv_point_t hull_pts[] = {
-        {160,  10},   // bow tip
-        {200,  60},   // bow shoulder
-        {220, 120},   // beam (port side, by sailor convention; we don't
-                      // care about port/starboard symmetry visually)
-        {220, 200},   // mid-aft
-        {200, 250},   // stern shoulder
-        {160, 270},   // transom centre
-        {120, 250},   // stern shoulder (mirror)
-        {100, 200},
-        {100, 120},
-        {120,  60},
-        {160,  10},   // close back to the bow
-    };
+    // Round 41 (per user feedback "make sure the boat is without bends"):
+    // generate the hull as a smooth 32-point parametric teardrop instead
+    // of the round-40 11-point polygon. The polygon had visible elbows
+    // at every vertex; with 32 evenly-sampled points along a continuous
+    // curve and rounded line joins the silhouette reads as one smooth
+    // shape with a pointed bow and rounded transom — the classic B&G
+    // hull-icon look.
+    //
+    // Curve: an ellipse with bow taller than the stern (tear-drop) and
+    // an extra lateral taper near the bow so it points cleanly. All
+    // float math is constexpr-friendly inputs so the compiler folds the
+    // builder into a quick init pass.
+    //
+    // The static array survives across re-entries; lv_line stores the
+    // pointer (not a copy) so persistent storage is mandatory here.
+    constexpr int kHullPoints = 33;          // 32 around + 1 closing point
+    static lv_point_t hull_pts[kHullPoints];
+    static bool hull_built = false;
+    if (!hull_built) {
+        constexpr float cx         = 160.0f; // hull centre X within inner disc
+        constexpr float cy         = 145.0f; // hull centre Y (slightly above
+                                             // disc geo centre — leaves room
+                                             // for the heading box at the top)
+        constexpr float beam_half  = 60.0f;  // half-beam at maximum width
+        constexpr float bow_dist   = 130.0f; // cy → bow tip
+        constexpr float stern_dist = 115.0f; // cy → transom centre
+        for (int i = 0; i < 32; ++i) {
+            const float a = static_cast<float>(i) / 32.0f
+                            * 2.0f * static_cast<float>(M_PI);
+            const float s = sinf(a);    // ±1 horizontally
+            const float c = cosf(a);    // +1 at bow, −1 at stern
+            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
+            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
+            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
+            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
+        }
+        hull_pts[32] = hull_pts[0];     // close the loop back to the bow
+        hull_built = true;
+    }
     lv_obj_t* hull = lv_line_create(inner);
-    lv_line_set_points(hull, hull_pts,
-                       sizeof(hull_pts) / sizeof(hull_pts[0]));
+    lv_line_set_points(hull, hull_pts, kHullPoints);
     lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
     lv_obj_set_style_line_width(hull, 2, LV_PART_MAIN);
     lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
-    lv_obj_set_pos(hull, 0, 25);   // nudge down so bow sits below hdg box
 
     // ----- (6) White-bordered speed circle -----
     //
@@ -451,61 +498,98 @@ void buildOverviewPage() {
     }
 }
 
-// Build one cell of the sparkline grid. Each cell is a 130×130 dark tile
-// with three layers of content stacked vertically:
-//   row 0:  small grey title  (e.g. "AWA  °")
-//   row 1:  large white value (e.g. "-27")
-//   row 2:  thin sparkline showing the last 5 minutes of this metric
-DataCell buildDataCell(lv_obj_t* parent, int dx, int dy, const char* title) {
+// Per-cell layout/typography spec. dx/dy are LV_ALIGN_CENTER offsets in
+// screen px; w/h are tile dimensions; radius rounds the corners.
+// chart_h = 0 means "no sparkline for this cell" (the diagonals where
+// there's no room).
+struct CellSpec {
+    int                 dx, dy;
+    int                 w, h;
+    int                 radius;
+    const lv_font_t*    title_font;
+    const lv_font_t*    value_font;
+    int                 chart_h;
+    const char*         title;
+};
+
+// Round-table layout. Indices match the CellMetric enum so kSpecs[m]
+// directly describes the tile for metric m.
+static const CellSpec kSpecs[kCellCount] = {
+    /* 0 BSPD centre  */ {   0,    0, 170, 170, 24, &lv_font_montserrat_16, &lv_font_montserrat_48, 40, "BSPD kn"     },
+    /* 1 HDG  N       */ {   0, -160, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "HDG  \xC2\xB0" },
+    /* 2 AWS  E       */ { 160,    0, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "AWS  kn"     },
+    /* 3 TWS  S       */ {   0,  160, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "TWS  kn"     },
+    /* 4 AWA  W       */ {-160,    0, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "AWA  \xC2\xB0" },
+    /* 5 TWD  NW      */ {-124, -124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "TWD \xC2\xB0"  },
+    /* 6 TWA  NE      */ { 124, -124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "TWA \xC2\xB0"  },
+    /* 7 VMG  SW      */ {-124,  124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "VMG kn"      },
+    /* 8 SOG  SE      */ { 124,  124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "SOG kn"      },
+};
+
+// Build one tile from a spec: dark background, brighter title at top,
+// big white value in the middle, optional area-fill sparkline at the
+// bottom. Used by buildDataPage to materialise all 9 cells uniformly.
+DataCell buildDataCell(lv_obj_t* parent, const CellSpec& s) {
     DataCell c{};
-    constexpr int kCellW = 130;
-    constexpr int kCellH = 130;
 
     lv_obj_t* root = lv_obj_create(parent);
-    lv_obj_set_size(root, kCellW, kCellH);
-    lv_obj_align(root, LV_ALIGN_CENTER, dx, dy);
-    lv_obj_set_style_radius(root, 6, LV_PART_MAIN);
+    lv_obj_set_size(root, s.w, s.h);
+    lv_obj_align(root, LV_ALIGN_CENTER, s.dx, s.dy);
+    lv_obj_set_style_radius(root, s.radius, LV_PART_MAIN);
     lv_obj_set_style_bg_color(root, lv_color_hex(0x101418), LV_PART_MAIN);
     lv_obj_set_style_border_width(root, 1, LV_PART_MAIN);
     lv_obj_set_style_border_color(root,
-                                  lv_palette_darken(LV_PALETTE_GREY, 3),
+                                  lv_palette_darken(LV_PALETTE_GREY, 2),
                                   LV_PART_MAIN);
     lv_obj_set_style_pad_all(root, 4, LV_PART_MAIN);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
-    c.title_lbl = makeLabel(root, &lv_font_montserrat_14,
-                            lv_palette_main(LV_PALETTE_GREY), title);
-    lv_obj_align(c.title_lbl, LV_ALIGN_TOP_LEFT, 2, 0);
+    // Round 41 (per user feedback "name of the data is unreadable"):
+    // titles bumped from montserrat_14 grey to a near-white tone at
+    // montserrat_16 (cardinals/centre) or montserrat_14 (diagonals) so
+    // metric names are legible at a glance even on the smaller tiles.
+    c.title_lbl = makeLabel(root, s.title_font,
+                            lv_palette_lighten(LV_PALETTE_GREY, 4),
+                            s.title);
+    lv_obj_align(c.title_lbl, LV_ALIGN_TOP_MID, 0, 2);
 
-    c.value_lbl = makeLabel(root, &lv_font_montserrat_28,
-                            lv_color_white(), "--");
-    lv_obj_align(c.value_lbl, LV_ALIGN_TOP_MID, 0, 18);
+    c.value_lbl = makeLabel(root, s.value_font, lv_color_white(), "--");
+    if (s.chart_h > 0) {
+        // Value sits in the upper half of the cell, leaving the lower
+        // chart_h px (+a 4 px gap) clear for the sparkline.
+        lv_obj_align(c.value_lbl, LV_ALIGN_CENTER, 0, -s.chart_h / 2 - 2);
+    } else {
+        // No chart — value is centred-ish, nudged down a touch to leave
+        // room for the title at top.
+        lv_obj_align(c.value_lbl, LV_ALIGN_CENTER, 0, 6);
+    }
 
-    // Sparkline: lv_chart with a single line series, 100 points wide.
-    // We resample our 300-point history down to 100 points when drawing
-    // (every 3rd sample) so the chart redraw is cheap and the trace
-    // fits across the cell width without crowding.
-    constexpr int kChartW = kCellW - 12;
-    constexpr int kChartH = 32;
-    constexpr uint16_t kChartPoints = 100;
-    c.chart = lv_chart_create(root);
-    lv_obj_set_size(c.chart, kChartW, kChartH);
-    lv_obj_align(c.chart, LV_ALIGN_BOTTOM_MID, 0, -2);
-    lv_chart_set_type(c.chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(c.chart, kChartPoints);
-    lv_chart_set_div_line_count(c.chart, 0, 0);
-    lv_chart_set_update_mode(c.chart, LV_CHART_UPDATE_MODE_SHIFT);
-    lv_obj_set_style_size(c.chart, 0, LV_PART_INDICATOR);  // no point markers
-    lv_obj_set_style_bg_opa(c.chart, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(c.chart, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(c.chart, 0, LV_PART_MAIN);
-    // Y range gets recomputed on every refresh from the live history,
-    // but seed it so the first frame doesn't render as a flatline at 0.
-    lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
-
-    c.series = lv_chart_add_series(c.chart,
-                                   lv_palette_main(LV_PALETTE_CYAN),
-                                   LV_CHART_AXIS_PRIMARY_Y);
+    if (s.chart_h > 0) {
+        // Round 41 (per user feedback "use a fill area but have less
+        // resolution so it becomes readable"): 20-bar histogram instead
+        // of a 100-point line. Bars are ≈ 5 px wide with no column
+        // padding, so adjacent bars merge into a single coloured strip
+        // — the "fill area" look. Each bar represents 15 s of history
+        // (kStride = 15 in refreshDataCell), so 20 bars × 15 s = 5 min.
+        constexpr uint16_t kChartPoints = 20;
+        c.chart = lv_chart_create(root);
+        lv_obj_set_size(c.chart, s.w - 16, s.chart_h);
+        lv_obj_align(c.chart, LV_ALIGN_BOTTOM_MID, 0, -2);
+        lv_chart_set_type(c.chart, LV_CHART_TYPE_BAR);
+        lv_chart_set_point_count(c.chart, kChartPoints);
+        lv_chart_set_div_line_count(c.chart, 0, 0);
+        lv_obj_set_style_bg_opa(c.chart, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_border_width(c.chart, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(c.chart, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_column(c.chart, 0, LV_PART_MAIN);
+        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
+        c.series = lv_chart_add_series(c.chart,
+                                       lv_palette_main(LV_PALETTE_CYAN),
+                                       LV_CHART_AXIS_PRIMARY_Y);
+    } else {
+        c.chart  = nullptr;
+        c.series = nullptr;
+    }
 
     c.root = root;
     return c;
@@ -515,26 +599,9 @@ void buildDataPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
     data_pg.root = scr;
-
-    // 3×3 grid centred on screen. With 130 px cells and 6 px gaps the
-    // outer 3-cell footprint is 130*3 + 6*2 = 402 px wide — fits inside
-    // the inscribed-square area of the round panel with comfortable
-    // margins. Centre column lines up with screen centre at dx=0.
-    constexpr int kPitch = 136;     // 130 px cell + 6 px gap
-    constexpr int kCol[] = { -kPitch, 0, kPitch };
-    constexpr int kRow[] = { -kPitch, 0, kPitch };
-
-    auto& C = data_pg.cells;
-    using M = CellMetric;
-    C[(int)M::AWA ] = buildDataCell(scr, kCol[0], kRow[0], "AWA  \xC2\xB0");
-    C[(int)M::TWA ] = buildDataCell(scr, kCol[1], kRow[0], "TWA  \xC2\xB0");
-    C[(int)M::TWD ] = buildDataCell(scr, kCol[2], kRow[0], "TWD  \xC2\xB0");
-    C[(int)M::AWS ] = buildDataCell(scr, kCol[0], kRow[1], "AWS  kn");
-    C[(int)M::BSPD] = buildDataCell(scr, kCol[1], kRow[1], "BSPD kn");
-    C[(int)M::TWS ] = buildDataCell(scr, kCol[2], kRow[1], "TWS  kn");
-    C[(int)M::HDG ] = buildDataCell(scr, kCol[0], kRow[2], "HDG  \xC2\xB0");
-    C[(int)M::SOG ] = buildDataCell(scr, kCol[1], kRow[2], "SOG  kn");
-    C[(int)M::VMG ] = buildDataCell(scr, kCol[2], kRow[2], "VMG  kn");
+    for (size_t i = 0; i < kCellCount; ++i) {
+        data_pg.cells[i] = buildDataCell(scr, kSpecs[i]);
+    }
 }
 
 void buildDebugPage() {
@@ -659,10 +726,10 @@ const char* metricFmt(CellMetric m) {
     return "%.1f";
 }
 
-// Refresh one cell's value label and sparkline trace from its history
-// buffer. Y-axis range auto-scales to (min, max) of the visible window
-// with a tiny padding so a flat trace doesn't render right at the
-// border. Empty history (all NaN) leaves the trace cleared.
+// Refresh one cell's value label and (if present) area-fill sparkline.
+// Y-axis range auto-scales to (min, max) of the visible window with a
+// tiny padding so a flat trace doesn't render right at the border.
+// Empty history (all NaN) leaves the trace cleared.
 void refreshDataCell(CellMetric m, const Instruments& s) {
     DataCell& c = data_pg.cells[static_cast<size_t>(m)];
     const double v = metricValue(m, s);
@@ -675,34 +742,50 @@ void refreshDataCell(CellMetric m, const Instruments& s) {
         lv_label_set_text(c.value_lbl, buf);
     }
 
-    // Resample the 300-sample history down to 100 chart points (every
-    // 3rd sample). Track min/max for axis auto-scaling. Missing samples
-    // (NaN) become LV_CHART_POINT_NONE so the line drops.
+    if (c.chart == nullptr) return;   // diagonal tile — value-only
+
+    // Round 41: 300-sample history is downsampled to 20 chart bars by
+    // averaging every kStride samples. With kStride = 15 each bar
+    // represents 15 s of history → 5 min total visible. Fewer, wider
+    // bars (vs. round 40's 100-point line) read cleanly on the 22 px
+    // tall strip the cardinal cells allow.
     const MetricHistory& h = g_history[static_cast<size_t>(m)];
     const size_t n_hist = h.count();
-    constexpr uint16_t kChartPoints = 100;
-    constexpr size_t kStride = kHistoryLen / kChartPoints;  // = 3
+    constexpr uint16_t kChartPoints = 20;
+    constexpr size_t   kStride      = kHistoryLen / kChartPoints;  // = 15
 
-    float vmin = INFINITY;
+    float vmin =  INFINITY;
     float vmax = -INFINITY;
 
-    // Walk the history newest-first and write into the chart left-to-right
-    // so the newest sample lands at the right edge of the trace.
-    for (uint16_t i = 0; i < kChartPoints; i++) {
-        // history index for chart slot i: oldest sample on the left.
-        const size_t hist_i = (n_hist >= kStride * (kChartPoints - i))
-            ? (n_hist - kStride * (kChartPoints - i))
-            : SIZE_MAX;
-        float sample = NAN;
-        if (hist_i != SIZE_MAX) h.at(hist_i, &sample);
-        if (!isnan(sample)) {
-            if (sample < vmin) vmin = sample;
-            if (sample > vmax) vmax = sample;
-            lv_chart_set_value_by_id(c.chart, c.series, i,
-                                     static_cast<lv_coord_t>(sample));
-        } else {
+    for (uint16_t i = 0; i < kChartPoints; ++i) {
+        // Bar i (0 = oldest) covers the kStride-sized history window
+        // [n_hist - kStride*(kChartPoints - i),
+        //  n_hist - kStride*(kChartPoints - i - 1)).
+        if (n_hist < kStride * (kChartPoints - i)) {
             lv_chart_set_value_by_id(c.chart, c.series, i,
                                      LV_CHART_POINT_NONE);
+            continue;
+        }
+        const size_t start = n_hist - kStride * (kChartPoints - i);
+        float sum = 0.0f;
+        int   cnt = 0;
+        for (size_t j = 0; j < kStride; ++j) {
+            float sample = NAN;
+            h.at(start + j, &sample);
+            if (!isnan(sample)) {
+                sum += sample;
+                ++cnt;
+            }
+        }
+        if (cnt == 0) {
+            lv_chart_set_value_by_id(c.chart, c.series, i,
+                                     LV_CHART_POINT_NONE);
+        } else {
+            const float avg = sum / static_cast<float>(cnt);
+            if (avg < vmin) vmin = avg;
+            if (avg > vmax) vmax = avg;
+            lv_chart_set_value_by_id(c.chart, c.series, i,
+                                     static_cast<lv_coord_t>(avg));
         }
     }
 
