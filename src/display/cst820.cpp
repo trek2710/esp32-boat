@@ -48,7 +48,32 @@ bool Cst820::begin(Tca9554& expander) {
         return false;
     }
 
-    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d)", TP_I2C_ADDR, TP_PIN_INT);
+    // Step 4 (round 38): disable auto-sleep.
+    //
+    // The CST820 (like its CST816S sibling) goes into a low-power sleep state
+    // after a few hundred ms of idle. The first I2C read after sleep returns
+    // a stale/zero buffer instead of waking the chip up cleanly. Round 37's
+    // register-offset fix didn't help because, in normal use, every read
+    // happens after a long enough idle that the chip is still asleep when
+    // we ask it for a finger count.
+    //
+    // The fix is the standard CST816S/CST820 incantation: write 0xFF to
+    // register 0xFE ("DisableAutoSleep"). Documented in the Hynitron CST816S
+    // datasheet's register map (CST820 inherits the same protocol) and in
+    // essentially every community driver (fbiego/CST816S, lewisxhe/SensorLib,
+    // Bodmer/TFT_eSPI's CST820 demo). Non-fatal if it NACKs — we log a
+    // warning and carry on.
+    Wire.beginTransmission(TP_I2C_ADDR);
+    Wire.write(static_cast<uint8_t>(0xFE));
+    Wire.write(static_cast<uint8_t>(0xFF));
+    const uint8_t sleep_err = Wire.endTransmission();
+    if (sleep_err != 0) {
+        log_w("[cst820] DisableAutoSleep write NACKed (err=%u) — touch may "
+              "miss the first tap after idle", sleep_err);
+    }
+
+    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, auto-sleep disabled)",
+          TP_I2C_ADDR, TP_PIN_INT);
     ready_ = true;
     return true;
 }
@@ -75,9 +100,18 @@ bool Cst820::read(uint16_t* x, uint16_t* y) {
     //   0x06  Y low
     //
     // Read 6 bytes starting at 0x01 → [gesture, fingers, xH, xL, yH, yL].
+    //
+    // Round 38: use endTransmission() (STOP), not endTransmission(false)
+    // (repeated start). The CST820 is documented to need a clean STOP between
+    // the register-pointer write and the data read; round 37 used repeated
+    // start (which works on most I2C devices) and the chip silently returned
+    // a zeroed buffer — finger count always 0, so every tap was dropped.
+    // All the canonical CST816S/CST820 community drivers send STOP between
+    // the two transactions, and the cost (one extra START on the bus) is
+    // negligible at our 100 kHz rate.
     Wire.beginTransmission(TP_I2C_ADDR);
     Wire.write(static_cast<uint8_t>(0x01));
-    if (Wire.endTransmission(false) != 0) return false;  // repeated start
+    if (Wire.endTransmission() != 0) return false;  // STOP
 
     constexpr size_t kNeeded = 6;
     const size_t got = Wire.requestFrom(static_cast<int>(TP_I2C_ADDR),
@@ -89,6 +123,19 @@ bool Cst820::read(uint16_t* x, uint16_t* y) {
 
     // buf[0] = gesture (unused for now), buf[1] = finger count.
     const uint8_t fingers = buf[1];
+
+    // Round 38 diagnostic: log the first few non-zero reads so we can confirm
+    // touches are reaching us. Rate-limited to once per ~30 reads (≈1 s at
+    // the LVGL indev poll rate) so we don't flood the serial monitor while
+    // a finger is held down. Remove or guard behind a #define once touch is
+    // proven working.
+    static uint32_t touch_log_skip = 0;
+    if (fingers != 0 && (touch_log_skip++ % 30) == 0) {
+        log_i("[cst820] touch: gesture=0x%02X fingers=%u "
+              "raw=[%02X %02X %02X %02X %02X %02X]",
+              buf[0], fingers, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+    }
+
     if (fingers == 0) return false;  // no touch
 
     // 12-bit X = (buf[2] & 0x0F) << 8 | buf[3]
