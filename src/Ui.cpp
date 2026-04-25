@@ -620,71 +620,45 @@ void begin(BoatState& state) {
     if (!g_panel.begin(g_expander)) {
         log_e("[ui] ST7701 bring-up failed - continuing without pixels; "
               "LVGL will still tick.");
-    } else {
-        // Round 28: back to the 5-phase RGB sanity bar.
-        //
-        // Round 27's 16-phase walking-bit bus diagnostic ran on the round-
-        // 26 timings (PCLK 10 MHz + Espressif-typical porches). The 21-
-        // photo contact sheet showed the same result for every bit:
-        // blue vertical stripes with the panel's middle third behaving
-        // differently than its edges. Notably, 0xFFFF WHITE came back
-        // blue-at-edges + green-in-middle, and 0xF800 RED / 0x07E0 GREEN
-        // both came back as blue stripes. That's not a "dead bit lane"
-        // signature — if lanes were dead, phases of different bits
-        // would light up radically differently. Every bit produced
-        // roughly the same stripe pattern, which is the fingerprint of
-        // the panel failing to coherently SCAN — most of its columns
-        // are stuck in the power-on state — rather than failing to
-        // RECEIVE data. Scan coherency is driven by PCLK/porch/GIP
-        // timing, not by data-line wiring.
-        //
-        // Round 28 reverts PCLK + porches to FatihErtugral's
-        // sibling-2.8"-ST7701 board values (the last known-working
-        // ST7701 config in the LGFX community) — see st7701_panel.cpp
-        // and display_pins.h. With the bus-level fault hypothesis
-        // disproved by round 27, the 16-phase walk would just produce
-        // another 21 blue photos; instead we go back to the 5-phase
-        // RGB/WHITE/BLACK bar at 5 s per phase so the user has one
-        // easy-to-photograph reference per pixel-value against the
-        // round-26 IMG_1825-1829 set. The key photo to compare is
-        // 0xFFFF WHITE: if round 28's timing fix worked we'll see a
-        // uniform white or near-white full screen instead of blue
-        // with a green middle.
-        step("ST7701 sanity bar: RED starting");
-        g_panel.fillColor(0xF800);
-        step("ST7701 sanity bar: RED settled — photograph now");
-        delay(5000);
-        step("ST7701 sanity bar: GREEN starting");
-        g_panel.fillColor(0x07E0);
-        step("ST7701 sanity bar: GREEN settled — photograph now");
-        delay(5000);
-        step("ST7701 sanity bar: BLUE starting");
-        g_panel.fillColor(0x001F);
-        step("ST7701 sanity bar: BLUE settled — photograph now");
-        delay(5000);
-        step("ST7701 sanity bar: WHITE starting");
-        g_panel.fillColor(0xFFFF);
-        step("ST7701 sanity bar: WHITE settled — photograph now");
-        delay(5000);
-        step("ST7701 sanity bar: BLACK starting");
-        g_panel.fillColor(0x0000);
-        step("ST7701 sanity bar: BLACK settled — photograph now");
-        delay(5000);
     }
+    // Round 34: the 5-phase RGB+W+K boot sanity bar from rounds 28-33 is
+    // removed. Display bring-up is complete (round 30 nailed colours +
+    // timings via Waveshare's verbatim init, round 32 flipped the image
+    // right-side up via in-place 180° rotation in flushCb, round 33
+    // killed the wide brightness bands by switching ST7701 0xC2 byte 0
+    // from 0x07 to 0x37 / inversion-mode bits 00 → 11). Boat use wants
+    // immediate data on power-up, not 25 s of solid-colour fills.
+    // Sanity-bar history is preserved in git: revert 8c... if needed.
 
     step("lv_init()");
     lv_init();
 
     step("ps_malloc framebuffers");
-    const size_t line_buf_px = DISPLAY_WIDTH * 40;
-    buf1 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
-    buf2 = static_cast<lv_color_t*>(ps_malloc(line_buf_px * sizeof(lv_color_t)));
+    // Round 34: full-frame double-buffer (was 40-row partial buffers).
+    //
+    // The 40-row partial buffer (DISPLAY_WIDTH * 40 = 19,200 px each, two
+    // of them) split a full-screen redraw across 12 flush calls. On an
+    // RGB-interface panel like the ST7701 the peripheral is continuously
+    // scanning the framebuffer at ~58 Hz; with 12 separate writes per
+    // refresh the panel's scan often catches the framebuffer mid-update,
+    // producing visible shimmer on animated content (the round-33 IMG_1906
+    // showed this on the rotating wind-compass needle, hence the user's
+    // "twinkles back and forth towards 270 and 90" report).
+    //
+    // Full-frame double-buffer eliminates the tear: LVGL renders into one
+    // 480 × 480 buffer while the previous one is being DMA'd to the panel,
+    // then we flush exactly one rectangle per frame. Cost: 2 × 480 × 480 ×
+    // sizeof(lv_color_t) = 2 × 460,800 = 921,600 bytes in PSRAM, plenty
+    // of headroom against our 8 MB octal PSRAM budget.
+    const size_t fb_px = DISPLAY_WIDTH * DISPLAY_HEIGHT;
+    buf1 = static_cast<lv_color_t*>(ps_malloc(fb_px * sizeof(lv_color_t)));
+    buf2 = static_cast<lv_color_t*>(ps_malloc(fb_px * sizeof(lv_color_t)));
     if (!buf1 || !buf2) {
         log_e("[ui] ps_malloc failed: buf1=%p buf2=%p (%u bytes each)",
               buf1, buf2,
-              static_cast<unsigned>(line_buf_px * sizeof(lv_color_t)));
+              static_cast<unsigned>(fb_px * sizeof(lv_color_t)));
     }
-    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, line_buf_px);
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, fb_px);
 
     step("lv_disp_drv_register");
     static lv_disp_drv_t disp_drv;
