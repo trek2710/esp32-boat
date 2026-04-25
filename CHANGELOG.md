@@ -8,6 +8,8 @@ For the authoritative history (including merges, tags, and author info) see
 `git log` or <https://github.com/trek2710/esp32-boat/commits/main>.
 
 <!-- entries below, newest first -->
+- **2026-04-25** — Round 39: tap-based page navigation — touchReadCb tracks press/release edges, qualifies a tap by held<500 ms + motion<40 px, queues a step (-1 left half / +1 right half) for tick() to consume; remove LV_EVENT_GESTURE wiring.
+- **2026-04-25** — Round 39: tap-based page navigation — touchReadCb tracks press/release edges, qualifies a tap by held<500 ms + motion<40 px, queues a step (-1 left half / +1 right half) for tick() to consume; remove LV_EVENT_GESTURE wiring.
 - **2026-04-25** — Round 38: CST820 read uses STOP (not repeated start) between reg-pointer write and requestFrom; disable auto-sleep on begin (write 0xFF to reg 0xFE); add rate-limited touch-event log for diagnostics.
 - **2026-04-25** — Round 38: CST820 read uses STOP (not repeated start) between reg-pointer write and requestFrom; disable auto-sleep on begin (write 0xFF to reg 0xFE); add rate-limited touch-event log for diagnostics.
 - **2026-04-25** — Round 37: CST820 register-pointer off-by-one — start read at reg 0x01 so finger count lands at buf[1] instead of the gesture register.

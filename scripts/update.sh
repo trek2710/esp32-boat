@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 38: CST820 read uses STOP (not repeated start) between reg-pointer write and requestFrom; disable auto-sleep on begin (write 0xFF to reg 0xFE); add rate-limited touch-event log for diagnostics."
+DEFAULT_MSG="Round 39: tap-based page navigation — touchReadCb tracks press/release edges, qualifies a tap by held<500 ms + motion<40 px, queues a step (-1 left half / +1 right half) for tick() to consume; remove LV_EVENT_GESTURE wiring."
 
 set -euo pipefail
 

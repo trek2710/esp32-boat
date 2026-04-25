@@ -149,6 +149,41 @@ DebugPage debug_pg;
 lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr };
 int       current_page = 0;
 
+// Round 39: tap-based page navigation — requested after round 38 confirmed
+// touch coords arrive cleanly but LVGL swipe-gesture detection only fired
+// reliably right-to-left.
+//
+// Why we abandoned swipe nav:
+//   - LVGL's gesture detector requires many rapid intermediate samples
+//     between press and release; our indev poll runs once per LVGL tick
+//     (≈30 ms) so a flick across the screen produces only 3-5 samples,
+//     which is on the edge of LV_INDEV_DEF_GESTURE_MIN_VELOCITY threshold.
+//   - The CST820's onboard gesture detection (register 0x01 = gesture
+//     byte) reports 0x00 in every read in the round-38 monitor log, so
+//     the chip itself is not generating swipe codes — that register is
+//     gated behind register 0xEC ("MotionMask") which defaults to 0x00.
+//     Could enable it with a 0x03 write but tap is a better UX anyway.
+//   - On a boat with motion + gloves, taps are far more reliable than
+//     swipes. Single tap is the universally-correct gesture for "next".
+//
+// Mechanism: touchReadCb (round 38) tracks press/release edges and, on a
+// release that's quick (< kTapMaxMs) and small-motion (< kTapMaxMovePx),
+// sets g_pending_page_step to ±1. tick() consumes that flag between LVGL
+// timer ticks (so we never call lv_scr_load from inside an indev cb,
+// which would re-enter LVGL).
+//
+// The split is left-half = previous page, right-half = next page. With 3
+// pages this gives full bidirectional navigation in one tap.
+constexpr uint32_t kTapMaxMs       = 500;
+constexpr int32_t  kTapMaxMovePx   = 40;
+constexpr int32_t  kTapMaxMoveSqPx = kTapMaxMovePx * kTapMaxMovePx;
+
+// -1 = go to previous page, +1 = next page, 0 = no pending change.
+// Volatile because it's written from the indev callback (called from
+// lv_timer_handler) and read from tick() which is a different call site,
+// and we want the read to always see the latest write.
+volatile int8_t g_pending_page_step = 0;
+
 // --- Helpers ----------------------------------------------------------------
 
 void styleScreen(lv_obj_t* scr) {
@@ -343,15 +378,20 @@ void buildDebugPage() {
     lv_obj_align(debug_pg.body_lbl, LV_ALIGN_TOP_LEFT, 10, 60);
 }
 
-// --- Swipe handler (LVGL screen gestures) ----------------------------------
-
-void swipeHandler(lv_event_t* /*e*/) {
-    const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-    if (dir == LV_DIR_LEFT)  current_page = (current_page + 1) % kNumPages;
-    if (dir == LV_DIR_RIGHT) current_page = (current_page + kNumPages - 1) % kNumPages;
+// --- Page navigation -------------------------------------------------------
+//
+// Round 39: tap-based instead of swipe-based. See the comment block by
+// g_pending_page_step for why. The actual edge-detection lives in
+// touchReadCb; this function applies the queued change from tick() so
+// lv_scr_load happens on the LVGL main thread, not from inside an indev
+// callback.
+void applyPendingPageChange() {
+    const int8_t step = g_pending_page_step;
+    if (step == 0) return;
+    g_pending_page_step = 0;
+    if (step > 0) current_page = (current_page + 1) % kNumPages;
+    else          current_page = (current_page + kNumPages - 1) % kNumPages;
     lv_scr_load(pages[current_page]);
-    // Re-attach gesture event to the newly-active screen so swipes keep working.
-    lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
 }
 
 // --- Refresh ---------------------------------------------------------------
@@ -532,21 +572,47 @@ void refreshFromState() {
 // (default 30 ms). g_touch.read() over 100 kHz I2C is ~800 µs — cheap
 // enough that we don't need to gate it on the TP_INT line.
 void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
-    static int16_t last_x = 0;
-    static int16_t last_y = 0;
+    static int16_t last_x   = 0;
+    static int16_t last_y   = 0;
+    static int16_t press_x  = 0;
+    static int16_t press_y  = 0;
+    static uint32_t press_ms = 0;
+    static bool was_pressed  = false;
 
     uint16_t raw_x = 0, raw_y = 0;
-    if (g_touch.read(&raw_x, &raw_y)) {
+    const bool pressed = g_touch.read(&raw_x, &raw_y);
+    if (pressed) {
         last_x = static_cast<int16_t>(DISPLAY_WIDTH  - 1 - raw_x);
         last_y = static_cast<int16_t>(DISPLAY_HEIGHT - 1 - raw_y);
+        if (!was_pressed) {
+            // Rising edge — record where the press started.
+            press_x  = last_x;
+            press_y  = last_y;
+            press_ms = millis();
+        }
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
+        // Falling edge: was_pressed=true, now released. Decide whether the
+        // gesture qualifies as a tap; if so, queue a page change for tick()
+        // to apply (we do NOT call lv_scr_load here — that would re-enter
+        // LVGL since this read_cb is called from lv_timer_handler).
+        if (was_pressed) {
+            const uint32_t held_ms = millis() - press_ms;
+            const int32_t dx = static_cast<int32_t>(last_x) - press_x;
+            const int32_t dy = static_cast<int32_t>(last_y) - press_y;
+            const int32_t dist2 = dx * dx + dy * dy;
+            if (held_ms < kTapMaxMs && dist2 < kTapMaxMoveSqPx) {
+                g_pending_page_step =
+                    (last_x < (DISPLAY_WIDTH / 2)) ? -1 : +1;
+            }
+        }
         data->state = LV_INDEV_STATE_RELEASED;
     }
     // LVGL expects a coordinate even on release events (it uses it to pin
     // the release point against the last move event).
     data->point.x = last_x;
     data->point.y = last_y;
+    was_pressed = pressed;
 }
 
 // --- Display driver glue ---------------------------------------------------
@@ -893,7 +959,8 @@ void begin(BoatState& state) {
     pages[2] = debug_pg.root;
 
     lv_scr_load(pages[0]);
-    lv_obj_add_event_cb(lv_scr_act(), swipeHandler, LV_EVENT_GESTURE, nullptr);
+    // Round 39: no LV_EVENT_GESTURE handler — tap detection lives in
+    // touchReadCb and is applied via applyPendingPageChange() in tick().
     step("ready");
 }
 
@@ -918,6 +985,13 @@ uint32_t tick() {
         last_data_refresh_ms = now;
         refreshFromState();
     }
+
+    // Round 39: apply any pending page change queued by touchReadCb's
+    // tap detection. We do this here (between LVGL timer ticks) instead
+    // of in the indev callback because lv_scr_load() needs to dispatch
+    // events on objects we'd otherwise be in the middle of polling.
+    applyPendingPageChange();
+
     return lv_timer_handler();
 }
 
