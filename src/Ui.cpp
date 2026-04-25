@@ -87,56 +87,115 @@ BoatState* g_state = nullptr;
 
 constexpr int kNumPages = 3;
 
-// ---- Overview page (round 36, B&G-style) ----
+// ---- Overview page (round 40, B&G-reference compass-only) ----
 //
-// Layout target — adapted from the user's B&G/Raymarine reference image
-// (project memory: project_overview_layout_target.md). The reference is
-// rectangular with two stacked columns of 5 tiles each flanking a central
-// wind compass; we have a 480×480 round panel whose visible area is the
-// inscribed circle (corners hidden by bezel), so we keep:
+// Round 40 dropped the perimeter tiles introduced in round 36. The user
+// pointed at the middle section of the B&G/Raymarine reference image and
+// asked for "exactly that" — i.e. the central instrument only:
 //
-//   * Central round compass dial with boat-outline silhouette inside.
-//   * Big BOAT-SPD value rendered inside the boat silhouette.
-//   * Red AWA needle + green reference (centerline / 0°) line.
-//   * 8 perimeter data tiles arranged at the cardinal + inter-cardinal
-//     positions inside the inscribed circle. Each tile = small grey title
-//     line ("AWS  kn") above a large white value ("16.4").
+//   * Outer dial: light-grey ring, ~60 px wide, with degree tick marks
+//     and labels every 30° (000, 030, ..., 330). Reads clockwise so the
+//     bow always points up at "000".
+//   * Red/green close-hauled sectors at the top of the dial (the no-go
+//     zone is fixed at ±20° around the bow for v1 — eventually it'll
+//     follow TWA).
+//   * Inner black disc covering the centre.
+//   * Boat-outline silhouette in white, drawn with lv_line.
+//   * White-bordered speed circle inside the hull, holding the big
+//     BOAT-SPD value.
+//   * "000" heading box at top of the inner area (current heading).
+//   * Red AWA needle (apparent wind angle) + green reference needle.
+//   * "°M" magnetic-indicator label at top-right of the inner area.
+//   * "Var: 16°W" magnetic-variation label at bottom-left.
 //
-// The rest of the reference's tiles (the ones we couldn't fit on a circular
-// panel without crowding) live on Page 2 — Data already covers them.
-struct OverviewTile {
-    lv_obj_t* root;
-    lv_obj_t* title_lbl;   // small grey label, e.g. "AWS  kn"
-    lv_obj_t* value_lbl;   // large white value, e.g. "16.4"
-};
-
+// The 10 metrics from the reference's flanking columns now live on Page 2
+// (sparkline grid, also added round 40).
 struct OverviewPage {
     lv_obj_t* root;
-    lv_obj_t* compass;                  // lv_meter (central rose)
-    lv_meter_indicator_t* awa_needle;   // red — apparent wind
-    lv_meter_indicator_t* ref_needle;   // green — bow / 0° reference
-    lv_obj_t* boat_outline;             // simple silhouette inside compass
-    lv_obj_t* spd_big_lbl;              // big BOAT SPD inside the compass
-    lv_obj_t* spd_unit_lbl;             // "kn" below the big number
+    lv_obj_t* compass;                   // lv_meter — outer dial + ticks + needles
+    lv_meter_indicator_t* awa_needle;    // red — apparent wind
+    lv_meter_indicator_t* ref_needle;    // green — bow / 0° reference
+    lv_meter_indicator_t* port_sector;   // red close-hauled sector (top-left)
+    lv_meter_indicator_t* stbd_sector;   // green close-hauled sector (top-right)
 
-    // Perimeter tiles — slot order is fixed by buildOverviewPage().
-    OverviewTile awa;   // top-left
-    OverviewTile aws;   // left
-    OverviewTile hdg;   // bottom-left
-    OverviewTile sog;   // bottom
-    OverviewTile vmg;   // bottom-right
-    OverviewTile twa;   // right
-    OverviewTile tws;   // top-right
-    OverviewTile twd;   // top
+    lv_obj_t* spd_big_lbl;               // big BOAT SPD inside the speed circle
+    lv_obj_t* hdg_box_lbl;               // "000" inside the heading box at top
+    // Static decoration — built once, never updated; no handles needed.
 };
 OverviewPage overview;
 
-// ---- Data page ----
+// ---- Data page (round 40 — sparkline grid) ----
+//
+// 3×3 grid of cells inside the round panel's inscribed area. Each cell
+// shows: a small grey label, a large white current value, and a 5-min
+// history sparkline at the bottom. Layout is metric-symmetric so the
+// most-watched values (boat speed, wind angle, wind speed) live in the
+// centre column where the eye lands first.
+//
+// The history buffer below is sampled at 1 Hz from tick(); each metric
+// gets 300 samples = 5 minutes of trail.
+constexpr size_t kHistoryLen = 300;       // 5 min @ 1 Hz
+constexpr int    kGridCols   = 3;
+constexpr int    kGridRows   = 3;
+constexpr size_t kCellCount  = kGridCols * kGridRows;
+
+// Stable identity for each cell so we can key history buffers and refresh
+// without playing string-compare games. Order = grid order, row-major:
+//   row 0 (top):    AWA   TWA    TWD
+//   row 1 (mid):    AWS   BSPD   TWS
+//   row 2 (bottom): HDG   SOG    VMG
+enum class CellMetric : uint8_t {
+    AWA  = 0, TWA  = 1, TWD = 2,
+    AWS  = 3, BSPD = 4, TWS = 5,
+    HDG  = 6, SOG  = 7, VMG = 8,
+};
+static_assert(static_cast<size_t>(CellMetric::VMG) + 1 == kCellCount,
+              "CellMetric layout must cover all grid cells");
+
+struct DataCell {
+    lv_obj_t*  root;
+    lv_obj_t*  title_lbl;     // small grey title (e.g. "AWA  °")
+    lv_obj_t*  value_lbl;     // large white value (e.g. "-27")
+    lv_obj_t*  chart;         // lv_chart with one line series
+    lv_chart_series_t* series;
+};
+
 struct DataPage {
     lv_obj_t* root;
-    lv_obj_t* body_lbl;                 // one multi-line label with everything
+    DataCell  cells[kCellCount];
 };
 DataPage data_pg;
+
+// One ring buffer per cell. NaN means "no data yet". Newest sample sits at
+// (head-1) mod kHistoryLen. Updated by g_state-snapshot reads in tick(),
+// not by the NMEA bridge directly — so we get a clean 1 Hz timeline even
+// if the bus is bursty or quiet.
+struct MetricHistory {
+    float   values[kHistoryLen];
+    size_t  head    = 0;
+    bool    filled  = false;
+
+    MetricHistory() {
+        for (auto& v : values) v = NAN;
+    }
+    void push(float v) {
+        values[head] = v;
+        head = (head + 1) % kHistoryLen;
+        if (head == 0) filled = true;
+    }
+    // Number of valid samples currently in the buffer.
+    size_t count() const { return filled ? kHistoryLen : head; }
+    // Read sample i (0=oldest, count-1=newest) into *out. Returns false
+    // if i is out of range.
+    bool at(size_t i, float* out) const {
+        const size_t n = count();
+        if (i >= n || out == nullptr) return false;
+        const size_t base = filled ? head : 0;
+        *out = values[(base + i) % kHistoryLen];
+        return true;
+    }
+};
+MetricHistory g_history[kCellCount];
 
 // ---- Debug page ----
 struct DebugPage {
@@ -206,142 +265,250 @@ lv_obj_t* makeLabel(lv_obj_t* parent,
 
 // --- Page construction ------------------------------------------------------
 
-// Build one perimeter tile: a fixed-size 110×64 transparent container with
-// the small grey title on top and the large white value below. Positioning
-// is the caller's responsibility — different tile slots sit at different
-// (dx, dy) offsets from screen centre to fit inside the inscribed circle.
+// Build the full-screen compass instrument that fills the Overview page.
 //
-// Tile rendering matches the B&G reference's typographic pattern:
-//   * Title line (e.g. "AWS  kn") in font_14, GREY palette.
-//   * Value line ("16.4") in font_36, white.
-//   * Container is borderless and transparent so the screen's black bg
-//     shows through (the reference uses a slightly lifted dark tile, but
-//     on a round panel the tile boundaries fight the curvature, so we
-//     drop the box and let the typography carry the layout).
-OverviewTile buildOverviewTile(lv_obj_t* parent,
-                               int dx, int dy,
-                               const char* title) {
-    OverviewTile t{};
-    constexpr int kTileW = 110;
-    constexpr int kTileH = 64;
-
-    lv_obj_t* root = lv_obj_create(parent);
-    lv_obj_set_size(root, kTileW, kTileH);
-    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(root, LV_ALIGN_CENTER, dx, dy);
-
-    t.title_lbl = makeLabel(root, &lv_font_montserrat_14,
-                            lv_palette_main(LV_PALETTE_GREY), title);
-    lv_obj_align(t.title_lbl, LV_ALIGN_TOP_MID, 0, 0);
-
-    // _36 isn't compiled into LVGL on this board (see include/lv_conf.h —
-     // available sizes: 12/14/16/20/24/28/48). Use _28 for tile values.
-    t.value_lbl = makeLabel(root, &lv_font_montserrat_28,
-                            lv_color_white(), "--");
-    lv_obj_align(t.value_lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
-
-    t.root = root;
-    return t;
-}
-
+// Z-order (back to front, which equals child-creation order in LVGL):
+//   1. Outer dial — light-grey ring with tick marks + degree labels.
+//      Implemented as an lv_meter widget with a grey background.
+//   2. Red/green close-hauled sectors at the top of the dial (lv_meter
+//      arc indicators). Fixed at ±20° around the bow for v1.
+//   3. AWA red needle + green reference needle.
+//   4. Inner black disc — covers the centre, leaving the tick ring
+//      visible. Positioned as a child of the meter so it draws after
+//      the meter's tick marks AND its needles → effectively crops the
+//      needles to "outside the boat" on screen, matching how a real
+//      B&G display has the needle pivot hidden under the boat.
+//   5. Boat-outline silhouette (lv_line) inside the inner disc.
+//   6. White-bordered speed circle, holding the BOAT-SPD label.
+//   7. Heading box "000" at the top of the inner disc.
+//   8. "°M" magnetic indicator at top-right of the inner disc.
+//   9. "Var: 16°W" label at bottom-left of the inner disc.
 void buildOverviewPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
     overview.root = scr;
 
-    // ----- Central compass + boat outline + big BOAT-SPD -----
+    // ----- (1) Outer dial -----
     //
-    // 240-px diameter compass sits in the centre of the inscribed circle
-    // (panel radius = 240, so a 240-px-diameter compass at the centre
-    // leaves 60-px ring of perimeter real-estate for tiles before hitting
-    // the edge — enough for two-line tiles at the cardinal points).
-    constexpr int kCompassSize = 240;
+    // 460×460 fits inside the inscribed-square area of the round 480×480
+    // panel with ~10 px clearance to the bezel. The widget background is
+    // light grey; tick marks render in dark grey/black on top, and the
+    // inner-disc child (step 4) covers everything inside radius ~140 so
+    // we end up with a visible grey *annulus* of width ~90 px — enough for
+    // the major-tick degree labels.
+    constexpr int kCompassSize    = 460;
+    constexpr int kInnerDiscSize  = 320;   // inner black disc diameter
+    constexpr int kSpdCircleSize  = 120;   // white-bordered speed circle
+    constexpr int kHdgBoxW        = 64;
+    constexpr int kHdgBoxH        = 30;
+
     lv_obj_t* compass = lv_meter_create(scr);
     lv_obj_set_size(compass, kCompassSize, kCompassSize);
     lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(compass, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_border_width(compass, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(compass, lv_palette_darken(LV_PALETTE_GREY, 2),
-                                  LV_PART_MAIN);
+    lv_obj_set_style_bg_color(compass,
+                              lv_palette_lighten(LV_PALETTE_GREY, 2),
+                              LV_PART_MAIN);
+    lv_obj_set_style_border_width(compass, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(compass, 0, LV_PART_MAIN);
     lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_meter_scale_t* scale = lv_meter_add_scale(compass);
-    // 360° scale, 0 at top (bow), clockwise. rotate=270 → angle 0 points up.
-    lv_meter_set_scale_ticks(compass, scale, 37, 2, 6,
-                             lv_palette_main(LV_PALETTE_GREY));
-    lv_meter_set_scale_major_ticks(compass, scale, 3, 3, 10,
-                                   lv_color_white(), 15);
+    // 73 ticks at 5° intervals, every 6th major (every 30°). Labels at
+    // distance 18 (in pixels from the major-tick inner end) put the
+    // numerals on the grey annulus, not on the inner black disc.
+    lv_meter_set_scale_ticks(compass, scale, 73, 1, 6, lv_color_black());
+    lv_meter_set_scale_major_ticks(compass, scale, 6, 2, 12,
+                                   lv_color_black(), 18);
+    // Range 0..360, full sweep, rotated so 0 sits at the top.
     lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
-
-    // Green reference needle = bow / 0° (matches the green dashed line in
-    // the user's B&G reference). Drawn first so the red AWA needle sits
-    // on top of it when both happen to align.
-    overview.ref_needle = lv_meter_add_needle_line(
-        compass, scale, 2, lv_palette_main(LV_PALETTE_GREEN), -8);
-    lv_meter_set_indicator_value(compass, overview.ref_needle, 0);
-
-    // Red AWA needle (apparent wind angle).
-    overview.awa_needle = lv_meter_add_needle_line(
-        compass, scale, 4, lv_palette_main(LV_PALETTE_RED), -8);
-    lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
     overview.compass = compass;
 
-    // Boat-outline silhouette — simple downward-pointing diamond/oval cue
-    // inside the compass. Rendered as a borderless rounded-rect placeholder
-    // (60×120, dark grey fill) until we have time to draw a proper SVG hull.
-    // The big BOAT-SPD label sits in front of it.
-    lv_obj_t* hull = lv_obj_create(compass);
-    lv_obj_set_size(hull, 60, 120);
-    lv_obj_align(hull, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(hull, 30, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(hull, lv_palette_darken(LV_PALETTE_GREY, 4),
-                              LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(hull, LV_OPA_70, LV_PART_MAIN);
-    lv_obj_set_style_border_width(hull, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(hull, lv_palette_main(LV_PALETTE_GREY),
-                                  LV_PART_MAIN);
-    lv_obj_clear_flag(hull, LV_OBJ_FLAG_SCROLLABLE);
-    overview.boat_outline = hull;
+    // ----- (2) Close-hauled sectors at top -----
+    //
+    // Width 16 px, drawn on the inside of the tick ring. Red on port
+    // (340..360°), green on starboard (0..20°). For v1 these are pinned;
+    // a future round can make them follow TWA so the no-go zone moves.
+    overview.port_sector = lv_meter_add_arc(
+        compass, scale, 18, lv_palette_main(LV_PALETTE_RED), -22);
+    lv_meter_set_indicator_start_value(compass, overview.port_sector, 340);
+    lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
 
-    // Big BOAT-SPD inside the silhouette.
-    overview.spd_big_lbl = makeLabel(compass, &lv_font_montserrat_48,
+    overview.stbd_sector = lv_meter_add_arc(
+        compass, scale, 18, lv_palette_main(LV_PALETTE_GREEN), -22);
+    lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
+    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 20);
+
+    // ----- (3) Needles -----
+    //
+    // Green reference (bow / 0°) drawn first so the red AWA needle sits
+    // on top when both align. r_mod = -22 keeps the needle tip 22 px shy
+    // of the tick marks.
+    overview.ref_needle = lv_meter_add_needle_line(
+        compass, scale, 3, lv_palette_main(LV_PALETTE_GREEN), -28);
+    lv_meter_set_indicator_value(compass, overview.ref_needle, 0);
+
+    overview.awa_needle = lv_meter_add_needle_line(
+        compass, scale, 4, lv_palette_main(LV_PALETTE_RED), -28);
+    lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
+
+    // ----- (4) Inner black disc -----
+    //
+    // Child of the meter so it renders AFTER the meter's tick + needle
+    // draw passes. The inner radius (~160 px) hides the inner half of
+    // both needles — exactly the visual we want from the reference, where
+    // the needles appear to emerge from the rim of the boat instead of
+    // pivoting at the centre.
+    lv_obj_t* inner = lv_obj_create(compass);
+    lv_obj_set_size(inner, kInnerDiscSize, kInnerDiscSize);
+    lv_obj_align(inner, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(inner, kInnerDiscSize / 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(inner, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(inner, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(inner, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
+
+    // ----- (5) Boat-outline silhouette -----
+    //
+    // 8-point polyline shaped like a stylised hull: pointed bow, broad
+    // shoulders, gently tapered stern. Drawn inside the inner disc so
+    // its coordinates are relative to the disc's top-left corner, not
+    // the screen.
+    //
+    // Reference image shows the hull centred horizontally and slightly
+    // below the inner disc's geometric centre, leaving room for the
+    // heading box at the top. We use the same proportions: hull is
+    // 130 px wide, 240 px tall, centred at (160, 130) within the disc.
+    static const lv_point_t hull_pts[] = {
+        {160,  10},   // bow tip
+        {200,  60},   // bow shoulder
+        {220, 120},   // beam (port side, by sailor convention; we don't
+                      // care about port/starboard symmetry visually)
+        {220, 200},   // mid-aft
+        {200, 250},   // stern shoulder
+        {160, 270},   // transom centre
+        {120, 250},   // stern shoulder (mirror)
+        {100, 200},
+        {100, 120},
+        {120,  60},
+        {160,  10},   // close back to the bow
+    };
+    lv_obj_t* hull = lv_line_create(inner);
+    lv_line_set_points(hull, hull_pts,
+                       sizeof(hull_pts) / sizeof(hull_pts[0]));
+    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(hull, 2, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
+    lv_obj_set_pos(hull, 0, 25);   // nudge down so bow sits below hdg box
+
+    // ----- (6) White-bordered speed circle -----
+    //
+    // Sits at the boat's foredeck (slightly above geometric centre of
+    // the hull) so the big BOAT-SPD value reads cleanly without
+    // overlapping the AWA needle's tip when wind is dead-ahead.
+    lv_obj_t* spd_circle = lv_obj_create(inner);
+    lv_obj_set_size(spd_circle, kSpdCircleSize, kSpdCircleSize);
+    lv_obj_align(spd_circle, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(spd_circle, kSpdCircleSize / 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(spd_circle, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(spd_circle, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(spd_circle, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(spd_circle, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(spd_circle, LV_OBJ_FLAG_SCROLLABLE);
+
+    overview.spd_big_lbl = makeLabel(spd_circle, &lv_font_montserrat_48,
                                      lv_color_white(), "--");
-    lv_obj_align(overview.spd_big_lbl, LV_ALIGN_CENTER, 0, -6);
+    lv_obj_align(overview.spd_big_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    overview.spd_unit_lbl = makeLabel(compass, &lv_font_montserrat_14,
-                                      lv_palette_main(LV_PALETTE_GREY), "kn");
-    lv_obj_align(overview.spd_unit_lbl, LV_ALIGN_CENTER, 0, 30);
+    // ----- (7) Heading box at top of inner disc -----
+    lv_obj_t* hdg_box = lv_obj_create(inner);
+    lv_obj_set_size(hdg_box, kHdgBoxW, kHdgBoxH);
+    lv_obj_align(hdg_box, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_set_style_radius(hdg_box, 4, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(hdg_box, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(hdg_box, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(hdg_box, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(hdg_box, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(hdg_box, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ----- 8 perimeter tiles at cardinal + inter-cardinal positions -----
-    //
-    // Each tile centre lives on a circle of radius ~190 from screen centre.
-    // For a 480×480 panel that's 50 px shy of the bezel, leaving comfortable
-    // margins on every side even after the round corners are clipped. The
-    // (dx, dy) offsets below are the same on every cardinal axis to keep the
-    // grid visually balanced. Tile mapping mirrors the B&G reference layout:
-    //
-    //     TWS_top-right       TWD_top         AWA_top-left
-    //     TWA_right           [compass]       AWS_left
-    //     VMG_bottom-right    SOG_bottom      HDG_bottom-left
-    //
-    // (note that "left" / "right" in the reference becomes top/bottom on a
-    // round panel because we don't have horizontal real estate beyond the
-    // compass — so we lay the same 10 columns out as a clock face instead).
-    constexpr int kRadial = 190;   // from screen centre to tile centre
-    // Approximate cosine/sine of 45° as 0.7071 → 134 ≈ 190 * 0.7071.
-    constexpr int kDiag   = 134;
+    overview.hdg_box_lbl = makeLabel(hdg_box, &lv_font_montserrat_20,
+                                     lv_color_black(), "000");
+    lv_obj_align(overview.hdg_box_lbl, LV_ALIGN_CENTER, 0, 0);
 
-    overview.twd = buildOverviewTile(scr,        0, -kRadial,  "TWD  \xC2\xB0");
-    overview.tws = buildOverviewTile(scr,  kDiag,  -kDiag,     "TWS  kn");
-    overview.twa = buildOverviewTile(scr,  kRadial,      0,    "TWA  \xC2\xB0");
-    overview.vmg = buildOverviewTile(scr,  kDiag,   kDiag,     "VMG  kn");
-    overview.sog = buildOverviewTile(scr,        0,  kRadial,  "SOG  kn");
-    overview.hdg = buildOverviewTile(scr, -kDiag,   kDiag,     "HDG  \xC2\xB0");
-    overview.aws = buildOverviewTile(scr, -kRadial,      0,    "AWS  kn");
-    overview.awa = buildOverviewTile(scr, -kDiag,  -kDiag,     "AWA  \xC2\xB0");
+    // ----- (8) "°M" magnetic indicator (top-right) -----
+    {
+        lv_obj_t* m = makeLabel(inner, &lv_font_montserrat_16,
+                                lv_palette_main(LV_PALETTE_GREY),
+                                "\xC2\xB0M");
+        lv_obj_align(m, LV_ALIGN_TOP_RIGHT, -22, 14);
+    }
+
+    // ----- (9) "Var: 16°W" label (bottom-left) -----
+    {
+        lv_obj_t* var_lbl = makeLabel(inner, &lv_font_montserrat_14,
+                                      lv_palette_main(LV_PALETTE_GREY),
+                                      "Var: 16\xC2\xB0W");
+        lv_obj_align(var_lbl, LV_ALIGN_BOTTOM_LEFT, 22, -14);
+    }
+}
+
+// Build one cell of the sparkline grid. Each cell is a 130×130 dark tile
+// with three layers of content stacked vertically:
+//   row 0:  small grey title  (e.g. "AWA  °")
+//   row 1:  large white value (e.g. "-27")
+//   row 2:  thin sparkline showing the last 5 minutes of this metric
+DataCell buildDataCell(lv_obj_t* parent, int dx, int dy, const char* title) {
+    DataCell c{};
+    constexpr int kCellW = 130;
+    constexpr int kCellH = 130;
+
+    lv_obj_t* root = lv_obj_create(parent);
+    lv_obj_set_size(root, kCellW, kCellH);
+    lv_obj_align(root, LV_ALIGN_CENTER, dx, dy);
+    lv_obj_set_style_radius(root, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(root, lv_color_hex(0x101418), LV_PART_MAIN);
+    lv_obj_set_style_border_width(root, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(root,
+                                  lv_palette_darken(LV_PALETTE_GREY, 3),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_pad_all(root, 4, LV_PART_MAIN);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    c.title_lbl = makeLabel(root, &lv_font_montserrat_14,
+                            lv_palette_main(LV_PALETTE_GREY), title);
+    lv_obj_align(c.title_lbl, LV_ALIGN_TOP_LEFT, 2, 0);
+
+    c.value_lbl = makeLabel(root, &lv_font_montserrat_28,
+                            lv_color_white(), "--");
+    lv_obj_align(c.value_lbl, LV_ALIGN_TOP_MID, 0, 18);
+
+    // Sparkline: lv_chart with a single line series, 100 points wide.
+    // We resample our 300-point history down to 100 points when drawing
+    // (every 3rd sample) so the chart redraw is cheap and the trace
+    // fits across the cell width without crowding.
+    constexpr int kChartW = kCellW - 12;
+    constexpr int kChartH = 32;
+    constexpr uint16_t kChartPoints = 100;
+    c.chart = lv_chart_create(root);
+    lv_obj_set_size(c.chart, kChartW, kChartH);
+    lv_obj_align(c.chart, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_chart_set_type(c.chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(c.chart, kChartPoints);
+    lv_chart_set_div_line_count(c.chart, 0, 0);
+    lv_chart_set_update_mode(c.chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_obj_set_style_size(c.chart, 0, LV_PART_INDICATOR);  // no point markers
+    lv_obj_set_style_bg_opa(c.chart, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(c.chart, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(c.chart, 0, LV_PART_MAIN);
+    // Y range gets recomputed on every refresh from the live history,
+    // but seed it so the first frame doesn't render as a flatline at 0.
+    lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
+
+    c.series = lv_chart_add_series(c.chart,
+                                   lv_palette_main(LV_PALETTE_CYAN),
+                                   LV_CHART_AXIS_PRIMARY_Y);
+
+    c.root = root;
+    return c;
 }
 
 void buildDataPage() {
@@ -349,16 +516,25 @@ void buildDataPage() {
     styleScreen(scr);
     data_pg.root = scr;
 
-    lv_obj_t* title = makeLabel(scr, &lv_font_montserrat_28,
-                                lv_color_white(), "DATA");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+    // 3×3 grid centred on screen. With 130 px cells and 6 px gaps the
+    // outer 3-cell footprint is 130*3 + 6*2 = 402 px wide — fits inside
+    // the inscribed-square area of the round panel with comfortable
+    // margins. Centre column lines up with screen centre at dx=0.
+    constexpr int kPitch = 136;     // 130 px cell + 6 px gap
+    constexpr int kCol[] = { -kPitch, 0, kPitch };
+    constexpr int kRow[] = { -kPitch, 0, kPitch };
 
-    data_pg.body_lbl = makeLabel(scr, &lv_font_montserrat_20,
-                                 lv_color_white(), "loading...");
-    lv_label_set_long_mode(data_pg.body_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(data_pg.body_lbl, 440);
-    lv_obj_set_style_text_line_space(data_pg.body_lbl, 4, LV_PART_MAIN);
-    lv_obj_align(data_pg.body_lbl, LV_ALIGN_TOP_MID, 0, 70);
+    auto& C = data_pg.cells;
+    using M = CellMetric;
+    C[(int)M::AWA ] = buildDataCell(scr, kCol[0], kRow[0], "AWA  \xC2\xB0");
+    C[(int)M::TWA ] = buildDataCell(scr, kCol[1], kRow[0], "TWA  \xC2\xB0");
+    C[(int)M::TWD ] = buildDataCell(scr, kCol[2], kRow[0], "TWD  \xC2\xB0");
+    C[(int)M::AWS ] = buildDataCell(scr, kCol[0], kRow[1], "AWS  kn");
+    C[(int)M::BSPD] = buildDataCell(scr, kCol[1], kRow[1], "BSPD kn");
+    C[(int)M::TWS ] = buildDataCell(scr, kCol[2], kRow[1], "TWS  kn");
+    C[(int)M::HDG ] = buildDataCell(scr, kCol[0], kRow[2], "HDG  \xC2\xB0");
+    C[(int)M::SOG ] = buildDataCell(scr, kCol[1], kRow[2], "SOG  kn");
+    C[(int)M::VMG ] = buildDataCell(scr, kCol[2], kRow[2], "VMG  kn");
 }
 
 void buildDebugPage() {
@@ -396,17 +572,6 @@ void applyPendingPageChange() {
 
 // --- Refresh ---------------------------------------------------------------
 
-// Set a tile's value label, formatted or "--" if NaN.
-void setTileValue(OverviewTile& t, double v, const char* fmt) {
-    if (isnan(v)) {
-        lv_label_set_text(t.value_lbl, "--");
-    } else {
-        char buf[12];
-        snprintf(buf, sizeof(buf), fmt, v);
-        lv_label_set_text(t.value_lbl, buf);
-    }
-}
-
 // True-wind direction: derive from heading + true-wind angle when both are
 // present. TWA is +/- relative to the bow; TWD is degrees-true 0..360.
 double computeTwd(double heading_true_deg, double twa) {
@@ -436,8 +601,9 @@ void refreshOverview(const Instruments& s) {
     // Reference needle stays pinned to 0° (bow).
     lv_meter_set_indicator_value(overview.compass, overview.ref_needle, 0);
 
-    // BOAT-SPD inside the silhouette — prefer STW (speed-through-water) since
-    // the reference shows BOAT SPD from a paddlewheel; fall back to SOG.
+    // Big BOAT-SPD inside the speed circle — prefer STW (paddlewheel)
+    // since the reference shows boat-through-water speed; fall back to
+    // SOG when STW is missing.
     const double boat_spd = !isnan(s.stw) ? s.stw : s.sog;
     if (isnan(boat_spd)) {
         lv_label_set_text(overview.spd_big_lbl, "--");
@@ -447,61 +613,126 @@ void refreshOverview(const Instruments& s) {
         lv_label_set_text(overview.spd_big_lbl, buf);
     }
 
-    // Perimeter tiles. Format strings match the B&G reference's typography:
-    //   * AWA / TWA — signed integer degrees (e.g. "-27", "+40")
-    //   * AWS / TWS / SOG / VMG — one decimal knot (e.g. "16.4")
-    //   * HDG / TWD — integer degrees, 0..360 (e.g. "000", "320")
-    setTileValue(overview.awa, s.awa,              "%+.0f");
-    setTileValue(overview.aws, s.aws,              "%.1f");
-    setTileValue(overview.hdg, s.heading_true_deg, "%03.0f");
-    setTileValue(overview.sog, s.sog,              "%.1f");
-    setTileValue(overview.twa, s.twa,              "%+.0f");
-    setTileValue(overview.tws, s.tws,              "%.1f");
-    setTileValue(overview.vmg, computeVmg(s.stw, s.twa), "%.1f");
-    setTileValue(overview.twd, computeTwd(s.heading_true_deg, s.twa), "%03.0f");
+    // Heading box at the top of the inner disc — three-digit zero-padded
+    // degrees (000..359), or "---" if no fix yet.
+    if (isnan(s.heading_true_deg)) {
+        lv_label_set_text(overview.hdg_box_lbl, "---");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%03.0f", s.heading_true_deg);
+        lv_label_set_text(overview.hdg_box_lbl, buf);
+    }
 }
 
-// Format "value or --"; caller provides buffer, precision format string.
-void fmtOrDash(char* out, size_t n, double v, const char* fmt) {
-    if (isnan(v)) snprintf(out, n, "--");
-    else          snprintf(out, n, fmt, v);
+// Pull the current value of one cell's metric out of the BoatState
+// snapshot. Returns NaN if the metric isn't available yet.
+double metricValue(CellMetric m, const Instruments& s) {
+    switch (m) {
+        case CellMetric::AWA:  return s.awa;
+        case CellMetric::AWS:  return s.aws;
+        case CellMetric::TWA:  return s.twa;
+        case CellMetric::TWS:  return s.tws;
+        case CellMetric::BSPD: return !isnan(s.stw) ? s.stw : s.sog;
+        case CellMetric::SOG:  return s.sog;
+        case CellMetric::HDG:  return s.heading_true_deg;
+        case CellMetric::TWD:  return computeTwd(s.heading_true_deg, s.twa);
+        case CellMetric::VMG:  return computeVmg(s.stw, s.twa);
+    }
+    return NAN;
 }
 
-void refreshData(const Instruments& s, size_t ais_count) {
-    char lat[12], lon[12], sog[12], cog[12];
-    char awa[12], aws[12], twa[12], tws[12];
-    char dep[12], tmp[12], hdg[12], stw[12];
+// Format string for a metric's value label. Angles are zero-padded
+// integer degrees (HDG/TWD are 0..360, AWA/TWA are signed); speeds are
+// one decimal knot.
+const char* metricFmt(CellMetric m) {
+    switch (m) {
+        case CellMetric::AWA:  return "%+.0f";
+        case CellMetric::AWS:  return "%.1f";
+        case CellMetric::TWA:  return "%+.0f";
+        case CellMetric::TWS:  return "%.1f";
+        case CellMetric::BSPD: return "%.1f";
+        case CellMetric::SOG:  return "%.1f";
+        case CellMetric::HDG:  return "%03.0f";
+        case CellMetric::TWD:  return "%03.0f";
+        case CellMetric::VMG:  return "%.1f";
+    }
+    return "%.1f";
+}
 
-    fmtOrDash(lat, sizeof(lat), s.lat,              "%.4f");
-    fmtOrDash(lon, sizeof(lon), s.lon,              "%.4f");
-    fmtOrDash(sog, sizeof(sog), s.sog,              "%.1f");
-    fmtOrDash(cog, sizeof(cog), s.cog,              "%.0f");
-    fmtOrDash(awa, sizeof(awa), s.awa,              "%+.0f");
-    fmtOrDash(aws, sizeof(aws), s.aws,              "%.1f");
-    fmtOrDash(twa, sizeof(twa), s.twa,              "%+.0f");
-    fmtOrDash(tws, sizeof(tws), s.tws,              "%.1f");
-    fmtOrDash(dep, sizeof(dep), s.depth_m,          "%.1f");
-    fmtOrDash(tmp, sizeof(tmp), s.water_temp_c,     "%.1f");
-    fmtOrDash(hdg, sizeof(hdg), s.heading_true_deg, "%.0f");
-    fmtOrDash(stw, sizeof(stw), s.stw,              "%.1f");
+// Refresh one cell's value label and sparkline trace from its history
+// buffer. Y-axis range auto-scales to (min, max) of the visible window
+// with a tiny padding so a flat trace doesn't render right at the
+// border. Empty history (all NaN) leaves the trace cleared.
+void refreshDataCell(CellMetric m, const Instruments& s) {
+    DataCell& c = data_pg.cells[static_cast<size_t>(m)];
+    const double v = metricValue(m, s);
 
-    char body[512];
-    snprintf(body, sizeof(body),
-             "LAT %s   LON %s\n"
-             "SOG %s kn   COG %s\xC2\xB0\n"
-             "AWA %s\xC2\xB0   AWS %s kn\n"
-             "TWA %s\xC2\xB0   TWS %s kn\n"
-             "DEPTH %s m   TEMP %s\xC2\xB0""C\n"
-             "HDG %s\xC2\xB0   STW %s kn\n"
-             "AIS targets: %u",
-             lat, lon,
-             sog, cog,
-             awa, aws,
-             twa, tws,
-             dep, tmp,
-             hdg, stw,
-             static_cast<unsigned>(ais_count));
-    lv_label_set_text(data_pg.body_lbl, body);
+    if (isnan(v)) {
+        lv_label_set_text(c.value_lbl, "--");
+    } else {
+        char buf[12];
+        snprintf(buf, sizeof(buf), metricFmt(m), v);
+        lv_label_set_text(c.value_lbl, buf);
+    }
+
+    // Resample the 300-sample history down to 100 chart points (every
+    // 3rd sample). Track min/max for axis auto-scaling. Missing samples
+    // (NaN) become LV_CHART_POINT_NONE so the line drops.
+    const MetricHistory& h = g_history[static_cast<size_t>(m)];
+    const size_t n_hist = h.count();
+    constexpr uint16_t kChartPoints = 100;
+    constexpr size_t kStride = kHistoryLen / kChartPoints;  // = 3
+
+    float vmin = INFINITY;
+    float vmax = -INFINITY;
+
+    // Walk the history newest-first and write into the chart left-to-right
+    // so the newest sample lands at the right edge of the trace.
+    for (uint16_t i = 0; i < kChartPoints; i++) {
+        // history index for chart slot i: oldest sample on the left.
+        const size_t hist_i = (n_hist >= kStride * (kChartPoints - i))
+            ? (n_hist - kStride * (kChartPoints - i))
+            : SIZE_MAX;
+        float sample = NAN;
+        if (hist_i != SIZE_MAX) h.at(hist_i, &sample);
+        if (!isnan(sample)) {
+            if (sample < vmin) vmin = sample;
+            if (sample > vmax) vmax = sample;
+            lv_chart_set_value_by_id(c.chart, c.series, i,
+                                     static_cast<lv_coord_t>(sample));
+        } else {
+            lv_chart_set_value_by_id(c.chart, c.series, i,
+                                     LV_CHART_POINT_NONE);
+        }
+    }
+
+    if (vmin == INFINITY || vmax == -INFINITY) {
+        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
+    } else {
+        // Pad the range a touch so flat traces don't sit on the border.
+        float pad = (vmax - vmin) * 0.1f;
+        if (pad < 0.5f) pad = 0.5f;
+        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y,
+                           static_cast<lv_coord_t>(vmin - pad),
+                           static_cast<lv_coord_t>(vmax + pad));
+    }
+    lv_chart_refresh(c.chart);
+}
+
+void refreshData(const Instruments& s, size_t /*ais_count*/) {
+    for (size_t i = 0; i < kCellCount; i++) {
+        refreshDataCell(static_cast<CellMetric>(i), s);
+    }
+}
+
+// Push the current snapshot into every metric history buffer. Called
+// once per second from tick() — bounded rate independent of how often
+// the bus or simulator updates BoatState.
+void recordHistorySnapshot(const Instruments& s) {
+    for (size_t i = 0; i < kCellCount; i++) {
+        const double v = metricValue(static_cast<CellMetric>(i), s);
+        g_history[i].push(static_cast<float>(v));   // NaN passes through
+    }
 }
 
 void refreshDebug() {
@@ -980,10 +1211,24 @@ uint32_t tick() {
     // lv_timer_handler() call below still runs every iteration so
     // animations, gestures and timers stay responsive.
     static uint32_t last_data_refresh_ms = 0;
+    static uint32_t last_history_ms      = 0;
     const uint32_t now = millis();
     if (now - last_data_refresh_ms >= 100) {
         last_data_refresh_ms = now;
         refreshFromState();
+    }
+
+    // Round 40: sample BoatState into the per-metric history ring buffers
+    // once per second. This drives the Page 2 sparklines — kHistoryLen=300
+    // samples × 1 Hz = 5 minutes of trail. Sampling here (not from the
+    // NMEA bridge directly) gives us a clean uniform timeline regardless
+    // of bus burstiness or sim cadence, and it keeps the chart's resample
+    // stride (kStride = 3) well-defined. Runs even when Page 2 isn't
+    // visible so the sparkline already has trace data when the user
+    // taps over to it.
+    if (g_state && now - last_history_ms >= 1000) {
+        last_history_ms = now;
+        recordHistorySnapshot(g_state->snapshot());
     }
 
     // Round 39: apply any pending page change queued by touchReadCb's

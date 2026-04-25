@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 39: tap-based page navigation — touchReadCb tracks press/release edges, qualifies a tap by held<500 ms + motion<40 px, queues a step (-1 left half / +1 right half) for tick() to consume; remove LV_EVENT_GESTURE wiring."
+DEFAULT_MSG="Round 40: B&G middle-section Overview (compass-only — outer dial + port/stbd close-hauled sectors + AWA/ref needles + inner disc + boat outline + speed circle + heading box + °M / Var labels) and new Page 2 = 3×3 sparkline grid (AWA/TWA/TWD, AWS/BSPD/TWS, HDG/SOG/VMG) backed by 5 min @ 1 Hz history rings."
 
 set -euo pipefail
 
