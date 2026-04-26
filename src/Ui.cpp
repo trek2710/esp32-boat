@@ -451,9 +451,14 @@ void buildOverviewPage() {
     //     "ends" right at the centre circle.
     //   * Visible base 70 px wide vs round-44's 52 px → much chunkier
     //     pointer.
-    constexpr int kConeW           = 80;
-    constexpr int kConeH           = 180;
-    constexpr int kConeVisibleBase = 130;     // last visible y row
+    // Round 46: cone shrunk substantially after IMG_1922 showed the
+    // round-45 80×180 image overwhelmed the dial. New dimensions
+    // 50×140 with bottom 50 px transparent give a 40 px wide visible
+    // base and a 90 px tall visible cone — proportional to the dial,
+    // and still tapered enough to read as a cone rather than a rod.
+    constexpr int kConeW           = 50;
+    constexpr int kConeH           = 140;
+    constexpr int kConeVisibleBase = 90;      // last visible y row
     const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
     lv_color_t* cone_buf = static_cast<lv_color_t*>(
         heap_caps_malloc(cone_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -475,15 +480,17 @@ void buildOverviewPage() {
         };
         lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
 
-        // Navy inner triangle (4-5 px inset from the outer outline).
+        // Navy inner triangle (3-4 px inset from the outer outline at
+        // this smaller cone size — keeps a visible white border without
+        // making the inner fill disappear).
         lv_draw_rect_dsc_t inner_dsc;
         lv_draw_rect_dsc_init(&inner_dsc);
         inner_dsc.bg_color = lv_color_hex(0x1A2740);
         inner_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t inner_tri[3] = {
-            {kConeW / 2,                    8},
-            {kConeW - 10, kConeVisibleBase - 5},
-            {         10, kConeVisibleBase - 5},
+            {kConeW / 2,                   6},
+            {kConeW - 8, kConeVisibleBase - 4},
+            {         8, kConeVisibleBase - 4},
         };
         lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
 

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 45: sector colours fixed (LV_PALETTE_RED/GREEN rendering as purple / light green; switched to explicit hex 0xCC0000 / 0x006400). AWA cone enlarged from 60×220 to 80×180 with bottom 50 px transparent so its visible base lands ~1 px above the DRIFT circle. inner_disc made transparent so the cone reaches the centre. New yellow TWA needle (width 6, 0xFFCC00) with own dedup'ed update path; twa_needle field added to OverviewPage struct."
+DEFAULT_MSG="Round 46: shrink AWA cone after IMG_1922 showed the round-45 80×180 image overwhelmed the dial. New canvas dimensions 50×140 with bottom 50 px transparent → 40 px wide visible base, 90 px tall visible cone. Inset polygon coordinates retuned (3-4 px white border instead of 4-5)."
 
 set -euo pipefail
 
