@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 43: visual fixes after round 42 — SCALE_LINES didn't paint, reverted red/green to solid lv_meter_add_arc bars; wind needles widened from 16/10 to 32/22 px; round-41 teardrop hull back as faint LV_OPA_40 outline; new static cyan chevron on the dial annulus port-beam position as drift-direction marker. Flicker: PCLK dropped 16 → 12 MHz (refresh ~44 Hz) for less PSRAM-bus contention with the framebuffer memcpy."
+DEFAULT_MSG="Round 44: Page 1 fidelity pass — mirrored 0..180 dial labels (auto-labels hidden, 12 manual lv_label children placed by sin/cos at radius 188 with text mirrored across the vertical axis); sectors widened from 40° to 60° each side (red 300..360, green 0..60); boat outline replaced with open V from bow tip to dial-angle ±120°; wind pointer reworked from stacked needles to a canvas-drawn tapered cone via lv_meter_add_needle_img; round-42 upper DRIFT pill replaced with a small white-bordered circle at the centre containing a tiny cyan arrow + DRIFT value; AWS box moved below the centre circle; round-43 cyan chevron dropped."
 
 set -euo pipefail
 

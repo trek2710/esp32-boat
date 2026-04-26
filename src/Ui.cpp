@@ -52,6 +52,7 @@ uint32_t tick() {
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <esp_heap_caps.h>     // for heap_caps_malloc (cone-canvas buffer)
 // NOTE: include real LVGL via the lvgl/ subpath. Historical reason kept in
 // case we ever re-add LovyanGFX for anything: that library ships its own
 // lvgl.h shim that hijacked the unqualified include. Going via the lvgl/
@@ -121,12 +122,11 @@ constexpr int kNumPages = 3;
 struct OverviewPage {
     lv_obj_t* root;
     lv_obj_t* compass;                       // lv_meter — outer dial + ticks
-    lv_meter_indicator_t* awa_needle_outer;  // white — wide border
-    lv_meter_indicator_t* awa_needle_inner;  // navy — narrower fill on top
+    lv_meter_indicator_t* awa_needle;        // canvas-drawn cone (needle_img)
     lv_meter_indicator_t* port_sector;       // solid red arc — port close-hauled
     lv_meter_indicator_t* stbd_sector;       // solid green arc — stbd close-hauled
 
-    lv_obj_t* drift_value_lbl;               // STW value inside the DRIFT pill
+    lv_obj_t* drift_value_lbl;               // STW value inside the centre circle
     lv_obj_t* aws_value_lbl;                 // AWS value inside the wind box
 };
 OverviewPage overview;
@@ -333,9 +333,13 @@ void buildOverviewPage() {
     lv_obj_set_style_border_width(compass, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(compass, 0, LV_PART_MAIN);
     lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
-    // Tick LABELS (the 30/60/90/... numerals) take their colour + font
-    // from LV_PART_TICKS text style on the meter itself.
-    lv_obj_set_style_text_color(compass, lv_color_white(), LV_PART_TICKS);
+    // Round 44: hide lv_meter's auto-generated tick labels (which would
+    // print 0, 30, 60, ..., 330 sequentially) by setting the tick text
+    // colour to match the dial background. We then draw 12 mirrored
+    // labels manually below — 0/30/60/90/120/150/180 going DOWN the
+    // right side and 180/150/120/90/60/30/0 mirrored on the left,
+    // matching the classic sailing-instrument relative-bearing layout.
+    lv_obj_set_style_text_color(compass, lv_color_black(), LV_PART_TICKS);
     lv_obj_set_style_text_font(compass, &lv_font_montserrat_20, LV_PART_TICKS);
 
     lv_meter_scale_t* scale = lv_meter_add_scale(compass);
@@ -350,6 +354,34 @@ void buildOverviewPage() {
                                    lv_color_white(), 18);
     lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
     overview.compass = compass;
+
+    // ----- (1b) Manual mirrored degree labels -----
+    //
+    // Round 44 (per user "Degree should go from 0 to 180 in both sides"):
+    // place 12 lv_label widgets at 30° intervals around the dial, with
+    // text mirrored across the vertical axis so both halves read 0 at
+    // top, increasing through 30/60/90/120/150 to 180 at the bottom —
+    // the classic relative-bearing layout used by sailing instruments.
+    //
+    // lv_meter's built-in labels print sequentially (0/30/.../330) and
+    // can't be relabelled, so we hide them via the LV_PART_TICKS text
+    // colour above and overlay these manual ones at the same radial
+    // distance.
+    {
+        constexpr float kLabelRadius = 188.0f;
+        for (int i = 0; i < 12; ++i) {
+            const float angle_deg = static_cast<float>(i) * 30.0f;
+            const float a = angle_deg * static_cast<float>(M_PI) / 180.0f;
+            const int dx = static_cast<int>(kLabelRadius * sinf(a));
+            const int dy = -static_cast<int>(kLabelRadius * cosf(a));
+            const int val = (i <= 6) ? (i * 30) : ((12 - i) * 30);
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", val);
+            lv_obj_t* lbl = makeLabel(compass, &lv_font_montserrat_20,
+                                      lv_color_white(), buf);
+            lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
+        }
+    }
 
     // ----- (2) Close-hauled sectors at top -----
     //
@@ -368,32 +400,89 @@ void buildOverviewPage() {
     // to solid lv_meter_add_arc bars (round-41 method, known good): width
     // 26 px, port red 320..360°, starboard green 0..40°, both pulled
     // 22 px inside the tick ring via r_mod = -22.
+    // Round 44: sectors widened from 40° to 60° each side per user.
+    // Port red 300..360 (left of bow, 60° of dial), starboard green
+    // 0..60 (right of bow, 60° of dial). Both pulled 22 px inside the
+    // tick ring via r_mod = -22.
     overview.port_sector = lv_meter_add_arc(
         compass, scale, 26, lv_palette_main(LV_PALETTE_RED), -22);
-    lv_meter_set_indicator_start_value(compass, overview.port_sector, 320);
+    lv_meter_set_indicator_start_value(compass, overview.port_sector, 300);
     lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
 
     overview.stbd_sector = lv_meter_add_arc(
         compass, scale, 26, lv_palette_main(LV_PALETTE_GREEN), -22);
     lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
-    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 40);
+    lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 60);
 
     // ----- (3) Wind pointer (stacked needle pair) -----
     //
-    // Round 43: needle widths doubled — round 42's 16/10 was reported as
-    // "next to no arrow". 32-px white outer + 22-px navy inner gives a
-    // chunky pointer with a clearly visible 5-px white border on each
-    // side, sized so it reads as the dominant feature on the dial like
-    // in the reference. Both needles share the same indicator value
-    // (set in refreshOverview) so they stay aligned and look like one
-    // fat white-rimmed pointer.
-    overview.awa_needle_outer = lv_meter_add_needle_line(
-        compass, scale, 32, lv_color_white(), -28);
-    lv_meter_set_indicator_value(compass, overview.awa_needle_outer, 0);
+    // Round 44 (per user "we have a cone rather than an arrow/rod"):
+    // replace the round-43 stacked rectangular needle pair with a
+    // proper tapered cone. lv_meter's needle_line is rectangular, so
+    // we render the cone shape into an lv_canvas once at init and then
+    // register the canvas's image data as an lv_meter_add_needle_img
+    // — needle_img rotates the image around its pivot which is mapped
+    // to the meter centre.
+    //
+    // Image is 60 wide × 220 tall, TRUE_COLOR_ALPHA so the area outside
+    // the triangle is transparent. Pivot at (30, 220) = bottom-centre,
+    // so when the indicator value is at "0° = top", the image's tip
+    // (30, 0) extends 220 px UP from the meter centre — i.e. just shy
+    // of the dial rim (compass radius is 230). Cone tapers from a
+    // wide base near the centre to a sharp tip at the rim. White outer
+    // outline + navy fill, matching the reference image.
+    constexpr int kConeW = 60;
+    constexpr int kConeH = 220;
+    const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
+    lv_color_t* cone_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(cone_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cone_buf) {
+        lv_obj_t* cone_canvas = lv_canvas_create(compass);
+        lv_canvas_set_buffer(cone_canvas, cone_buf, kConeW, kConeH,
+                             LV_IMG_CF_TRUE_COLOR_ALPHA);
+        lv_canvas_fill_bg(cone_canvas, lv_color_black(), LV_OPA_TRANSP);
 
-    overview.awa_needle_inner = lv_meter_add_needle_line(
-        compass, scale, 22, lv_color_hex(0x1A2740), -32);
-    lv_meter_set_indicator_value(compass, overview.awa_needle_inner, 0);
+        // White outer triangle (forms the border).
+        lv_draw_rect_dsc_t outer_dsc;
+        lv_draw_rect_dsc_init(&outer_dsc);
+        outer_dsc.bg_color = lv_color_white();
+        outer_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t outer_tri[3] = {
+            {kConeW / 2, 0},
+            {kConeW - 4, kConeH},
+            {        4,  kConeH},
+        };
+        lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
+
+        // Navy inner triangle (4-px inset from the outer outline).
+        lv_draw_rect_dsc_t inner_dsc;
+        lv_draw_rect_dsc_init(&inner_dsc);
+        inner_dsc.bg_color = lv_color_hex(0x1A2740);
+        inner_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t inner_tri[3] = {
+            {kConeW / 2,        10},
+            {kConeW - 8, kConeH - 4},
+            {        8,  kConeH - 4},
+        };
+        lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
+
+        // Hide the canvas widget itself — we only want the image data,
+        // not the canvas rendered in place at (0,0) of the compass.
+        lv_obj_add_flag(cone_canvas, LV_OBJ_FLAG_HIDDEN);
+
+        // Register the canvas's image as the wind needle. Pivot is at
+        // (30, 220) — bottom-centre of the cone — so it lands on the
+        // meter centre and the cone radiates outward from there.
+        overview.awa_needle = lv_meter_add_needle_img(
+            compass, scale,
+            lv_canvas_get_img(cone_canvas),
+            kConeW / 2, kConeH);
+        lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
+    } else {
+        log_e("[ui] cone canvas alloc failed (%u bytes) — wind pointer "
+              "won't render this boot", static_cast<unsigned>(cone_buf_sz));
+        overview.awa_needle = nullptr;
+    }
 
     // ----- (4) Inner black disc -----
     //
@@ -420,115 +509,105 @@ void buildOverviewPage() {
     // competing with the DRIFT pill / AWS box / wind pointer for
     // attention.
     //
-    // 32-point parametric teardrop curve, same as round 41: asymmetric
-    // ellipse (taller bow than stern) with extra lateral taper near the
-    // bow so it points cleanly. Drawn first inside the inner disc so
-    // the readouts overlay it.
-    constexpr int kHullPoints = 33;
-    static lv_point_t hull_pts[kHullPoints];
-    static bool hull_built = false;
-    if (!hull_built) {
-        constexpr float cx         = 160.0f;
-        constexpr float cy         = 145.0f;
-        constexpr float beam_half  = 60.0f;
-        constexpr float bow_dist   = 130.0f;
-        constexpr float stern_dist = 115.0f;
-        for (int i = 0; i < 32; ++i) {
-            const float a = static_cast<float>(i) / 32.0f
-                            * 2.0f * static_cast<float>(M_PI);
-            const float s = sinf(a);
-            const float c = cosf(a);
-            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
-            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
-            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
-            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
-        }
-        hull_pts[32] = hull_pts[0];
-        hull_built = true;
-    }
-    lv_obj_t* hull = lv_line_create(inner);
-    lv_line_set_points(hull, hull_pts, kHullPoints);
-    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_line_width(hull, 2, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
-    lv_obj_set_style_line_opa(hull, LV_OPA_40, LV_PART_MAIN);
+    // Round 44 (per user "boat shape should only be front of boat going
+    // from nearly top of degree (0) and open up ending around 120 degree
+    // — no boat end, just the front"): replace the round-43 closed
+    // 32-point teardrop with an OPEN V — three points forming the bow
+    // outline only. Bow tip near the top of the inner disc (≈ degree 0
+    // on the dial), arms extending down and outward to the inner-disc
+    // rim positions corresponding to dial angle ±120° (which on the
+    // mirrored dial reads as "120" on each side, ≈ stern quarters).
+    //
+    // Inner disc is 320×320 with centre at (160, 160) and radius 160.
+    // Endpoint at dial angle 120° on the rim is
+    //     (160 + 160·sin120°, 160 − 160·cos120°)
+    //     = (160 + 138.6, 160 + 80) ≈ (299, 240).
+    // Pulled in to ~90% radius so the lines don't visually clip the
+    // round inner-disc edge.
+    static const lv_point_t bow_pts[] = {
+        { 35, 232},   // left arm endpoint (≈ dial 240°/mirrored 120°)
+        {160,  20},   // bow tip (≈ dial 0°)
+        {285, 232},   // right arm endpoint (≈ dial 120°)
+    };
+    lv_obj_t* bow = lv_line_create(inner);
+    lv_line_set_points(bow, bow_pts, sizeof(bow_pts) / sizeof(bow_pts[0]));
+    lv_obj_set_style_line_color(bow, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(bow, 3, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(bow, true, LV_PART_MAIN);
+    lv_obj_set_style_line_opa(bow, LV_OPA_60, LV_PART_MAIN);
 
-    // ----- (5b) Drift-direction chevron (cyan, dial annulus, port side) -----
+    // (Round 43's standalone cyan chevron was removed in round 44 — the
+    // drift indicator is now the small cyan arrow inside the centre
+    // DRIFT circle below.)
+
+    // ----- (6) Centre DRIFT circle + AWS box below -----
     //
-    // Round 43 (per user feedback "no inner arrow indicating drift"):
-    // small cyan chevron on the LEFT of the dial annulus pointing
-    // inward. In the reference image this marks the drift / leeway
-    // direction. We don't get drift on the bus, so for v1 it's pinned
-    // at the port-beam position (270°). Drawn as a child of the
-    // compass widget (NOT the inner disc) so it sits on the dark
-    // annulus, not on top of the readouts.
+    // Round 44 layout per user "Middle should be a circle with a small
+    // arrow and center should have drift (small angle) ... Below center
+    // circle we have AWS":
+    //   - DRIFT circle: small white-bordered circle at the geometric
+    //     centre of the inner disc, holds the drift value (small font)
+    //     and a tiny cyan arrow indicating direction.
+    //   - AWS box: rectangular black-on-white-border box below the
+    //     centre circle, holds apparent wind speed at large font.
     //
-    // Coordinates are in compass-local px (compass is 460×460, centre
-    // at (230,230)). Place at x ≈ 60 (port beam position) and align
-    // vertically with centre (y ≈ 220).
+    // We don't have a real drift PGN on the bus, so the value is STW
+    // (closest analogue — speed through water) and the arrow is pinned
+    // pointing up for v1.
+
+    // (6a) Centre DRIFT circle.
     {
-        static const lv_point_t chevron_pts[] = {
-            { 14,  0},
-            {  0, 12},
-            { 14, 24},
-        };
-        lv_obj_t* drift = lv_line_create(compass);
-        lv_line_set_points(drift, chevron_pts,
-                           sizeof(chevron_pts) / sizeof(chevron_pts[0]));
-        lv_obj_set_style_line_color(drift,
-                                    lv_palette_main(LV_PALETTE_CYAN),
-                                    LV_PART_MAIN);
-        lv_obj_set_style_line_width(drift, 4, LV_PART_MAIN);
-        lv_obj_set_style_line_rounded(drift, true, LV_PART_MAIN);
-        lv_obj_set_pos(drift, 60, 218);
-    }
+        constexpr int kDriftSize = 78;
+        lv_obj_t* circ = lv_obj_create(inner);
+        lv_obj_set_size(circ, kDriftSize, kDriftSize);
+        lv_obj_align(circ, LV_ALIGN_CENTER, 0, -10);
+        lv_obj_set_style_radius(circ, kDriftSize / 2, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(circ, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_border_width(circ, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(circ, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(circ, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(circ, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ----- (6) DRIFT pill + AWS box (replace the round-41 speed circle) -----
-    //
-    // The new reference image has TWO stacked readout boxes inside the
-    // dial — a small white-bordered pill at the top showing "1.2 k DRIFT"
-    // and a bigger black box below showing "14.2 k AWS". We mirror that
-    // layout. We don't have a real drift PGN (drift / leeway estimates
-    // aren't standard NMEA 2000) so the DRIFT pill shows STW (the
-    // closest analogue — speed of the boat through the water) and the
-    // AWS box shows live apparent wind speed.
-
-    // (6a) DRIFT pill — small, upper centre.
-    {
-        constexpr int W = 110;
-        constexpr int H = 50;
-        lv_obj_t* box = lv_obj_create(inner);
-        lv_obj_set_size(box, W, H);
-        lv_obj_align(box, LV_ALIGN_CENTER, 0, -55);
-        lv_obj_set_style_radius(box, H / 2, LV_PART_MAIN);   // pill
-        lv_obj_set_style_bg_color(box, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_border_width(box, 2, LV_PART_MAIN);
-        lv_obj_set_style_border_color(box, lv_color_white(), LV_PART_MAIN);
-        lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-
-        overview.drift_value_lbl = makeLabel(box, &lv_font_montserrat_24,
+        overview.drift_value_lbl = makeLabel(circ, &lv_font_montserrat_20,
                                              lv_color_white(), "--");
-        lv_obj_align(overview.drift_value_lbl, LV_ALIGN_CENTER, -8, -4);
+        lv_obj_align(overview.drift_value_lbl, LV_ALIGN_CENTER, -6, -8);
 
-        lv_obj_t* unit = makeLabel(box, &lv_font_montserrat_14,
+        lv_obj_t* unit = makeLabel(circ, &lv_font_montserrat_12,
                                    lv_color_white(), "k");
-        lv_obj_align(unit, LV_ALIGN_CENTER, 22, -6);
+        lv_obj_align(unit, LV_ALIGN_CENTER, 14, -10);
 
-        lv_obj_t* sub = makeLabel(box, &lv_font_montserrat_12,
+        lv_obj_t* sub = makeLabel(circ, &lv_font_montserrat_12,
                                   lv_palette_lighten(LV_PALETTE_GREY, 2),
                                   "DRIFT");
-        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 14);
+        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 18);
+
+        // Small cyan arrow inside the circle (pinned upward — drift
+        // direction would rotate this in a future round once we have
+        // the data).
+        static const lv_point_t small_arrow[] = {
+            { 5, 0},
+            {10, 8},
+            { 0, 8},
+            { 5, 0},
+        };
+        lv_obj_t* arrow = lv_line_create(circ);
+        lv_line_set_points(arrow, small_arrow,
+                           sizeof(small_arrow) / sizeof(small_arrow[0]));
+        lv_obj_set_style_line_color(arrow,
+                                    lv_palette_main(LV_PALETTE_CYAN),
+                                    LV_PART_MAIN);
+        lv_obj_set_style_line_width(arrow, 2, LV_PART_MAIN);
+        lv_obj_set_style_line_rounded(arrow, true, LV_PART_MAIN);
+        lv_obj_align(arrow, LV_ALIGN_TOP_MID, 0, 4);
     }
 
-    // (6b) AWS box — bigger, lower centre. Apparent wind speed at
-    // montserrat_48 with "k" superscript and "AWS" subtitle.
+    // (6b) AWS box — below the centre circle.
     {
         constexpr int W = 170;
         constexpr int H = 80;
         lv_obj_t* box = lv_obj_create(inner);
         lv_obj_set_size(box, W, H);
-        lv_obj_align(box, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_align(box, LV_ALIGN_CENTER, 0, 80);
         lv_obj_set_style_radius(box, 8, LV_PART_MAIN);
         lv_obj_set_style_bg_color(box, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_border_width(box, 2, LV_PART_MAIN);
@@ -737,14 +816,12 @@ void refreshOverview(const Instruments& s) {
     // jitter at 10 Hz, but the visible angle rarely steps more than
     // 1-2°/s).
     static int32_t last_awa = INT32_MIN;
-    if (!isnan(s.awa)) {
+    if (!isnan(s.awa) && overview.awa_needle != nullptr) {
         double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
         const int32_t v = static_cast<int32_t>(deg);
         if (v != last_awa) {
             lv_meter_set_indicator_value(overview.compass,
-                                         overview.awa_needle_outer, v);
-            lv_meter_set_indicator_value(overview.compass,
-                                         overview.awa_needle_inner, v);
+                                         overview.awa_needle, v);
             last_awa = v;
         }
     }
