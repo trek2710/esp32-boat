@@ -515,8 +515,13 @@ void buildOverviewPage() {
     // lv_meter_add_needle_line. Drawn AFTER the AWA cone so its tail
     // sits on top of the cone where they overlap; both rotate around
     // the meter centre with their own values.
+    // Round 47: bumped yellow from 0xFFCC00 (amber) to 0xFFFF00 (pure
+    // yellow) and width 6 → 8 after IMG_1922 showed the needle reading
+    // as a thin pink/purple line. Pure yellow is the most-saturated
+    // colour LVGL can drive on this RGB565 panel and width 8 reads
+    // clearly across the dial without competing with the AWA cone.
     overview.twa_needle = lv_meter_add_needle_line(
-        compass, scale, 6, lv_color_hex(0xFFCC00), -32);
+        compass, scale, 8, lv_color_hex(0xFFFF00), -32);
     lv_meter_set_indicator_value(compass, overview.twa_needle, 0);
 
     // ----- (4) Inner black disc -----
@@ -577,7 +582,11 @@ void buildOverviewPage() {
     lv_obj_set_style_line_color(bow, lv_color_white(), LV_PART_MAIN);
     lv_obj_set_style_line_width(bow, 3, LV_PART_MAIN);
     lv_obj_set_style_line_rounded(bow, true, LV_PART_MAIN);
-    lv_obj_set_style_line_opa(bow, LV_OPA_60, LV_PART_MAIN);
+    // Round 47 (per user "try make it higher" re bow opacity): full
+    // opacity so the front-of-boat V reads clearly. Round 43/44 had it
+    // at 60% as a faint backdrop, but the photo showed it almost
+    // invisible.
+    lv_obj_set_style_line_opa(bow, LV_OPA_COVER, LV_PART_MAIN);
 
     // (Round 43's standalone cyan chevron was removed in round 44 — the
     // drift indicator is now the small cyan arrow inside the centre
@@ -658,13 +667,21 @@ void buildOverviewPage() {
         lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
         lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 
+        // Round 47 (per user "AWS is slightly off"): rebalance the
+        // value/unit/subtitle so the visual centre of the readout lines
+        // up with the box centre. Round 45 had value at -10 px left and
+        // "k" at top-right with a 10 px right margin — the wide gap
+        // between the two pulled the eye off-centre. Now: value at
+        // -14 px left (so "10.4" is visually centred allowing for the
+        // "k" superscript on the right), "k" placed right next to the
+        // value via LV_ALIGN_CENTER with a 36 px right offset.
         overview.aws_value_lbl = makeLabel(box, &lv_font_montserrat_48,
                                            lv_color_white(), "--");
-        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -10, -8);
+        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -14, -8);
 
         lv_obj_t* unit = makeLabel(box, &lv_font_montserrat_20,
                                    lv_color_white(), "k");
-        lv_obj_align(unit, LV_ALIGN_TOP_RIGHT, -10, 8);
+        lv_obj_align(unit, LV_ALIGN_CENTER, 36, -18);
 
         lv_obj_t* sub = makeLabel(box, &lv_font_montserrat_14,
                                   lv_palette_lighten(LV_PALETTE_GREY, 2),

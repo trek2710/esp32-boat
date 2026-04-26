@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 46: shrink AWA cone after IMG_1922 showed the round-45 80×180 image overwhelmed the dial. New canvas dimensions 50×140 with bottom 50 px transparent → 40 px wide visible base, 90 px tall visible cone. Inset polygon coordinates retuned (3-4 px white border instead of 4-5)."
+DEFAULT_MSG="Round 47: three small fixes after IMG_1922 — AWS box contents rebalanced (value at -14 px left, 'k' at LV_ALIGN_CENTER offset 36/-18 right next to it instead of TOP_RIGHT corner, so '10.4 k' is visually centred); TWA needle brightened from 0xFFCC00 to 0xFFFF00 and width 6→8 so it reads as yellow not pink/purple; bow open-V opacity bumped from LV_OPA_60 to LV_OPA_COVER for a more visible front-of-boat shape."
 
 set -euo pipefail
 
