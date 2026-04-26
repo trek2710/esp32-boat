@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 44: Page 1 fidelity pass — mirrored 0..180 dial labels (auto-labels hidden, 12 manual lv_label children placed by sin/cos at radius 188 with text mirrored across the vertical axis); sectors widened from 40° to 60° each side (red 300..360, green 0..60); boat outline replaced with open V from bow tip to dial-angle ±120°; wind pointer reworked from stacked needles to a canvas-drawn tapered cone via lv_meter_add_needle_img; round-42 upper DRIFT pill replaced with a small white-bordered circle at the centre containing a tiny cyan arrow + DRIFT value; AWS box moved below the centre circle; round-43 cyan chevron dropped."
+DEFAULT_MSG="Round 45: sector colours fixed (LV_PALETTE_RED/GREEN rendering as purple / light green; switched to explicit hex 0xCC0000 / 0x006400). AWA cone enlarged from 60×220 to 80×180 with bottom 50 px transparent so its visible base lands ~1 px above the DRIFT circle. inner_disc made transparent so the cone reaches the centre. New yellow TWA needle (width 6, 0xFFCC00) with own dedup'ed update path; twa_needle field added to OverviewPage struct."
 
 set -euo pipefail
 

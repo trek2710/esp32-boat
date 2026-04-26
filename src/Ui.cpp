@@ -122,7 +122,8 @@ constexpr int kNumPages = 3;
 struct OverviewPage {
     lv_obj_t* root;
     lv_obj_t* compass;                       // lv_meter — outer dial + ticks
-    lv_meter_indicator_t* awa_needle;        // canvas-drawn cone (needle_img)
+    lv_meter_indicator_t* awa_needle;        // canvas-drawn cone (needle_img) — apparent wind
+    lv_meter_indicator_t* twa_needle;        // thin yellow line — true wind direction
     lv_meter_indicator_t* port_sector;       // solid red arc — port close-hauled
     lv_meter_indicator_t* stbd_sector;       // solid green arc — stbd close-hauled
 
@@ -404,13 +405,18 @@ void buildOverviewPage() {
     // Port red 300..360 (left of bow, 60° of dial), starboard green
     // 0..60 (right of bow, 60° of dial). Both pulled 22 px inside the
     // tick ring via r_mod = -22.
+    // Round 45 (per user "red is purple, green is light green / should be
+    // dark green"): switch from LV_PALETTE_main values to explicit hex.
+    // Material RED 500 (#F44336) was rendering as purple on the panel
+    // and Material GREEN 500 (#4CAF50) as a wishy-washy light green.
+    // 0xCC0000 (deep red) and 0x006400 (DarkGreen) are unambiguous.
     overview.port_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_palette_main(LV_PALETTE_RED), -22);
+        compass, scale, 26, lv_color_hex(0xCC0000), -22);
     lv_meter_set_indicator_start_value(compass, overview.port_sector, 300);
     lv_meter_set_indicator_end_value  (compass, overview.port_sector, 360);
 
     overview.stbd_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_palette_main(LV_PALETTE_GREEN), -22);
+        compass, scale, 26, lv_color_hex(0x006400), -22);
     lv_meter_set_indicator_start_value(compass, overview.stbd_sector, 0);
     lv_meter_set_indicator_end_value  (compass, overview.stbd_sector, 60);
 
@@ -431,8 +437,23 @@ void buildOverviewPage() {
     // of the dial rim (compass radius is 230). Cone tapers from a
     // wide base near the centre to a sharp tip at the rim. White outer
     // outline + navy fill, matching the reference image.
-    constexpr int kConeW = 60;
-    constexpr int kConeH = 220;
+    // Round 45 cone tuning per user "the arrow should be larger and go
+    // close to the center circle":
+    //   * Image dimensions 80×180 (was 60×220) — wider visible base
+    //     and the visible cone region pushed deeper toward the centre.
+    //   * Pivot at (40, 179) — bottom-centre of the image, lands on the
+    //     meter centre.
+    //   * Visible cone occupies the top 130 px (y=0..129) of the image;
+    //     the bottom 50 px are LEFT TRANSPARENT. With pivot at y=179
+    //     and visible base at y=129, the visible base lands 50 px
+    //     above the meter centre — about 1 px above the DRIFT circle's
+    //     top edge (which is at y_compass=181), so the cone visually
+    //     "ends" right at the centre circle.
+    //   * Visible base 70 px wide vs round-44's 52 px → much chunkier
+    //     pointer.
+    constexpr int kConeW           = 80;
+    constexpr int kConeH           = 180;
+    constexpr int kConeVisibleBase = 130;     // last visible y row
     const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
     lv_color_t* cone_buf = static_cast<lv_color_t*>(
         heap_caps_malloc(cone_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -448,41 +469,48 @@ void buildOverviewPage() {
         outer_dsc.bg_color = lv_color_white();
         outer_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t outer_tri[3] = {
-            {kConeW / 2, 0},
-            {kConeW - 4, kConeH},
-            {        4,  kConeH},
+            {kConeW / 2,                  0},
+            {kConeW - 5, kConeVisibleBase   },
+            {         5, kConeVisibleBase   },
         };
         lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
 
-        // Navy inner triangle (4-px inset from the outer outline).
+        // Navy inner triangle (4-5 px inset from the outer outline).
         lv_draw_rect_dsc_t inner_dsc;
         lv_draw_rect_dsc_init(&inner_dsc);
         inner_dsc.bg_color = lv_color_hex(0x1A2740);
         inner_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t inner_tri[3] = {
-            {kConeW / 2,        10},
-            {kConeW - 8, kConeH - 4},
-            {        8,  kConeH - 4},
+            {kConeW / 2,                    8},
+            {kConeW - 10, kConeVisibleBase - 5},
+            {         10, kConeVisibleBase - 5},
         };
         lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
 
-        // Hide the canvas widget itself — we only want the image data,
-        // not the canvas rendered in place at (0,0) of the compass.
+        // Hide the canvas widget itself — we only want the image data.
         lv_obj_add_flag(cone_canvas, LV_OBJ_FLAG_HIDDEN);
 
-        // Register the canvas's image as the wind needle. Pivot is at
-        // (30, 220) — bottom-centre of the cone — so it lands on the
-        // meter centre and the cone radiates outward from there.
+        // Register the canvas's image as the wind needle. Pivot at
+        // bottom-centre lands on the meter centre.
         overview.awa_needle = lv_meter_add_needle_img(
             compass, scale,
             lv_canvas_get_img(cone_canvas),
-            kConeW / 2, kConeH);
+            kConeW / 2, kConeH - 1);
         lv_meter_set_indicator_value(compass, overview.awa_needle, 0);
     } else {
         log_e("[ui] cone canvas alloc failed (%u bytes) — wind pointer "
               "won't render this boot", static_cast<unsigned>(cone_buf_sz));
         overview.awa_needle = nullptr;
     }
+
+    // Round 45: yellow TWA (true-wind-angle) needle. Smaller than the
+    // AWA cone — a thin 6-px-wide line — and rendered as a simple
+    // lv_meter_add_needle_line. Drawn AFTER the AWA cone so its tail
+    // sits on top of the cone where they overlap; both rotate around
+    // the meter centre with their own values.
+    overview.twa_needle = lv_meter_add_needle_line(
+        compass, scale, 6, lv_color_hex(0xFFCC00), -32);
+    lv_meter_set_indicator_value(compass, overview.twa_needle, 0);
 
     // ----- (4) Inner black disc -----
     //
@@ -495,10 +523,18 @@ void buildOverviewPage() {
     lv_obj_set_size(inner, kInnerDiscSize, kInnerDiscSize);
     lv_obj_align(inner, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_radius(inner, kInnerDiscSize / 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(inner, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_border_width(inner, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(inner, 0, LV_PART_MAIN);
     lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
+    // Round 45: make the inner disc TRANSPARENT (was opaque black). With
+    // the cone needle reaching almost to the centre and the user wanting
+    // it visible "close to the centre circle", the opaque disc was
+    // hiding the inner half of the cone. Transparent inner_disc keeps
+    // its role as a positioning anchor for bow / DRIFT / AWS / heading
+    // children (they still render on top of indicators because they're
+    // children of the meter), while the cone now shows through to the
+    // centre.
+    lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, LV_PART_MAIN);
 
     // ----- (5) Boat-outline silhouette (round 41 → removed round 42 → back round 43) -----
     //
@@ -823,6 +859,19 @@ void refreshOverview(const Instruments& s) {
             lv_meter_set_indicator_value(overview.compass,
                                          overview.awa_needle, v);
             last_awa = v;
+        }
+    }
+
+    // Round 45: TWA (true wind angle) yellow needle, same dedup pattern
+    // as AWA. TWA same convention as AWA: -180..180 with + starboard.
+    static int32_t last_twa = INT32_MIN;
+    if (!isnan(s.twa) && overview.twa_needle != nullptr) {
+        double deg = s.twa < 0 ? s.twa + 360.0 : s.twa;
+        const int32_t v = static_cast<int32_t>(deg);
+        if (v != last_twa) {
+            lv_meter_set_indicator_value(overview.compass,
+                                         overview.twa_needle, v);
+            last_twa = v;
         }
     }
 
