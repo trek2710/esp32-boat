@@ -926,22 +926,10 @@ void applyPendingPageChange() {
 
 // --- Refresh ---------------------------------------------------------------
 
-// True-wind direction: derive from heading + true-wind angle when both are
-// present. TWA is +/- relative to the bow; TWD is degrees-true 0..360.
-double computeTwd(double heading_true_deg, double twa) {
-    if (isnan(heading_true_deg) || isnan(twa)) return NAN;
-    double d = heading_true_deg + twa;
-    while (d <    0.0) d += 360.0;
-    while (d >= 360.0) d -= 360.0;
-    return d;
-}
-
-// Velocity made good: best-effort estimate from STW + TWA when nothing on
-// the bus is publishing it directly. cos(TWA) where TWA is in degrees.
-double computeVmg(double stw, double twa) {
-    if (isnan(stw) || isnan(twa)) return NAN;
-    return stw * cos(twa * M_PI / 180.0);
-}
+// Round 53: TWD and VMG were previously computed inline here. Now they
+// live in BoatState::recomputeDerived_locked() (alongside heading_true,
+// TWA, TWS) and are exposed as plain fields on the Instruments snapshot.
+// The metricValue switch below just reads s.twd / s.vmg directly.
 
 void refreshOverview(const Instruments& s) {
     // Round 42 (flicker mitigation, bounce-buffer fallback path): dedup
@@ -1022,8 +1010,8 @@ double metricValue(CellMetric m, const Instruments& s) {
         case CellMetric::BSPD: return !isnan(s.stw) ? s.stw : s.sog;
         case CellMetric::SOG:  return s.sog;
         case CellMetric::HDG:  return s.heading_true_deg;
-        case CellMetric::TWD:  return computeTwd(s.heading_true_deg, s.twa);
-        case CellMetric::VMG:  return computeVmg(s.stw, s.twa);
+        case CellMetric::TWD:  return s.twd;
+        case CellMetric::VMG:  return s.vmg;
     }
     return NAN;
 }

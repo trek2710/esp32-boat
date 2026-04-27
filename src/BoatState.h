@@ -1,8 +1,36 @@
-// BoatState — a thread-safe snapshot of the latest values we've seen on the bus.
+// BoatState — a thread-safe snapshot of the latest values we've seen on the
+// bus, plus the derived navigation values the device computes from them.
 //
-// The NMEA bridge task writes to it when PGN frames arrive; the UI task reads
-// from it when redrawing instruments. A single FreeRTOS mutex guards the whole
-// struct — access is low-frequency enough that finer locking isn't worth it.
+// Round 53 split: the Instruments struct now distinguishes RAW SENSOR INPUTS
+// (the things a real boat sensor publishes) from DERIVED values (the things
+// the device computes from the raw inputs + stored data like the magnetic
+// variation table on SD). Setters mutate raw fields only; derived fields
+// are recomputed automatically inside each setter (recomputeDerived_locked).
+//
+// Raw inputs (what real sensors send):
+//   * GPS:                 lat, lon, sog, cog
+//   * Apparent wind:       awa, aws (masthead sensor — measures relative to
+//                                    the boat's motion)
+//   * Magnetic compass:    heading_mag_deg
+//   * Magnetic variation:  magnetic_variation_deg (from WMM stored on SD,
+//                                                  or PGN 127250 if a
+//                                                  chartplotter publishes it)
+//   * Speed through water: stw   (paddlewheel / ultrasonic log)
+//   * Depth + temp:        depth_m, water_temp_c
+//
+// Derived (what the device computes):
+//   * heading_true_deg = heading_mag + magnetic_variation
+//   * twa, tws         — true wind from apparent wind + boat motion (vector
+//                        subtraction in the boat-relative frame)
+//   * twd              = heading_true + twa  (true wind direction, °T)
+//   * vmg              = stw · cos(twa)      (velocity made good upwind)
+//
+// Things we explicitly DO NOT know from sensors (for now):
+//   * sea current / set & drift  (would need both SOG/COG and STW/heading and
+//                                 still gives only an estimate; v1 leaves
+//                                 the "DRIFT" pill showing STW)
+//   * AIS targets                (PGN handlers are stubbed in NmeaBridge;
+//                                 will land in a later round)
 
 #pragma once
 
@@ -35,29 +63,53 @@ struct AisTarget {
 };
 
 struct Instruments {
-    // GPS
+    // ===== RAW SENSOR INPUTS =====
+
+    // GPS — position and motion-over-ground.
     double   lat            = NAN;   // degrees
     double   lon            = NAN;   // degrees
     double   sog            = NAN;   // knots (Speed Over Ground)
     double   cog            = NAN;   // degrees true (Course Over Ground)
     uint32_t gps_last_ms    = 0;
 
-    // Wind
+    // Apparent wind — what a masthead anemometer measures relative to the
+    // boat (so AWA = 0 means dead-ahead wind, regardless of true wind
+    // direction). For TRUE wind we subtract boat velocity (see derived
+    // block below).
     double   awa            = NAN;   // Apparent Wind Angle, degrees (-180..180, + starboard)
     double   aws            = NAN;   // Apparent Wind Speed, knots
-    double   twa            = NAN;   // True Wind Angle
-    double   tws            = NAN;   // True Wind Speed
     uint32_t wind_last_ms   = 0;
 
-    // Depth / water
+    // Depth / water (depth sounder + temperature probe).
     double   depth_m        = NAN;   // metres below transducer
     double   water_temp_c   = NAN;   // °C
     uint32_t depth_last_ms  = 0;
 
-    // Heading / speed through water
-    double   heading_true_deg = NAN;
-    double   stw              = NAN; // Speed Through Water, knots
-    uint32_t hdg_last_ms      = 0;
+    // Magnetic compass heading. NMEA 2000 PGN 127250 publishes magnetic by
+    // default; the device adds the variation to derive true heading below.
+    double   heading_mag_deg = NAN;
+    uint32_t hdg_last_ms     = 0;
+
+    // Magnetic variation (declination) — sign convention: positive = east.
+    // Looked up from the WMM table (eventually on SD; round-53 stub returns
+    // a Copenhagen-area constant). Some chartplotters also publish this in
+    // PGN 127250 — when they do we use that value directly.
+    double   magnetic_variation_deg = NAN;
+    uint32_t var_last_ms     = 0;
+
+    // Speed through water (paddlewheel / ultrasonic log).
+    double   stw             = NAN;   // knots
+    uint32_t stw_last_ms     = 0;
+
+    // ===== DERIVED VALUES =====
+    // Recomputed automatically by BoatState whenever a raw input changes.
+    // Read-only from the UI's point of view.
+
+    double   heading_true_deg = NAN;  // = heading_mag + magnetic_variation
+    double   twa              = NAN;  // True Wind Angle relative to bow, degrees
+    double   tws              = NAN;  // True Wind Speed, knots
+    double   twd              = NAN;  // True Wind Direction, degrees true
+    double   vmg              = NAN;  // Velocity Made Good upwind, knots
 };
 
 class BoatState {
@@ -67,13 +119,16 @@ public:
     // Whole-struct snapshot — cheap copy, safe for the UI task to read.
     Instruments snapshot();
 
-    // Mutators called by the NMEA bridge.
+    // ---- RAW SENSOR SETTERS -------------------------------------------------
+    // Each one mutates the corresponding raw field(s) and then runs
+    // recomputeDerived_locked() so the snapshot's derived fields stay
+    // consistent with the raw inputs.
     void setGps(double lat, double lon, double sog, double cog);
-    void setWindApparent(double awa, double aws);
-    void setWindTrue(double twa, double tws);
-    void setDepth(double depth_m, double water_temp_c);
-    void setHeading(double heading_true_deg);
+    void setApparentWind(double awa, double aws);
+    void setMagneticHeading(double heading_mag_deg);
+    void setMagneticVariation(double variation_deg);
     void setStw(double stw);
+    void setDepth(double depth_m, double water_temp_c);
 
     // AIS target book-keeping.
     // Targets older than kAisStaleMs are dropped on each update.
@@ -97,6 +152,11 @@ private:
     std::array<PgnEvent, kPgnLogSize>       pgn_log_{};
     size_t                                  pgn_log_head_  = 0; // next write index
     uint32_t                                pgn_log_total_ = 0;
+
+    // Recomputes heading_true / twa / tws / twd / vmg from the raw fields
+    // currently in i_. Called at the end of every raw-value setter while
+    // the mutex is held.
+    void recomputeDerived_locked();
 
     void pruneStaleAis_locked();
 };

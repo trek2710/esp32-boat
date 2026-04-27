@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 52: TWA triangle was still landing at radius 199 inside the labels because the canvas was only 200 px tall — bumped to 230 px so the image's top edge sits AT the outer rim. Hull half-beam reduced from 110 → 50 (beam 220 → 100 px) for a slim length:beam ≈ 2.8:1 profile. AWS readout moved out of the hull and split: AWS on the LEFT and a new BSPD readout on the RIGHT, both bare labels at montserrat_28 with k unit + subtitle. Added bspd_value_lbl + populated from STW (SOG fallback). Mockup updated."
+DEFAULT_MSG="Round 53: BoatState split into RAW (lat/lon, SOG/COG, AWA/AWS, mag heading, mag variation, STW, depth) + DERIVED (heading_true = mag + variation; TWA/TWS computed from AWA/AWS/STW via vector subtraction; TWD = heading_true + TWA; VMG = STW · cos TWA). Auto-recompute via recomputeDerived_locked() inside every raw setter. Added src/magnetic_variation.{h,cpp} with stub lookupMagneticVariation (Copenhagen ≈ +5° east; TODO: load WMM from SD). NmeaBridge: real PGN 127250 → mag heading + variation; PGN 130306 → apparent only; PGN 129025 also pumps variation lookup. Sim publishes ONLY raw values now (TWA/TWS hardcoded inputs gone). Ui.cpp computeTwd/computeVmg retired — Page 2 reads s.twd / s.vmg directly."
 
 set -euo pipefail
 

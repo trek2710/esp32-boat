@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "magnetic_variation.h"
+
 #if !SIMULATED_DATA
 #include <NMEA2000_CAN.h>   // pulls in the backend for the current platform
 #include <N2kMessages.h>    // Parse* helpers + msToKnots / radToDeg already defined here
@@ -76,6 +78,11 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN129025(msg, lat, lon)) {
                 auto snap = s.snapshot();
                 s.setGps(lat, lon, snap.sog, snap.cog);
+                // Round 53: derive magnetic variation from the new fix.
+                // Stub for now — returns a Copenhagen-area constant; will
+                // load WMM coefficients from the SD card later.
+                const double var = navmath::lookupMagneticVariation(lat, lon);
+                if (!isnan(var)) s.setMagneticVariation(var);
                 snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);
             } else {
                 snprintf(summary, sizeof(summary), "GPS (parse failed)");
@@ -105,16 +112,19 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             if (ParseN2kPGN130306(msg, sid, wind_speed_ms, wind_angle_rad, ref)) {
                 const double speed_kn  = msToKnots(wind_speed_ms);
                 const double angle_deg = normalizeDeg(RadToDeg(wind_angle_rad));
-                const char* kind = "?";
+                // Round 53: only consume APPARENT wind from sensors. True
+                // wind is derived in BoatState from AWA/AWS + boat motion;
+                // a chartplotter publishing pre-computed true wind would
+                // duplicate that work and disagree with our derivation,
+                // so we ignore it here.
                 if (ref == N2kWind_Apparent) {
-                    s.setWindApparent(angle_deg, speed_kn);
-                    kind = "AWA";
-                } else if (ref == N2kWind_True_boat || ref == N2kWind_True_water) {
-                    s.setWindTrue(angle_deg, speed_kn);
-                    kind = "TWA";
+                    s.setApparentWind(angle_deg, speed_kn);
+                    snprintf(summary, sizeof(summary), "Wind AWA=%+.0f spd=%.1fkn",
+                             angle_deg, speed_kn);
+                } else {
+                    snprintf(summary, sizeof(summary), "Wind ref=%u (ignored)",
+                             static_cast<unsigned>(ref));
                 }
-                snprintf(summary, sizeof(summary), "Wind %s=%+.0f spd=%.1fkn",
-                         kind, angle_deg, speed_kn);
             } else {
                 snprintf(summary, sizeof(summary), "Wind (parse failed)");
             }
@@ -158,11 +168,21 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             double heading_rad = NAN, dev_rad = NAN, var_rad = NAN;
             tN2kHeadingReference ref;
             if (ParseN2kPGN127250(msg, sid, heading_rad, dev_rad, var_rad, ref)) {
-                double deg = RadToDeg(heading_rad);
-                if (ref == N2khr_magnetic && !isnan(var_rad)) deg += RadToDeg(var_rad);
-                s.setHeading(normalizeDeg(deg));
-                snprintf(summary, sizeof(summary), "Heading %.0f%s",
-                         normalizeDeg(deg), ref == N2khr_magnetic ? "M" : "T");
+                // Round 53: store the RAW magnetic heading. True heading is
+                // derived in BoatState from heading_mag + variation.
+                // Variation can come from this same PGN (when the boat's
+                // chartplotter knows it) or from the WMM lookup tied to GPS.
+                if (ref == N2khr_magnetic && !isnan(heading_rad)) {
+                    s.setMagneticHeading(normalizeDeg(RadToDeg(heading_rad)));
+                }
+                if (!isnan(var_rad)) {
+                    s.setMagneticVariation(RadToDeg(var_rad));
+                }
+                snprintf(summary, sizeof(summary),
+                         "Heading %.0f%s var=%.1f",
+                         RadToDeg(heading_rad),
+                         ref == N2khr_magnetic ? "M" : "T",
+                         RadToDeg(var_rad));
             } else {
                 snprintf(summary, sizeof(summary), "Heading (parse failed)");
             }
@@ -221,10 +241,10 @@ struct SimEvent {
 SimEvent sim_events[] = {
     {129025L, 0,  100},   // Position Rapid Update: 10 Hz typical
     {129026L, 0,  250},   // COG/SOG: 4 Hz
-    {130306L, 0,  100},   // Wind: 10 Hz
+    {130306L, 0,  100},   // Wind: 10 Hz (apparent only — true wind is derived)
     {128267L, 0, 1000},   // Depth: 1 Hz
     {130316L, 0, 2000},   // Water temp: 0.5 Hz
-    {127250L, 0,  100},   // Heading: 10 Hz
+    {127250L, 0,  100},   // Heading (magnetic): 10 Hz
     {128259L, 0,  250},   // STW: 4 Hz
 };
 }  // namespace
@@ -234,29 +254,48 @@ void NmeaBridge::simulateTick() {
     const uint32_t now = millis();
     const double t = (now - t0) / 1000.0;
 
-    // Update BoatState continuously so the UI numbers don't stutter.
-    const double lat = 55.6761 + 0.0001 * sin(t * 0.1);
-    const double lon = 12.5683 + 0.0001 * cos(t * 0.1);
-    const double sog = 6.2 + 0.5 * sin(t * 0.3);
-    const double cog = 120.0 + 5.0 * sin(t * 0.05);
-    const double awa = 45.0 + 10.0 * sin(t * 0.2);
-    const double aws = 12.0 +  2.0 * cos(t * 0.4);
-    const double twa = 60.0 +  5.0 * sin(t * 0.15);
-    const double tws = 14.0 +  1.5 * cos(t * 0.25);
-    const double depth   = 8.5 + 0.7 * sin(t * 0.1);
-    const double temp_c  = 12.3;
-    const double hdg     = normalizeDeg(120.0 + 5.0 * sin(t * 0.05));
-    const double stw     =  5.9 + 0.4 * sin(t * 0.25);
+    // Round 53: simulator outputs ONLY what real boat sensors publish.
+    // True wind (TWA/TWS), true heading (HDG_T), TWD and VMG are derived
+    // by BoatState from these raw inputs — see recomputeDerived_locked.
+    //
+    // Sensor outputs (raw):
+    //   * GPS:                  lat, lon, sog, cog
+    //   * Apparent wind:        awa, aws  (masthead anemometer in boat frame)
+    //   * Magnetic heading:     hdg_m
+    //   * Speed through water:  stw       (paddlewheel)
+    //   * Depth + sea temp:     depth, temp_c
+    //
+    // Fake numbers chosen so the derived values come out plausible:
+    // boat sailing at 5.9 kn STW heading ~115°M (= 120°T with the +5°
+    // variation looked up from GPS), apparent wind ~45° starboard at
+    // 12 kn → derived TWA ≈ 60° / TWS ≈ 14 kn, matching what the old
+    // hardcoded "true wind" simulation used to publish directly.
+    const double lat   = 55.6761 + 0.0001 * sin(t * 0.1);
+    const double lon   = 12.5683 + 0.0001 * cos(t * 0.1);
+    const double sog   = 6.2 + 0.5 * sin(t * 0.3);
+    const double cog   = 120.0 + 5.0 * sin(t * 0.05);
+    const double awa   = 45.0 + 10.0 * sin(t * 0.2);
+    const double aws   = 12.0 +  2.0 * cos(t * 0.4);
+    const double depth = 8.5 + 0.7 * sin(t * 0.1);
+    const double temp_c = 12.3;
+    const double hdg_m = normalizeDeg(115.0 + 5.0 * sin(t * 0.05));  // magnetic
+    const double stw   = 5.9 + 0.4 * sin(t * 0.25);
 
     state_.setGps(lat, lon, sog, cog);
-    state_.setWindApparent(awa, aws);
-    state_.setWindTrue(twa, tws);
-    state_.setDepth(depth, temp_c);
-    state_.setHeading(hdg);
+    state_.setApparentWind(awa, aws);
+    state_.setMagneticHeading(hdg_m);
     state_.setStw(stw);
+    state_.setDepth(depth, temp_c);
 
-    // Fire simulated PGN log entries on their per-PGN intervals so the debug
-    // screen sees a realistic-looking trickle.
+    // Magnetic variation — looked up from the current GPS position. The
+    // round-53 stub returns a Copenhagen-area constant (≈ +5° east); a
+    // future round will load WMM coefficients from the SD card and
+    // evaluate them properly.
+    const double var_deg = navmath::lookupMagneticVariation(lat, lon);
+    if (!std::isnan(var_deg)) state_.setMagneticVariation(var_deg);
+
+    // Fire simulated PGN log entries on their per-PGN intervals so the
+    // debug screen sees a realistic-looking trickle.
     char summary[56];
     for (auto& e : sim_events) {
         if (now - e.last_ms < e.interval_ms) continue;
@@ -278,7 +317,8 @@ void NmeaBridge::simulateTick() {
                 snprintf(summary, sizeof(summary), "Temp sea t=%.1fC", temp_c);
                 break;
             case 127250L:
-                snprintf(summary, sizeof(summary), "Heading %.0fT", hdg);
+                snprintf(summary, sizeof(summary), "Heading %.0fM var=%.1f",
+                         hdg_m, var_deg);
                 break;
             case 128259L:
                 snprintf(summary, sizeof(summary), "STW %.1fkn", stw);
