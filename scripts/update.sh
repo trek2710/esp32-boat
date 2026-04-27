@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 50: TWA marker reworked from a radial needle_line into an inward-pointing triangle AT the rim — drawn into a 28×200 lv_canvas (top 22 px yellow triangle, base on rim, apex pointing inward; bottom 178 px transparent for the rotation pivot) registered as an lv_meter_add_needle_img. Bow shape replaced with a closed 32-point parametric teardrop hull (same curve as round 41 but bigger, full opacity, 220 px beam) so the dial now shows an unmistakable top-down boat silhouette with the readouts inside. Mockup script + docs/overview-mockup.png updated."
+DEFAULT_MSG="Round 51: TWA rim triangle 22 → 12 px so it sits entirely in the outermost rim ring instead of poking inward across the labels. Replaced the round-50 parametric teardrop hull (too round/blob-shaped) with a hand-tuned 24-point polygon matching the reference: sharp pointed bow, sides curving out to maximum beam at midship, flat-ish transom at bottom. AWS box removed — value/unit/subtitle are now bare labels inside the hull. Mockup updated."
 
 set -euo pipefail
 

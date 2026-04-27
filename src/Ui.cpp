@@ -528,9 +528,14 @@ void buildOverviewPage() {
     // When the indicator value is set to TWA, the image rotates around
     // the centre and the visible triangle ends up at the dial rim at
     // angle TWA, with its apex pointing inward.
+    // Round 51 (per user "yellow triangle should be all on the edge of
+    // the circle"): triangle depth 22 → 12 px so it sits entirely in
+    // the outermost rim ring (between the outer rim and the major-tick
+    // inner ends) instead of poking into the inner annulus where the
+    // 30/60/90/... labels live.
     constexpr int kTwaW    = 28;
     constexpr int kTwaH    = 200;
-    constexpr int kTwaTriH = 22;
+    constexpr int kTwaTriH = 12;
     const size_t twa_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kTwaW, kTwaH);
     lv_color_t* twa_buf = static_cast<lv_color_t*>(
         heap_caps_malloc(twa_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -600,48 +605,53 @@ void buildOverviewPage() {
     // competing with the DRIFT pill / AWS box / wind pointer for
     // attention.
     //
-    // Round 50 (per user "There is still no boat shape" after IMG_1928):
-    // replace the round-44 open-V (3-point polyline) with a CLOSED
-    // 32-point parametric teardrop hull — same curve as round 41 but
-    // bigger, full opacity, with the bow at the top of the inner_disc
-    // and the stern near the bottom so the user sees an unmistakable
-    // top-down boat silhouette. The DRIFT circle, AWS box, and TWA
-    // marker are still children of the meter, so they render on top of
-    // the hull and the readouts appear "inside" the boat — just like
-    // a real B&G display.
+    // Round 51: the round-50 parametric teardrop was too round-and-blob
+    // shaped — user said "boat shape is horrible" and pointed at a
+    // proper top-down hull picture (sharp pointed bow, sides curving
+    // out then running nearly parallel through the midsection, flat
+    // transom at the back). Replaced with a hand-tuned 24-point
+    // polygon that tracks that reference shape.
     //
-    // Curve params (in inner_disc local coords, 320×320 centred at (160,160)):
-    //   bow tip    (160, 20)
-    //   stern      (160, 290)
-    //   beam ends  (50, 160) and (270, 160)  → 220 px beam at widest
-    //
-    // 32 points around an asymmetric ellipse (taller above, shorter
-    // below) with extra lateral taper near the bow so it points cleanly.
-    // Stroke 4 px white at full opacity.
-    constexpr int kHullPoints = 33;          // 32 around + 1 closing point
-    static lv_point_t hull_pts[kHullPoints];
-    static bool hull_built = false;
-    if (!hull_built) {
-        constexpr float cx         = 160.0f;
-        constexpr float cy         = 160.0f;
-        constexpr float beam_half  = 110.0f;
-        constexpr float bow_dist   = 140.0f;
-        constexpr float stern_dist = 130.0f;
-        for (int i = 0; i < 32; ++i) {
-            const float a = static_cast<float>(i) / 32.0f
-                            * 2.0f * static_cast<float>(M_PI);
-            const float s = sinf(a);
-            const float c = cosf(a);
-            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
-            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
-            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
-            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
-        }
-        hull_pts[32] = hull_pts[0];
-        hull_built = true;
-    }
+    // All coords are in inner_disc local space (320×320, centred at
+    // (160, 160)). The polygon goes CW starting at the bow tip:
+    //   * bow tip at the top of inner_disc (y=20)
+    //   * sides curve outward through y=80 (bow shoulder) down to
+    //     y=175 where they reach the maximum beam (270, 175) /
+    //     (50, 175) — 220 px wide
+    //   * sides taper gently from y=175 down to the transom shoulders
+    //     near (235, 285) / (85, 285)
+    //   * flat-ish transom across the bottom: (175, 300) → (145, 300)
+    static const lv_point_t hull_pts[] = {
+        {160,  20},   // bow tip
+        {180,  35},
+        {200,  55},
+        {222,  80},
+        {243, 110},
+        {260, 140},
+        {268, 175},   // beam right (widest)
+        {268, 210},
+        {262, 240},
+        {248, 265},
+        {225, 285},
+        {195, 295},
+        {175, 300},   // right transom corner
+        {145, 300},   // left transom corner
+        {125, 295},
+        { 95, 285},
+        { 72, 265},
+        { 58, 240},
+        { 52, 210},
+        { 52, 175},   // beam left (widest, mirror)
+        { 60, 140},
+        { 77, 110},
+        { 98,  80},
+        {120,  55},
+        {140,  35},
+        {160,  20},   // close back to bow tip
+    };
     lv_obj_t* hull = lv_line_create(inner);
-    lv_line_set_points(hull, hull_pts, kHullPoints);
+    lv_line_set_points(hull, hull_pts,
+                       sizeof(hull_pts) / sizeof(hull_pts[0]));
     lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
     lv_obj_set_style_line_width(hull, 4, LV_PART_MAIN);
     lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
@@ -708,40 +718,23 @@ void buildOverviewPage() {
         lv_obj_align(arrow, LV_ALIGN_TOP_MID, 0, 4);
     }
 
-    // (6b) AWS box — below the centre circle.
+    // (6b) AWS readout — bare text inside the hull (Round 51, per user
+    // "Remove the box around the aws, just make it fit inside the
+    // boat"). No box, no border, no fill — just the value, "k" unit,
+    // and "AWS" subtitle floating against the dial inside the hull.
     {
-        constexpr int W = 170;
-        constexpr int H = 80;
-        lv_obj_t* box = lv_obj_create(inner);
-        lv_obj_set_size(box, W, H);
-        lv_obj_align(box, LV_ALIGN_CENTER, 0, 80);
-        lv_obj_set_style_radius(box, 8, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(box, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_border_width(box, 2, LV_PART_MAIN);
-        lv_obj_set_style_border_color(box, lv_color_white(), LV_PART_MAIN);
-        lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-
-        // Round 47 (per user "AWS is slightly off"): rebalance the
-        // value/unit/subtitle so the visual centre of the readout lines
-        // up with the box centre. Round 45 had value at -10 px left and
-        // "k" at top-right with a 10 px right margin — the wide gap
-        // between the two pulled the eye off-centre. Now: value at
-        // -14 px left (so "10.4" is visually centred allowing for the
-        // "k" superscript on the right), "k" placed right next to the
-        // value via LV_ALIGN_CENTER with a 36 px right offset.
-        overview.aws_value_lbl = makeLabel(box, &lv_font_montserrat_48,
+        overview.aws_value_lbl = makeLabel(inner, &lv_font_montserrat_48,
                                            lv_color_white(), "--");
-        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -14, -8);
+        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -14, 60);
 
-        lv_obj_t* unit = makeLabel(box, &lv_font_montserrat_20,
+        lv_obj_t* unit = makeLabel(inner, &lv_font_montserrat_20,
                                    lv_color_white(), "k");
-        lv_obj_align(unit, LV_ALIGN_CENTER, 36, -18);
+        lv_obj_align(unit, LV_ALIGN_CENTER, 36, 50);
 
-        lv_obj_t* sub = makeLabel(box, &lv_font_montserrat_14,
+        lv_obj_t* sub = makeLabel(inner, &lv_font_montserrat_14,
                                   lv_palette_lighten(LV_PALETTE_GREY, 2),
                                   "AWS");
-        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -4);
+        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 100);
     }
 
     // ----- (7) Heading marker — small white triangle at bottom of disc -----
