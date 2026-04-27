@@ -427,7 +427,10 @@ bool St7701Panel::initRgbPanel() {
     cfg.de_gpio_num    = RGB_PIN_DE;
     cfg.pclk_gpio_num  = RGB_PIN_PCLK;
     // Byte order on this board: blue lines are the low byte, red lines
-    // are the high byte — matches LVGL's LV_COLOR_16_SWAP=1 wire layout.
+    // are the high byte. Round-49 note: this matches LVGL's standard
+    // RGB565 layout (LV_COLOR_16_SWAP=0); the earlier =1 setting was a
+    // QSPI-era holdover and scrambled non-palindromic colours — see
+    // include/lv_conf.h round-49 comment for the full diagnosis.
     cfg.data_gpio_nums[0]  = RGB_PIN_B0;
     cfg.data_gpio_nums[1]  = RGB_PIN_B1;
     cfg.data_gpio_nums[2]  = RGB_PIN_B2;

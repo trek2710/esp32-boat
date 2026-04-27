@@ -19,8 +19,23 @@
 // COLOR SETTINGS
 // =============================================================================
 
-#define LV_COLOR_DEPTH         16       // 16-bit RGB565 — what ST77916/GC9A01 expect.
-#define LV_COLOR_16_SWAP       1        // Byte-swap for SPI/QSPI-connected panels.
+#define LV_COLOR_DEPTH         16       // 16-bit RGB565 — what the ST7701 RGB-parallel panel expects.
+// Round 49: set to 0. The =1 here was a holdover from when this project
+// thought it was driving an ST77916 QSPI panel (rounds 4-12). On the
+// RGB-parallel ST7701 (round 13+) the IDF driver memcpy's the LVGL
+// framebuffer to PSRAM and the RGB peripheral DMAs raw RGB565 to the
+// data pins in native CPU byte order. With SWAP=1, LVGL packs each
+// pixel as [G_high(3), R(5), B(5), G_low(3)] — which the IDF driver
+// (correctly) reads back as standard RGB565 [R(5), G(6), B(5)]. The
+// bit fields don't match → every non-palindromic colour is scrambled:
+//   0xCC0000 (red)   → 0x00C8 → R=0  G=6  B=8   (dark teal, invisible on black)
+//   0x006400 (green) → 0x2003 → R=4  G=0  B=3   (dark red — what the user saw at the green-sector spot)
+//   0xFFFF00 (yellow)→ 0xE0FF → R=28 G=7  B=31  (magenta — the "pink TWA needle")
+//   0x1A2740 (navy)  → 0x2819 → R=5  G=0  B=25  (blue-purple — close enough to navy that it looked OK)
+// White/black are palindromes and rendered fine, which masked the bug
+// for many rounds. With SWAP=0 the layout becomes the standard
+// [R(5), G(6), B(5)] that the IDF driver expects.
+#define LV_COLOR_16_SWAP       0
 #define LV_COLOR_SCREEN_TRANSP 0
 #define LV_COLOR_MIX_ROUND_OFS (LV_COLOR_DEPTH == 32 ? 0 : 128)
 #define LV_COLOR_CHROMA_KEY    lv_color_hex(0x00ff00)

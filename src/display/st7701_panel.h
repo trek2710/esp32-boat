@@ -55,7 +55,7 @@ public:
     bool begin(Tca9554& io);
 
     // Push a rectangle of RGB565 pixels to the framebuffer. Byte order
-    // matches LVGL's LV_COLOR_16_SWAP=1 layout (high byte first on the
+    // matches LVGL's standard RGB565 layout under LV_COLOR_16_SWAP=0 (high byte first on the
     // wire). (x1,y1)-(x2,y2) inclusive — matches lv_area_t. Returns
     // immediately; esp_lcd_panel_rgb handles its own PCLK/DMA clocking in
     // the background off the framebuffer we just stomped.

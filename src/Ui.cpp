@@ -515,14 +515,57 @@ void buildOverviewPage() {
     // lv_meter_add_needle_line. Drawn AFTER the AWA cone so its tail
     // sits on top of the cone where they overlap; both rotate around
     // the meter centre with their own values.
-    // Round 47: bumped yellow from 0xFFCC00 (amber) to 0xFFFF00 (pure
-    // yellow) and width 6 → 8 after IMG_1922 showed the needle reading
-    // as a thin pink/purple line. Pure yellow is the most-saturated
-    // colour LVGL can drive on this RGB565 panel and width 8 reads
-    // clearly across the dial without competing with the AWA cone.
-    overview.twa_needle = lv_meter_add_needle_line(
-        compass, scale, 8, lv_color_hex(0xFFFF00), -32);
-    lv_meter_set_indicator_value(compass, overview.twa_needle, 0);
+    // Round 50 (per user "yellow line should be a triangle at the rim
+    // pointing inwards"): replace the radial needle_line with a small
+    // inward-pointing triangle marker that sits AT the rim. Implemented
+    // as an lv_meter_add_needle_img using a canvas where:
+    //   * the top 22 px hold a yellow triangle whose base spans the
+    //     full image width at y=0 (the rim end) and whose apex points
+    //     DOWN at y=22 (toward the centre);
+    //   * the bottom 178 px are transparent — purely for the rotation
+    //     pivot, since needle_img rotates around its pivot which is
+    //     mapped to the meter centre.
+    // When the indicator value is set to TWA, the image rotates around
+    // the centre and the visible triangle ends up at the dial rim at
+    // angle TWA, with its apex pointing inward.
+    constexpr int kTwaW    = 28;
+    constexpr int kTwaH    = 200;
+    constexpr int kTwaTriH = 22;
+    const size_t twa_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kTwaW, kTwaH);
+    lv_color_t* twa_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(twa_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (twa_buf) {
+        lv_obj_t* twa_canvas = lv_canvas_create(compass);
+        lv_canvas_set_buffer(twa_canvas, twa_buf, kTwaW, kTwaH,
+                             LV_IMG_CF_TRUE_COLOR_ALPHA);
+        lv_canvas_fill_bg(twa_canvas, lv_color_black(), LV_OPA_TRANSP);
+
+        lv_draw_rect_dsc_t tri_dsc;
+        lv_draw_rect_dsc_init(&tri_dsc);
+        tri_dsc.bg_color = lv_palette_main(LV_PALETTE_AMBER);
+        tri_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t tri[3] = {
+            {0,            0},      // base, rim-side, left
+            {kTwaW - 1,    0},      // base, rim-side, right
+            {kTwaW / 2,    kTwaTriH}, // apex pointing inward
+        };
+        lv_canvas_draw_polygon(twa_canvas, tri, 3, &tri_dsc);
+
+        lv_obj_add_flag(twa_canvas, LV_OBJ_FLAG_HIDDEN);
+
+        // Pivot at bottom-centre lands on the meter centre. Image's
+        // top edge (where the triangle base sits) ends up at the rim.
+        overview.twa_needle = lv_meter_add_needle_img(
+            compass, scale,
+            lv_canvas_get_img(twa_canvas),
+            kTwaW / 2, kTwaH - 1);
+        lv_meter_set_indicator_value(compass, overview.twa_needle, 0);
+    } else {
+        log_e("[ui] TWA canvas alloc failed (%u bytes) — true wind "
+              "indicator disabled this boot",
+              static_cast<unsigned>(twa_buf_sz));
+        overview.twa_needle = nullptr;
+    }
 
     // ----- (4) Inner black disc -----
     //
@@ -557,40 +600,52 @@ void buildOverviewPage() {
     // competing with the DRIFT pill / AWS box / wind pointer for
     // attention.
     //
-    // Round 44 (per user "boat shape should only be front of boat going
-    // from nearly top of degree (0) and open up ending around 120 degree
-    // — no boat end, just the front"): replace the round-43 closed
-    // 32-point teardrop with an OPEN V — three points forming the bow
-    // outline only. Bow tip near the top of the inner disc (≈ degree 0
-    // on the dial), arms extending down and outward to the inner-disc
-    // rim positions corresponding to dial angle ±120° (which on the
-    // mirrored dial reads as "120" on each side, ≈ stern quarters).
+    // Round 50 (per user "There is still no boat shape" after IMG_1928):
+    // replace the round-44 open-V (3-point polyline) with a CLOSED
+    // 32-point parametric teardrop hull — same curve as round 41 but
+    // bigger, full opacity, with the bow at the top of the inner_disc
+    // and the stern near the bottom so the user sees an unmistakable
+    // top-down boat silhouette. The DRIFT circle, AWS box, and TWA
+    // marker are still children of the meter, so they render on top of
+    // the hull and the readouts appear "inside" the boat — just like
+    // a real B&G display.
     //
-    // Inner disc is 320×320 with centre at (160, 160) and radius 160.
-    // Endpoint at dial angle 120° on the rim is
-    //     (160 + 160·sin120°, 160 − 160·cos120°)
-    //     = (160 + 138.6, 160 + 80) ≈ (299, 240).
-    // Pulled in to ~90% radius so the lines don't visually clip the
-    // round inner-disc edge.
-    static const lv_point_t bow_pts[] = {
-        { 35, 232},   // left arm endpoint (≈ dial 240°/mirrored 120°)
-        {160,  20},   // bow tip (≈ dial 0°)
-        {285, 232},   // right arm endpoint (≈ dial 120°)
-    };
-    lv_obj_t* bow = lv_line_create(inner);
-    lv_line_set_points(bow, bow_pts, sizeof(bow_pts) / sizeof(bow_pts[0]));
-    lv_obj_set_style_line_color(bow, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_line_width(bow, 3, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(bow, true, LV_PART_MAIN);
-    // Round 47 (per user "try make it higher" re bow opacity): full
-    // opacity so the front-of-boat V reads clearly. Round 43/44 had it
-    // at 60% as a faint backdrop, but the photo showed it almost
-    // invisible.
-    lv_obj_set_style_line_opa(bow, LV_OPA_COVER, LV_PART_MAIN);
-
-    // (Round 43's standalone cyan chevron was removed in round 44 — the
-    // drift indicator is now the small cyan arrow inside the centre
-    // DRIFT circle below.)
+    // Curve params (in inner_disc local coords, 320×320 centred at (160,160)):
+    //   bow tip    (160, 20)
+    //   stern      (160, 290)
+    //   beam ends  (50, 160) and (270, 160)  → 220 px beam at widest
+    //
+    // 32 points around an asymmetric ellipse (taller above, shorter
+    // below) with extra lateral taper near the bow so it points cleanly.
+    // Stroke 4 px white at full opacity.
+    constexpr int kHullPoints = 33;          // 32 around + 1 closing point
+    static lv_point_t hull_pts[kHullPoints];
+    static bool hull_built = false;
+    if (!hull_built) {
+        constexpr float cx         = 160.0f;
+        constexpr float cy         = 160.0f;
+        constexpr float beam_half  = 110.0f;
+        constexpr float bow_dist   = 140.0f;
+        constexpr float stern_dist = 130.0f;
+        for (int i = 0; i < 32; ++i) {
+            const float a = static_cast<float>(i) / 32.0f
+                            * 2.0f * static_cast<float>(M_PI);
+            const float s = sinf(a);
+            const float c = cosf(a);
+            const float taper  = (c > 0.0f) ? (1.0f - 0.4f * c * c) : 1.0f;
+            const float r_long = (c > 0.0f) ? bow_dist : stern_dist;
+            hull_pts[i].x = static_cast<lv_coord_t>(cx + beam_half * s * taper);
+            hull_pts[i].y = static_cast<lv_coord_t>(cy - r_long * c);
+        }
+        hull_pts[32] = hull_pts[0];
+        hull_built = true;
+    }
+    lv_obj_t* hull = lv_line_create(inner);
+    lv_line_set_points(hull, hull_pts, kHullPoints);
+    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(hull, 4, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
+    lv_obj_set_style_line_opa(hull, LV_OPA_COVER, LV_PART_MAIN);
 
     // ----- (6) Centre DRIFT circle + AWS box below -----
     //
@@ -1163,7 +1218,8 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
 // --- Display driver glue ---------------------------------------------------
 
 // LVGL -> ST7701 glue. LVGL hands us a partial-screen rectangle of RGB565
-// pixels (LV_COLOR_DEPTH=16, LV_COLOR_16_SWAP=1); we forward it to the panel.
+// pixels (LV_COLOR_DEPTH=16, LV_COLOR_16_SWAP=0 — see lv_conf.h round-49
+// notes); we forward it to the panel.
 //
 // Round 32: apply a 180° rotation in software. Rounds 30/31 showed that
 // ST7701's MADCTL bits don't affect the displayed image when the chip is

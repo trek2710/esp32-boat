@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 47: three small fixes after IMG_1922 — AWS box contents rebalanced (value at -14 px left, 'k' at LV_ALIGN_CENTER offset 36/-18 right next to it instead of TOP_RIGHT corner, so '10.4 k' is visually centred); TWA needle brightened from 0xFFCC00 to 0xFFFF00 and width 6→8 so it reads as yellow not pink/purple; bow open-V opacity bumped from LV_OPA_60 to LV_OPA_COVER for a more visible front-of-boat shape."
+DEFAULT_MSG="Round 50: TWA marker reworked from a radial needle_line into an inward-pointing triangle AT the rim — drawn into a 28×200 lv_canvas (top 22 px yellow triangle, base on rim, apex pointing inward; bottom 178 px transparent for the rotation pivot) registered as an lv_meter_add_needle_img. Bow shape replaced with a closed 32-point parametric teardrop hull (same curve as round 41 but bigger, full opacity, 220 px beam) so the dial now shows an unmistakable top-down boat silhouette with the readouts inside. Mockup script + docs/overview-mockup.png updated."
 
 set -euo pipefail
 
