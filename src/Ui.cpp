@@ -128,7 +128,8 @@ struct OverviewPage {
     lv_meter_indicator_t* stbd_sector;       // solid green arc — stbd close-hauled
 
     lv_obj_t* drift_value_lbl;               // STW value inside the centre circle
-    lv_obj_t* aws_value_lbl;                 // AWS value inside the wind box
+    lv_obj_t* aws_value_lbl;                 // AWS — left of the hull (round 52)
+    lv_obj_t* bspd_value_lbl;                // boat speed — right of the hull (round 52)
 };
 OverviewPage overview;
 
@@ -528,13 +529,16 @@ void buildOverviewPage() {
     // When the indicator value is set to TWA, the image rotates around
     // the centre and the visible triangle ends up at the dial rim at
     // angle TWA, with its apex pointing inward.
-    // Round 51 (per user "yellow triangle should be all on the edge of
-    // the circle"): triangle depth 22 → 12 px so it sits entirely in
-    // the outermost rim ring (between the outer rim and the major-tick
-    // inner ends) instead of poking into the inner annulus where the
-    // 30/60/90/... labels live.
+    // Round 52 — TWA triangle "did not follow the outer edge". Cause:
+    // image height was 200 px, so with pivot at the bottom landing on
+    // the meter centre, the top of the image (where the triangle
+    // sits) ended up at radius 199 — INSIDE the major-tick inner end
+    // (214) and overlapping the 30/60/90/... labels. Bumping the image
+    // height to 230 makes the top edge land at radius 229, right
+    // against the outer rim, so the triangle now lives entirely in
+    // the outermost ring of the dial. Triangle depth stays 12 px.
     constexpr int kTwaW    = 28;
-    constexpr int kTwaH    = 200;
+    constexpr int kTwaH    = 230;
     constexpr int kTwaTriH = 12;
     const size_t twa_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kTwaW, kTwaH);
     lv_color_t* twa_buf = static_cast<lv_color_t*>(
@@ -621,32 +625,39 @@ void buildOverviewPage() {
     //   * sides taper gently from y=175 down to the transom shoulders
     //     near (235, 285) / (85, 285)
     //   * flat-ish transom across the bottom: (175, 300) → (145, 300)
+    // Round 52 (per user "boat shape is too wide in the middle — it
+    // should be a slim boat"): half-beam 110 → 50 (beam 100 px) for an
+    // overall length:beam ratio of ≈ 2.8:1, much closer to the user's
+    // reference hull picture. Length stays 280 px (bow at y=20, transom
+    // at y=300). Re-spaced the 24 polygon points so the sides curve
+    // gently outward, run nearly parallel through the long midship,
+    // then taper to a 20 px wide flat transom.
     static const lv_point_t hull_pts[] = {
         {160,  20},   // bow tip
-        {180,  35},
-        {200,  55},
-        {222,  80},
-        {243, 110},
-        {260, 140},
-        {268, 175},   // beam right (widest)
-        {268, 210},
-        {262, 240},
-        {248, 265},
-        {225, 285},
-        {195, 295},
-        {175, 300},   // right transom corner
-        {145, 300},   // left transom corner
-        {125, 295},
-        { 95, 285},
-        { 72, 265},
-        { 58, 240},
-        { 52, 210},
-        { 52, 175},   // beam left (widest, mirror)
-        { 60, 140},
-        { 77, 110},
-        { 98,  80},
-        {120,  55},
-        {140,  35},
+        {168,  38},
+        {178,  60},
+        {188,  90},
+        {198, 120},
+        {206, 150},
+        {210, 175},   // beam right (widest, half-beam 50)
+        {210, 205},
+        {205, 235},
+        {195, 260},
+        {180, 285},
+        {170, 296},
+        {165, 300},   // right transom corner
+        {155, 300},   // left transom corner
+        {150, 296},
+        {140, 285},
+        {125, 260},
+        {115, 235},
+        {110, 205},
+        {110, 175},   // beam left (widest, mirror)
+        {114, 150},
+        {122, 120},
+        {132,  90},
+        {142,  60},
+        {152,  38},
         {160,  20},   // close back to bow tip
     };
     lv_obj_t* hull = lv_line_create(inner);
@@ -718,23 +729,42 @@ void buildOverviewPage() {
         lv_obj_align(arrow, LV_ALIGN_TOP_MID, 0, 4);
     }
 
-    // (6b) AWS readout — bare text inside the hull (Round 51, per user
-    // "Remove the box around the aws, just make it fit inside the
-    // boat"). No box, no border, no fill — just the value, "k" unit,
-    // and "AWS" subtitle floating against the dial inside the hull.
+    // (6b) Round 52 — AWS readout moved OUTSIDE the boat (left side)
+    // and a new BSPD readout added on the OTHER side (right). Both are
+    // bare labels (value at montserrat_28, "k" unit at montserrat_14,
+    // subtitle at montserrat_12) sitting on the dial annulus between
+    // the slim hull and the dial labels.
+    //
+    // AWS — left of the hull.
     {
-        overview.aws_value_lbl = makeLabel(inner, &lv_font_montserrat_48,
+        overview.aws_value_lbl = makeLabel(inner, &lv_font_montserrat_28,
                                            lv_color_white(), "--");
-        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -14, 60);
+        lv_obj_align(overview.aws_value_lbl, LV_ALIGN_CENTER, -100, -6);
 
-        lv_obj_t* unit = makeLabel(inner, &lv_font_montserrat_20,
+        lv_obj_t* unit = makeLabel(inner, &lv_font_montserrat_14,
                                    lv_color_white(), "k");
-        lv_obj_align(unit, LV_ALIGN_CENTER, 36, 50);
+        lv_obj_align(unit, LV_ALIGN_CENTER, -75, -14);
 
-        lv_obj_t* sub = makeLabel(inner, &lv_font_montserrat_14,
+        lv_obj_t* sub = makeLabel(inner, &lv_font_montserrat_12,
                                   lv_palette_lighten(LV_PALETTE_GREY, 2),
                                   "AWS");
-        lv_obj_align(sub, LV_ALIGN_CENTER, 0, 100);
+        lv_obj_align(sub, LV_ALIGN_CENTER, -100, 16);
+    }
+
+    // BSPD (boat speed through water) — right of the hull.
+    {
+        overview.bspd_value_lbl = makeLabel(inner, &lv_font_montserrat_28,
+                                            lv_color_white(), "--");
+        lv_obj_align(overview.bspd_value_lbl, LV_ALIGN_CENTER, 100, -6);
+
+        lv_obj_t* unit = makeLabel(inner, &lv_font_montserrat_14,
+                                   lv_color_white(), "k");
+        lv_obj_align(unit, LV_ALIGN_CENTER, 125, -14);
+
+        lv_obj_t* sub = makeLabel(inner, &lv_font_montserrat_12,
+                                  lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                  "BSPD");
+        lv_obj_align(sub, LV_ALIGN_CENTER, 100, 16);
     }
 
     // ----- (7) Heading marker — small white triangle at bottom of disc -----
@@ -967,6 +997,17 @@ void refreshOverview(const Instruments& s) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%.1f", s.aws);
         lv_label_set_text(overview.aws_value_lbl, buf);
+    }
+
+    // BSPD readout (round 52, right of the hull) — boat speed through
+    // water, falling back to SOG when STW isn't on the bus yet.
+    const double bspd = !isnan(s.stw) ? s.stw : s.sog;
+    if (isnan(bspd)) {
+        lv_label_set_text(overview.bspd_value_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", bspd);
+        lv_label_set_text(overview.bspd_value_lbl, buf);
     }
 }
 

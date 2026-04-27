@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 51: TWA rim triangle 22 → 12 px so it sits entirely in the outermost rim ring instead of poking inward across the labels. Replaced the round-50 parametric teardrop hull (too round/blob-shaped) with a hand-tuned 24-point polygon matching the reference: sharp pointed bow, sides curving out to maximum beam at midship, flat-ish transom at bottom. AWS box removed — value/unit/subtitle are now bare labels inside the hull. Mockup updated."
+DEFAULT_MSG="Round 52: TWA triangle was still landing at radius 199 inside the labels because the canvas was only 200 px tall — bumped to 230 px so the image's top edge sits AT the outer rim. Hull half-beam reduced from 110 → 50 (beam 220 → 100 px) for a slim length:beam ≈ 2.8:1 profile. AWS readout moved out of the hull and split: AWS on the LEFT and a new BSPD readout on the RIGHT, both bare labels at montserrat_28 with k unit + subtitle. Added bspd_value_lbl + populated from STW (SOG fallback). Mockup updated."
 
 set -euo pipefail
 
