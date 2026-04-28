@@ -37,3 +37,4 @@ Thumbs.db
 # Secrets (WiFi creds, OTA passwords, etc.)
 secrets.h
 .env
+CLAUDE.md

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 56: navigation-math doc + simulator-purity audit. New docs/NAVIGATION_MATH.md (raw-vs-derived split, formulas, 3 worked examples) + docs/wind-triangle.svg diagram. Code: setGps now takes only (lat, lon) — SOG/COG are DERIVED inside BoatState from consecutive GPS-position deltas (equirectangular plate-carrée; COG suppressed when displacement < 0.5 m). Real PGN 129026 (sensor-supplied COG/SOG) ignored. Simulator now picks a slowly-varying intended speed/heading and integrates the boat's lat/lon along that vector each tick, so SOG/COG fall out of the deltas instead of being hardcoded inputs. BoatState.h cross-references the doc."
+DEFAULT_MSG="Round 57: swipe nav debugged after web research. Two LVGL-forum-documented gotchas for CST816/CST820: (1) LV_INDEV_DEF_READ_PERIOD = 30 ms gave only ≈ 7 polls during a 200 ms swipe — bumped to 10 ms, comfortably below the chip's 100 Hz native rate. (2) The chip's intermittent no-finger reports during a continuous touch were triggering false release events that reset press_x mid-swipe. Added kHoldThroughGapMs = 80 ms hold-through window in touchReadCb — a no-finger sample within 80 ms of the last real contact keeps reporting PRESSED to LVGL; only a sustained release evaluates the swipe."
 
 set -euo pipefail
 

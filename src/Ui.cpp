@@ -1437,41 +1437,58 @@ void refreshFromState() {
 // LVGL polls this from lv_timer_handler() at the indev refresh period
 // (default 30 ms). g_touch.read() over 100 kHz I2C is ~800 µs — cheap
 // enough that we don't need to gate it on the TP_INT line.
+// Round 57: dropout-debounced touch read. The CST820 reports "no
+// finger" intermittently mid-touch — a known LVGL-forum gotcha for
+// CST816/CST820 — so the round-55 state machine kept seeing false
+// release events during a swipe, which reset press_x and tanked the
+// dx delta. Now we ride out brief no-finger gaps for up to
+// kHoldThroughGapMs and only declare a real release when contact has
+// been absent for that long. press_x is captured on the FIRST rising
+// edge after a real release; intra-gap dropouts don't disturb it.
 void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
-    static int16_t last_x   = 0;
-    static int16_t last_y   = 0;
-    static int16_t press_x  = 0;
-    static int16_t press_y  = 0;
-    static uint32_t press_ms = 0;
-    static bool was_pressed  = false;
+    static int16_t  last_x              = 0;
+    static int16_t  last_y              = 0;
+    static int16_t  press_x             = 0;
+    static int16_t  press_y             = 0;
+    static uint32_t press_ms            = 0;
+    static uint32_t last_real_press_ms  = 0;
+    static bool     reported_pressed    = false;
+
+    constexpr uint32_t kHoldThroughGapMs = 80;
 
     uint16_t raw_x = 0, raw_y = 0;
-    const bool pressed = g_touch.read(&raw_x, &raw_y);
-    if (pressed) {
+    const bool fresh = g_touch.read(&raw_x, &raw_y);
+    const uint32_t now = millis();
+
+    if (fresh) {
         last_x = static_cast<int16_t>(DISPLAY_WIDTH  - 1 - raw_x);
         last_y = static_cast<int16_t>(DISPLAY_HEIGHT - 1 - raw_y);
-        if (!was_pressed) {
-            // Rising edge — record where the press started.
+        last_real_press_ms = now;
+        if (!reported_pressed) {
+            // Rising edge after a true release — anchor the swipe.
             press_x  = last_x;
             press_y  = last_y;
-            press_ms = millis();
+            press_ms = now;
         }
+    }
+
+    bool effective = fresh;
+    if (!fresh && reported_pressed &&
+        (now - last_real_press_ms) < kHoldThroughGapMs) {
+        // CST820 dropped finger this sample but we were just touched —
+        // hold the press state for the gap window.
+        effective = true;
+    }
+
+    if (effective) {
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
-        // Falling edge: was_pressed=true, now released. Decide whether the
-        // gesture qualifies as a tap; if so, queue a page change for tick()
-        // to apply (we do NOT call lv_scr_load here — that would re-enter
-        // LVGL since this read_cb is called from lv_timer_handler).
-        if (was_pressed) {
-            const uint32_t held_ms = millis() - press_ms;
+        // Either we were already released last call, or the gap window
+        // just elapsed → this is a TRUE release. Evaluate the swipe.
+        if (reported_pressed) {
+            const uint32_t held_ms = now - press_ms;
             const int32_t dx = static_cast<int32_t>(last_x) - press_x;
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
-            const int32_t dist2 = dx * dx + dy * dy;
-            // Round 55: swipe-detection. Right swipe (dx>0) = previous
-            // page; left swipe (dx<0) = next page. Tap (small motion)
-            // is intentionally ignored here so taps can drive in-page
-            // widgets in future rounds. dist2 is no longer used.
-            (void)dist2;
             if (held_ms < kSwipeMaxMs &&
                 std::abs(dx) >= kSwipeMinPx &&
                 std::abs(dx) >  std::abs(dy)) {
@@ -1480,11 +1497,10 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
         }
         data->state = LV_INDEV_STATE_RELEASED;
     }
-    // LVGL expects a coordinate even on release events (it uses it to pin
-    // the release point against the last move event).
+
     data->point.x = last_x;
     data->point.y = last_y;
-    was_pressed = pressed;
+    reported_pressed = effective;
 }
 
 // --- Display driver glue ---------------------------------------------------

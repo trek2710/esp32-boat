@@ -56,7 +56,12 @@
 // =============================================================================
 
 #define LV_DISP_DEF_REFR_PERIOD  30     // ms between display refreshes.
-#define LV_INDEV_DEF_READ_PERIOD 30     // ms between input reads.
+// Round 57: 30 → 10 ms. The CST820 samples at 100 Hz natively, and at
+// 30 ms LVGL polls only ≈ 7 samples during a typical 200 ms swipe —
+// not enough headroom to ride out the chip's intermittent "no finger"
+// reports that happen mid-gesture. Documented gotcha for CST816/CST820
+// touch on LVGL forums; pairs with the touchReadCb debounce in Ui.cpp.
+#define LV_INDEV_DEF_READ_PERIOD 10     // ms between input reads.
 #define LV_TICK_CUSTOM           0      // We drive lv_tick_inc from our own task.
 #define LV_DPI_DEF               130    // Physical ~130 DPI on the 2.1" round.
 
