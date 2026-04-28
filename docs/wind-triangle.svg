@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 560" font-family="DejaVu Sans, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1565c0"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ff8f00"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/>
+    </marker>
+    <marker id="arrow-thin" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#999"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="410" y="32" text-anchor="middle" font-size="20" font-weight="bold">
+    Apparent vs. true wind
+  </text>
+  <text x="410" y="52" text-anchor="middle" fill="#666">
+    Vector subtraction in the boat-relative frame (bow = +y, starboard = +x)
+  </text>
+
+  <!-- Reference axes through the boat (centred at 350, 320) -->
+  <g stroke="#bbb" stroke-width="1" stroke-dasharray="4 4">
+    <line x1="200" y1="320" x2="500" y2="320" />
+    <line x1="350" y1="180" x2="350" y2="480" />
+  </g>
+  <text x="508" y="324" fill="#888" font-size="12">+x (stbd)</text>
+  <text x="358" y="174" fill="#888" font-size="12">+y (bow)</text>
+
+  <!-- Boat hull -->
+  <path d="M 350 200
+           C 364 220, 374 245, 378 280
+           L 378 320
+           C 376 350, 370 370, 360 388
+           C 356 394, 344 394, 340 388
+           C 330 370, 324 350, 322 320
+           L 322 280
+           C 326 245, 336 220, 350 200 Z"
+        fill="none" stroke="#222" stroke-width="2" />
+
+  <!-- V_b — boat-velocity vector. Along +y (toward bow), magnitude STW. -->
+  <line x1="350" y1="320" x2="350" y2="220"
+        stroke="#1565c0" stroke-width="3" marker-end="url(#arrow-blue)" />
+  <text x="262" y="278" fill="#1565c0" font-weight="bold" text-anchor="end">V_b = (0, STW)</text>
+  <text x="262" y="296" fill="#1565c0" text-anchor="end">boat motion</text>
+
+  <!-- V_a — apparent-wind velocity vector. Comes FROM 60° starboard, blows toward 240°.
+       From origin (350, 320) toward lower-left. AWS = 18 kn ≈ 130 px. -->
+  <line x1="350" y1="320" x2="237" y2="385"
+        stroke="#ff8f00" stroke-width="3" marker-end="url(#arrow-amber)" />
+  <text x="232" y="403" fill="#ff8f00" font-weight="bold" text-anchor="end">V_a (apparent wind)</text>
+  <text x="232" y="421" fill="#ff8f00" text-anchor="end">from masthead</text>
+
+  <!-- AWA arc + dotted "from" indicator pointing to upper-right at +60° -->
+  <path d="M 350 270 A 50 50 0 0 1 393 295" fill="none" stroke="#666" stroke-width="1.5" />
+  <text x="402" y="288" fill="#444">AWA = +60°</text>
+  <line x1="350" y1="320" x2="463" y2="255"
+        stroke="#999" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arrow-thin)" />
+  <text x="468" y="244" fill="#999" font-size="11">"from" direction</text>
+  <text x="468" y="258" fill="#999" font-size="11">of apparent wind</text>
+
+  <!-- V_t — true-wind velocity vector. Tail at the head of V_b, tip at the head of V_a. -->
+  <line x1="350" y1="220" x2="237" y2="385"
+        stroke="#2e7d32" stroke-width="3" stroke-dasharray="6 4"
+        marker-end="url(#arrow-green)" />
+  <text x="170" y="200" fill="#2e7d32" font-weight="bold">V_t = V_a + V_b</text>
+  <text x="170" y="218" fill="#2e7d32">true wind velocity</text>
+
+  <!-- Sign-convention legend (top-right) -->
+  <g transform="translate(560, 90)" fill="#444" font-size="13">
+    <text x="0" y="0" font-weight="bold" font-size="14">Sign convention</text>
+    <text x="0" y="22">+x = starboard</text>
+    <text x="0" y="40">+y = bow</text>
+    <text x="0" y="58">AWA / TWA: + = starboard</text>
+    <text x="0" y="76">AWA = 0° → wind dead ahead</text>
+    <text x="0" y="100" font-size="12" fill="#666">TWD = compass bearing of</text>
+    <text x="14" y="116" font-size="12" fill="#666">where the wind comes from</text>
+  </g>
+
+  <!-- Formula box (lower-right) -->
+  <g transform="translate(540, 240)" font-family="DejaVu Sans Mono, monospace" fill="#222">
+    <rect x="-12" y="-22" width="280" height="180" fill="#fafafa" stroke="#ddd" />
+    <text x="0" y="-2" font-weight="bold" font-size="13">Formulas</text>
+    <text x="0" y="22" font-size="12">TWA = atan2(AWS·sinAWA,</text>
+    <text x="56" y="38" font-size="12">AWS·cosAWA − STW)</text>
+    <text x="0" y="62" font-size="12">TWS = √((AWS·sinAWA)²</text>
+    <text x="56" y="78" font-size="12">+ (AWS·cosAWA − STW)²)</text>
+    <text x="0" y="102" font-size="12">TWD = (HDG_T + TWA) mod 360</text>
+    <text x="0" y="124" font-size="12">VMG = STW · cos(TWA)</text>
+    <text x="0" y="148" font-size="11" fill="#666">All angles "from" sailor's</text>
+  </g>
+</svg>

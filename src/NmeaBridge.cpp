@@ -76,11 +76,14 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
         case 129025L: { // Position Rapid Update
             double lat = NAN, lon = NAN;
             if (ParseN2kPGN129025(msg, lat, lon)) {
-                auto snap = s.snapshot();
-                s.setGps(lat, lon, snap.sog, snap.cog);
-                // Round 53: derive magnetic variation from the new fix.
-                // Stub for now — returns a Copenhagen-area constant; will
-                // load WMM coefficients from the SD card later.
+                // Round 56: setGps() now takes ONLY the position; SOG/COG
+                // fall out of the differential between consecutive fixes
+                // inside BoatState. PGN 129026 (sensor-supplied COG/SOG)
+                // is ignored below.
+                s.setGps(lat, lon);
+                // Magnetic variation from the WMM-on-SD lookup (round-49
+                // stub: Copenhagen-area constant). Re-runs on every fix
+                // so a long passage's variation drift gets picked up.
                 const double var = navmath::lookupMagneticVariation(lat, lon);
                 if (!isnan(var)) s.setMagneticVariation(var);
                 snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);
@@ -90,13 +93,15 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             break;
         }
         case 129026L: { // COG & SOG Rapid Update
+            // Round 56: ignored. The device computes its own COG/SOG from
+            // PGN 129025 deltas; trusting a sensor-supplied value would
+            // double-source the same quantity and mask GPS-fix dropouts.
             unsigned char sid;
             tN2kHeadingReference ref;
             double cog_rad = NAN, sog_ms = NAN;
             if (ParseN2kPGN129026(msg, sid, ref, cog_rad, sog_ms)) {
-                auto snap = s.snapshot();
-                s.setGps(snap.lat, snap.lon, msToKnots(sog_ms), RadToDeg(cog_rad));
-                snprintf(summary, sizeof(summary), "COG/SOG cog=%.0f sog=%.1fkn",
+                snprintf(summary, sizeof(summary),
+                         "COG/SOG cog=%.0f sog=%.1fkn (ignored)",
                          RadToDeg(cog_rad), msToKnots(sog_ms));
             } else {
                 snprintf(summary, sizeof(summary), "COG/SOG (parse failed)");
@@ -254,26 +259,48 @@ void NmeaBridge::simulateTick() {
     const uint32_t now = millis();
     const double t = (now - t0) / 1000.0;
 
-    // Round 53: simulator outputs ONLY what real boat sensors publish.
-    // True wind (TWA/TWS), true heading (HDG_T), TWD and VMG are derived
-    // by BoatState from these raw inputs — see recomputeDerived_locked.
-    //
-    // Sensor outputs (raw):
-    //   * GPS:                  lat, lon, sog, cog
-    //   * Apparent wind:        awa, aws  (masthead anemometer in boat frame)
-    //   * Magnetic heading:     hdg_m
-    //   * Speed through water:  stw       (paddlewheel)
+    // Round 53/56: simulator outputs ONLY what real boat sensors publish:
+    //   * GPS:                  lat, lon            (position only — SOG/COG
+    //                                                fall out of consecutive
+    //                                                fixes inside BoatState)
+    //   * Apparent wind:        awa, aws           (masthead anemometer in
+    //                                                boat-relative frame)
+    //   * Magnetic compass:     hdg_m
+    //   * Speed through water:  stw                 (paddlewheel)
     //   * Depth + sea temp:     depth, temp_c
     //
-    // Fake numbers chosen so the derived values come out plausible:
-    // boat sailing at 5.9 kn STW heading ~115°M (= 120°T with the +5°
-    // variation looked up from GPS), apparent wind ~45° starboard at
-    // 12 kn → derived TWA ≈ 60° / TWS ≈ 14 kn, matching what the old
-    // hardcoded "true wind" simulation used to publish directly.
-    const double lat   = 55.6761 + 0.0001 * sin(t * 0.1);
-    const double lon   = 12.5683 + 0.0001 * cos(t * 0.1);
-    const double sog   = 6.2 + 0.5 * sin(t * 0.3);
-    const double cog   = 120.0 + 5.0 * sin(t * 0.05);
+    // Round 56 — instead of hardcoding sog/cog we INTEGRATE a real boat
+    // trajectory: the sim picks a slowly-varying compass bearing and
+    // boat speed, then walks (lat, lon) along that vector at each tick.
+    // The device's setGps() then derives SOG/COG from the differential,
+    // and they come out matching the integrator's intent (within the
+    // ±0.1 % of equirectangular vs. great-circle for our 100 ms / few-
+    // metre baselines).
+    static double sim_lat = 55.6761;
+    static double sim_lon = 12.5683;
+    static uint32_t prev_tick_ms = now;
+    const double tick_dt_s = (now - prev_tick_ms) / 1000.0;
+    prev_tick_ms = now;
+
+    // True boat motion the sim is "intending":
+    const double sim_speed_kn = 6.0 + 0.5 * sin(t * 0.30);   // ~5.5..6.5 kn
+    const double sim_cog_deg  = 120.0 + 5.0 * sin(t * 0.05); // ~115..125° true
+
+    // Walk the position. 1° lat ≈ 111 km; 1° lon ≈ 111 km × cos(lat).
+    constexpr double kEarthR_m  = 6371008.8;
+    constexpr double kKnToMS    = 1852.0 / 3600.0;
+    const double speed_ms       = sim_speed_kn * kKnToMS;
+    const double cog_rad        = sim_cog_deg  * M_PI / 180.0;
+    const double dx_m = speed_ms * sin(cog_rad) * tick_dt_s;  // east
+    const double dy_m = speed_ms * cos(cog_rad) * tick_dt_s;  // north
+    const double mid_lat_rad    = sim_lat * M_PI / 180.0;
+    sim_lat += dy_m / kEarthR_m * 180.0 / M_PI;
+    sim_lon += dx_m / (kEarthR_m * cos(mid_lat_rad)) * 180.0 / M_PI;
+
+    const double lat   = sim_lat;
+    const double lon   = sim_lon;
+
+    // Other raw sensor outputs.
     const double awa   = 45.0 + 10.0 * sin(t * 0.2);
     const double aws   = 12.0 +  2.0 * cos(t * 0.4);
     const double depth = 8.5 + 0.7 * sin(t * 0.1);
@@ -281,16 +308,13 @@ void NmeaBridge::simulateTick() {
     const double hdg_m = normalizeDeg(115.0 + 5.0 * sin(t * 0.05));  // magnetic
     const double stw   = 5.9 + 0.4 * sin(t * 0.25);
 
-    state_.setGps(lat, lon, sog, cog);
+    state_.setGps(lat, lon);
     state_.setApparentWind(awa, aws);
     state_.setMagneticHeading(hdg_m);
     state_.setStw(stw);
     state_.setDepth(depth, temp_c);
 
-    // Magnetic variation — looked up from the current GPS position. The
-    // round-53 stub returns a Copenhagen-area constant (≈ +5° east); a
-    // future round will load WMM coefficients from the SD card and
-    // evaluate them properly.
+    // Magnetic variation from the WMM-on-SD lookup (round-49 stub).
     const double var_deg = navmath::lookupMagneticVariation(lat, lon);
     if (!std::isnan(var_deg)) state_.setMagneticVariation(var_deg);
 
@@ -305,7 +329,16 @@ void NmeaBridge::simulateTick() {
                 snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);
                 break;
             case 129026L:
-                snprintf(summary, sizeof(summary), "COG/SOG cog=%.0f sog=%.1fkn", cog, sog);
+                // Round 56: COG/SOG are now DERIVED inside BoatState from
+                // GPS-position deltas; the sim used to publish them as
+                // raw inputs but no longer does. Read what BoatState
+                // computed for the log entry.
+                {
+                    auto snap = state_.snapshot();
+                    snprintf(summary, sizeof(summary),
+                             "COG/SOG (derived) cog=%.0f sog=%.1fkn",
+                             snap.cog, snap.sog);
+                }
                 break;
             case 130306L:
                 snprintf(summary, sizeof(summary), "Wind AWA=%+.0f spd=%.1fkn", awa, aws);

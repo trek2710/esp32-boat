@@ -31,13 +31,50 @@ Instruments BoatState::snapshot() {
 
 // ---- raw sensor setters ----------------------------------------------------
 
-void BoatState::setGps(double lat, double lon, double sog, double cog) {
+void BoatState::setGps(double lat, double lon) {
     Lock l(mutex_);
+    const uint32_t now = millis();
+
+    // Round 56: SOG and COG are DERIVED from the GPS-position differential
+    // between consecutive fixes (equirectangular approximation, accurate
+    // to better than 0.1 % over the < 100 m baselines we'll see between
+    // 1 Hz fixes at boat speeds). This is the device's "moving direction
+    // from a GPS difference calculation" rule — we don't accept SOG/COG
+    // from a sensor-supplied PGN; they fall out of position deltas.
+    //
+    // Equirectangular plate-carrée:
+    //   dx_m = (lon2 − lon1) · R · cos(mid_lat)
+    //   dy_m = (lat2 − lat1) · R
+    //   SOG  = √(dx² + dy²) / Δt           (m/s → kn)
+    //   COG  = atan2(dx, dy)               (rad → deg, normalised 0..360)
+    // The bearing is east-of-north (sailor's convention) so we use
+    // atan2(dx, dy), not atan2(dy, dx).
+    if (!std::isnan(i_.lat) && !std::isnan(i_.lon) && i_.gps_last_ms != 0) {
+        const double dt_s = (now - i_.gps_last_ms) / 1000.0;
+        if (dt_s > 0.05 && dt_s < 30.0) {
+            constexpr double kEarthR_m = 6371008.8;
+            constexpr double kDegToRad = M_PI / 180.0;
+            const double mid_lat_rad = (i_.lat + lat) * 0.5 * kDegToRad;
+            const double dx_m = (lon - i_.lon) * kDegToRad
+                              * kEarthR_m * std::cos(mid_lat_rad);
+            const double dy_m = (lat - i_.lat) * kDegToRad * kEarthR_m;
+            const double dist_m = std::sqrt(dx_m * dx_m + dy_m * dy_m);
+            i_.sog = (dist_m / dt_s) * (3600.0 / 1852.0);  // m/s → knots
+            // Suppress a meaningless COG when we're essentially stationary
+            // (GPS jitter at the metre scale would otherwise spin the
+            // direction wildly).
+            if (dist_m > 0.5) {
+                double brg = std::atan2(dx_m, dy_m) * 180.0 / M_PI;
+                while (brg <    0.0) brg += 360.0;
+                while (brg >= 360.0) brg -= 360.0;
+                i_.cog = brg;
+            }
+        }
+    }
+
     i_.lat = lat;
     i_.lon = lon;
-    i_.sog = sog;
-    i_.cog = cog;
-    i_.gps_last_ms = millis();
+    i_.gps_last_ms = now;
     recomputeDerived_locked();
 }
 

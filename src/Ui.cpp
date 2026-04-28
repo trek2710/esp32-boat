@@ -247,9 +247,17 @@ int       current_page = 0;
 //
 // The split is left-half = previous page, right-half = next page. With 3
 // pages this gives full bidirectional navigation in one tap.
-constexpr uint32_t kTapMaxMs       = 500;
-constexpr int32_t  kTapMaxMovePx   = 40;
-constexpr int32_t  kTapMaxMoveSqPx = kTapMaxMovePx * kTapMaxMovePx;
+// Round 55: tap nav replaced with SWIPE nav so taps remain free for
+// in-page interactions (autopilot SET, menu picks, etc. — coming in
+// later rounds). A release qualifies as a swipe when:
+//   * total time held < kSwipeMaxMs (so the gesture doesn't get
+//     mis-classified as a long-press / drag-and-hold);
+//   * horizontal travel ≥ kSwipeMinPx (deliberate sideways motion);
+//   * |dx| > |dy| (gesture is more horizontal than vertical).
+// Right-swipe = previous page, left-swipe = next page (matches mobile
+// UX expectations).
+constexpr uint32_t kSwipeMaxMs   = 1500;
+constexpr int32_t  kSwipeMinPx   = 80;
 
 // -1 = go to previous page, +1 = next page, 0 = no pending change.
 // Volatile because it's written from the indev callback (called from
@@ -825,15 +833,18 @@ void buildMainPage() {
         }
     }
 
-    // Close-hauled red/green sectors at the top.
+    // Close-hauled red/green sectors. Round 55: 20°-60° each side of the
+    // bow (was 0°-60°). Leaves a clean 40° "bow zone" with no colour
+    // around dead-ahead, matching the user's reference where the no-go
+    // markers don't touch the bow.
     main_pg.port_sector = lv_meter_add_arc(
         compass, scale, 26, lv_color_hex(0xCC0000), -22);
     lv_meter_set_indicator_start_value(compass, main_pg.port_sector, 300);
-    lv_meter_set_indicator_end_value  (compass, main_pg.port_sector, 360);
+    lv_meter_set_indicator_end_value  (compass, main_pg.port_sector, 340);
 
     main_pg.stbd_sector = lv_meter_add_arc(
         compass, scale, 26, lv_color_hex(0x006400), -22);
-    lv_meter_set_indicator_start_value(compass, main_pg.stbd_sector, 0);
+    lv_meter_set_indicator_start_value(compass, main_pg.stbd_sector, 20);
     lv_meter_set_indicator_end_value  (compass, main_pg.stbd_sector, 60);
 
     // ----- Blue "T" target marker on the outer rim -----
@@ -864,15 +875,9 @@ void buildMainPage() {
             {kTgtW / 2,    kTgtTriH},
         };
         lv_canvas_draw_polygon(tgt_canvas, tri, 3, &tri_dsc);
-
-        // White "T" stamped on the triangle.
-        lv_draw_label_dsc_t lbl_dsc;
-        lv_draw_label_dsc_init(&lbl_dsc);
-        lbl_dsc.color = lv_color_white();
-        lbl_dsc.font  = &lv_font_montserrat_14;
-        lv_canvas_draw_text(tgt_canvas, kTgtW / 2 - 5, 4, kTgtW,
-                            &lbl_dsc, "T");
-
+        // Round 55: dropped the "T" letter — user described it as just a
+        // "blue triangle" in the round-55 spec, so the marker is now a
+        // clean coloured triangle on the rim.
         lv_obj_add_flag(tgt_canvas, LV_OBJ_FLAG_HIDDEN);
 
         main_pg.target_marker = lv_meter_add_needle_img(
@@ -965,6 +970,62 @@ void buildMainPage() {
                                       i == 0 ? "N" : buf);
             lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
         }
+    }
+
+    // Round 55: second blue target triangle, on the ROTATING inner ring,
+    // marking the desired compass course. Drawn into a small lv_canvas
+    // and placed at angle = TARGET_COURSE inside the container (not
+    // refreshed per frame — the container's transform_angle handles
+    // following heading). Pre-rotated so its apex points toward the
+    // container centre at the target bearing.
+    //
+    // For v1 the desired course is hardcoded at 60° true; a future
+    // round will tie it to a real autopilot SET command on the bus.
+    constexpr float kTargetCourse = 60.0f;
+    constexpr int   kInnerTgtSize = 22;
+    const size_t inner_tgt_buf_sz =
+        LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kInnerTgtSize, kInnerTgtSize);
+    lv_color_t* inner_tgt_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(inner_tgt_buf_sz,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (inner_tgt_buf) {
+        lv_obj_t* inner_tgt = lv_canvas_create(main_pg.inner_ring);
+        lv_canvas_set_buffer(inner_tgt, inner_tgt_buf,
+                             kInnerTgtSize, kInnerTgtSize,
+                             LV_IMG_CF_TRUE_COLOR_ALPHA);
+        lv_canvas_fill_bg(inner_tgt, lv_color_black(), LV_OPA_TRANSP);
+        lv_draw_rect_dsc_t dsc;
+        lv_draw_rect_dsc_init(&dsc);
+        dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE);
+        dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t tri[3] = {
+            {kInnerTgtSize / 2,            0},   // apex (canvas top)
+            {kInnerTgtSize - 1, kInnerTgtSize - 1},
+            {0,                  kInnerTgtSize - 1},
+        };
+        lv_canvas_draw_polygon(inner_tgt, tri, 3, &dsc);
+
+        // Position the canvas at the target bearing on a circle of
+        // radius kTgtR inside the container.
+        constexpr float kTgtR = 130.0f;
+        const float a = kTargetCourse * static_cast<float>(M_PI) / 180.0f;
+        const int cx = 180 - kInnerTgtSize / 2 + static_cast<int>(kTgtR * sinf(a));
+        const int cy = 180 - kInnerTgtSize / 2 - static_cast<int>(kTgtR * cosf(a));
+        lv_obj_set_pos(inner_tgt, cx, cy);
+
+        // Pre-rotate so the apex points toward the container centre
+        // when the container is at heading=0. (kTargetCourse + 180°)
+        // because the canvas's local "up" is 0° and we want it to
+        // point at the centre, which is in the opposite direction
+        // from the canvas's position.
+        lv_obj_set_style_transform_pivot_x(inner_tgt,
+                                           kInnerTgtSize / 2, LV_PART_MAIN);
+        lv_obj_set_style_transform_pivot_y(inner_tgt,
+                                           kInnerTgtSize / 2, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(
+            inner_tgt,
+            ((static_cast<int>(kTargetCourse) + 180) % 360) * 10,
+            LV_PART_MAIN);
     }
 
     // ----- Boat hull at centre (slim 24-point polygon) -----
@@ -1258,11 +1319,21 @@ void refreshMain(const Instruments& s) {
                                      static_cast<int32_t>(rel));
     }
 
-    // Blue T target marker on the rim — pinned to heading + 30° for
-    // now (no autopilot SET source yet).
+    // Round 55: outer-rim target triangle at the BOAT-RELATIVE bearing
+    // to the desired course. The hardcoded target (60° true, see
+    // buildMainPage's kTargetCourse) is in compass coords; convert to
+    // bow-relative by subtracting current heading and normalising into
+    // the meter's 0..360 scale. Hidden if heading isn't known yet.
     if (main_pg.target_marker != nullptr) {
-        lv_meter_set_indicator_value(main_pg.compass,
-                                     main_pg.target_marker, 30);
+        constexpr double kTargetCourse = 60.0;
+        if (!isnan(s.heading_true_deg)) {
+            double rel = kTargetCourse - s.heading_true_deg;
+            while (rel <    0.0) rel += 360.0;
+            while (rel >= 360.0) rel -= 360.0;
+            lv_meter_set_indicator_value(main_pg.compass,
+                                         main_pg.target_marker,
+                                         static_cast<int32_t>(rel));
+        }
     }
 }
 
@@ -1396,9 +1467,15 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             const int32_t dx = static_cast<int32_t>(last_x) - press_x;
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
             const int32_t dist2 = dx * dx + dy * dy;
-            if (held_ms < kTapMaxMs && dist2 < kTapMaxMoveSqPx) {
-                g_pending_page_step =
-                    (last_x < (DISPLAY_WIDTH / 2)) ? -1 : +1;
+            // Round 55: swipe-detection. Right swipe (dx>0) = previous
+            // page; left swipe (dx<0) = next page. Tap (small motion)
+            // is intentionally ignored here so taps can drive in-page
+            // widgets in future rounds. dist2 is no longer used.
+            (void)dist2;
+            if (held_ms < kSwipeMaxMs &&
+                std::abs(dx) >= kSwipeMinPx &&
+                std::abs(dx) >  std::abs(dy)) {
+                g_pending_page_step = (dx > 0) ? -1 : +1;
             }
         }
         data->state = LV_INDEV_STATE_RELEASED;

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 54: page restructure 4 pages — 0=Main display (NEW: boat in centre, fixed outer 0..180 mirrored ring with red/green close-hauled sectors, rotating inner compass ring with N + 030..330 labels, heading at bow, BSPD at stern, blue TWD wide-arrow cone via needle_img, depth right, heel-angle placeholder left, blue T target marker on rim pinned to heading + 30° until autopilot SET source lands), 1=Wind display (unchanged), 2=Debug, 3=Simulator (NEW: list of raw sensor values + values BoatState computed). Removed round-41-52 sparkline data grid wholesale + the 1 Hz history-sampling block. kNumPages 3 → 4."
+DEFAULT_MSG="Round 56: navigation-math doc + simulator-purity audit. New docs/NAVIGATION_MATH.md (raw-vs-derived split, formulas, 3 worked examples) + docs/wind-triangle.svg diagram. Code: setGps now takes only (lat, lon) — SOG/COG are DERIVED inside BoatState from consecutive GPS-position deltas (equirectangular plate-carrée; COG suppressed when displacement < 0.5 m). Real PGN 129026 (sensor-supplied COG/SOG) ignored. Simulator now picks a slowly-varying intended speed/heading and integrates the boat's lat/lon along that vector each tick, so SOG/COG fall out of the deltas instead of being hardcoded inputs. BoatState.h cross-references the doc."
 
 set -euo pipefail
 

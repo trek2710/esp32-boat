@@ -1,6 +1,8 @@
 // BoatState — a thread-safe snapshot of the latest values we've seen on the
 // bus, plus the derived navigation values the device computes from them.
 //
+// >>> Full math + worked examples: see docs/NAVIGATION_MATH.md (round 56). <<<
+//
 // Round 53 split: the Instruments struct now distinguishes RAW SENSOR INPUTS
 // (the things a real boat sensor publishes) from DERIVED values (the things
 // the device computes from the raw inputs + stored data like the magnetic
@@ -123,7 +125,13 @@ public:
     // Each one mutates the corresponding raw field(s) and then runs
     // recomputeDerived_locked() so the snapshot's derived fields stay
     // consistent with the raw inputs.
-    void setGps(double lat, double lon, double sog, double cog);
+    // Round 56: setGps takes ONLY raw position now. SOG / COG are
+    // computed inside BoatState from the differential between
+    // consecutive fixes (see BoatState.cpp). This matches the user's
+    // "moving direction from a GPS difference calculation" rule —
+    // the device doesn't trust a sensor-supplied SOG/COG, it derives
+    // its own.
+    void setGps(double lat, double lon);
     void setApparentWind(double awa, double aws);
     void setMagneticHeading(double heading_mag_deg);
     void setMagneticVariation(double variation_deg);
