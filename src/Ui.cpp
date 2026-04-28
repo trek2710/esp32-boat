@@ -59,6 +59,7 @@ uint32_t tick() {
 // subdir remains unambiguous.
 #include <lvgl/lvgl.h>
 
+#include <cmath>     // std::lround for inner-compass rotation angle
 #include <cstdio>
 
 #include "display/cst820.h"
@@ -86,7 +87,7 @@ BoatState* g_state = nullptr;
 
 // --- Page state -------------------------------------------------------------
 
-constexpr int kNumPages = 3;
+constexpr int kNumPages = 4;
 
 // ---- Overview page (round 42 — second B&G reference, black dial) ----
 //
@@ -133,93 +134,82 @@ struct OverviewPage {
 };
 OverviewPage overview;
 
-// ---- Data page (round 41 — round-table layout) ----
+// ---- Main display page (round 54) ----
 //
-// Round 40 used a uniform 3×3 grid; the user pushed back ("titles
-// unreadable, graphs bad, use a round table, more important data
-// bigger"). Round 41 replaces it with a radial layout that matches the
-// round display:
+// Round 54 dropped the round-41/52 sparkline data grid and replaced it
+// with a new "Main display" page (now Page 0). The wind page becomes
+// Page 1, debug Page 2, and a new simulator page Page 3 shows the raw
+// sensor values being fed into BoatState.
 //
-//   * Centre tile (170×170, big rounded corners): BSPD — the headline
-//     boat-speed readout, montserrat_48.
-//   * Four cardinal tiles (130×80) at N/E/S/W on a 160 px radius:
-//     HDG, AWS, TWS, AWA — montserrat_28 value, 22 px area-fill chart.
-//   * Four diagonal tiles (90×60) at NE/SE/SW/NW on a 175 px radius:
-//     TWA, TWD, SOG, VMG — montserrat_20 value, value-only (no chart).
-//
-// Sizes scale with importance so the eye finds boat-speed first, then
-// the cardinals (sail-trim signals), then the secondary derived values.
-// Distances were chosen so the outermost tile corner sits ≈ 230 px from
-// screen centre — inside the 240 px round-panel usable radius with a
-// comfortable bezel margin.
-//
-// Each cell that has room shows a 20-bar area-fill sparkline of the
-// last 5 minutes — 300 history samples × 1 Hz from tick() averaged 15:1
-// into bars. Bars touch (no column padding) so adjacent bars merge into
-// a continuous coloured strip — the "fill area" look the user asked
-// for, with much less per-pixel resolution than the 100-point line in
-// round 40 so a 22 px tall strip stays readable.
-constexpr size_t kHistoryLen = 300;       // 5 min @ 1 Hz
-constexpr size_t kCellCount  = 9;         // 1 centre + 4 cardinals + 4 diagonals
-
-// Stable identity for each cell so we can key history buffers and per-
-// cell build specs without playing string-compare games. Order is
-// importance-first so kSpecs[0] is the biggest tile:
-//   0    BSPD   centre
-//   1-4  HDG/AWS/TWS/AWA   cardinals
-//   5-8  TWD/TWA/VMG/SOG   diagonals
-enum class CellMetric : uint8_t {
-    BSPD = 0,
-    HDG  = 1, AWS = 2, TWS = 3, AWA = 4,
-    TWD  = 5, TWA = 6, VMG = 7, SOG = 8,
-};
-static_assert(static_cast<size_t>(CellMetric::SOG) + 1 == kCellCount,
-              "CellMetric layout must cover all cells");
-
-struct DataCell {
-    lv_obj_t*  root;
-    lv_obj_t*  title_lbl;     // small grey title (e.g. "AWA  °")
-    lv_obj_t*  value_lbl;     // large white value (e.g. "-27")
-    lv_obj_t*  chart;         // lv_chart with one line series
-    lv_chart_series_t* series;
-};
-
-struct DataPage {
+// Main page layout (per the user's reference image + spec):
+//   * Outer ring (FIXED): mirrored 0..180 labels each side of the bow
+//     with red/green close-hauled sectors at top — same widget pattern
+//     as the wind page's outer ring.
+//   * Inner compass ring (ROTATES with heading): degree labels every
+//     30° (030, 060, ..., 330) plus a green N marker. As the boat
+//     turns, the ring rotates so the heading appears under the bow at
+//     the top of the dial.
+//   * Boat hull at the centre (slim 24-point polygon, same as the wind
+//     page).
+//   * Heading "038" label at the bow (top of the boat).
+//   * BSPD numeric readout at the stern (bottom of the boat).
+//   * Wide blue arrow in the centre indicating true-wind direction
+//     (TWD), drawn as a needle_img cone like the wind page's AWA cone
+//     but rotated to TWD instead of AWA.
+//   * Heel-angle indicator on the LEFT side (placeholder line for
+//     now — we don't have a heel sensor yet, value pinned to 0°).
+//   * Depth readout on the RIGHT side (numeric, "x.x m").
+//   * Blue "T" target triangle on the OUTER rim — indicates the set
+//     course (autopilot target). Stub for now: pinned 30° clockwise
+//     from heading until we have a SET command source.
+struct MainPage {
     lv_obj_t* root;
-    DataCell  cells[kCellCount];
-};
-DataPage data_pg;
 
-// One ring buffer per cell. NaN means "no data yet". Newest sample sits at
-// (head-1) mod kHistoryLen. Updated by g_state-snapshot reads in tick(),
-// not by the NMEA bridge directly — so we get a clean 1 Hz timeline even
-// if the bus is bursty or quiet.
-struct MetricHistory {
-    float   values[kHistoryLen];
-    size_t  head    = 0;
-    bool    filled  = false;
+    lv_obj_t* compass;                   // outer fixed ring (lv_meter)
+    lv_meter_indicator_t* port_sector;
+    lv_meter_indicator_t* stbd_sector;
+    lv_meter_indicator_t* target_marker; // blue T triangle on outer rim
 
-    MetricHistory() {
-        for (auto& v : values) v = NAN;
-    }
-    void push(float v) {
-        values[head] = v;
-        head = (head + 1) % kHistoryLen;
-        if (head == 0) filled = true;
-    }
-    // Number of valid samples currently in the buffer.
-    size_t count() const { return filled ? kHistoryLen : head; }
-    // Read sample i (0=oldest, count-1=newest) into *out. Returns false
-    // if i is out of range.
-    bool at(size_t i, float* out) const {
-        const size_t n = count();
-        if (i >= n || out == nullptr) return false;
-        const size_t base = filled ? head : 0;
-        *out = values[(base + i) % kHistoryLen];
-        return true;
-    }
+    lv_obj_t* inner_ring;                // rotating compass container
+    lv_obj_t* twd_canvas_holder;         // hidden canvas backing the cone
+    lv_meter_indicator_t* twd_arrow;     // blue cone for TWD
+
+    lv_obj_t* heading_lbl;               // "038" at bow
+    lv_obj_t* bspd_lbl;                  // boat speed at stern
+    lv_obj_t* depth_lbl;                 // depth on right side
+    lv_obj_t* heel_lbl;                  // heel angle on left side
 };
-MetricHistory g_history[kCellCount];
+MainPage main_pg;
+
+// ---- Simulator page (round 54) ----
+//
+// Read-only display of the raw sensor inputs the simulator publishes
+// into BoatState, plus the derived values BoatState computes from
+// them. Useful for visually verifying the round-53 raw/derived split
+// without scraping the serial monitor.
+struct SimulatorPage {
+    lv_obj_t* root;
+
+    // Raw sensor values:
+    lv_obj_t* lat_lbl;
+    lv_obj_t* lon_lbl;
+    lv_obj_t* sog_lbl;
+    lv_obj_t* cog_lbl;
+    lv_obj_t* awa_lbl;
+    lv_obj_t* aws_lbl;
+    lv_obj_t* hdg_m_lbl;
+    lv_obj_t* var_lbl;
+    lv_obj_t* stw_lbl;
+    lv_obj_t* depth_lbl;
+
+    // Derived values (computed by BoatState):
+    lv_obj_t* hdg_t_lbl;
+    lv_obj_t* twa_lbl;
+    lv_obj_t* tws_lbl;
+    lv_obj_t* twd_lbl;
+    lv_obj_t* vmg_lbl;
+};
+SimulatorPage sim_pg;
 
 // ---- Debug page ----
 struct DebugPage {
@@ -229,7 +219,7 @@ struct DebugPage {
 };
 DebugPage debug_pg;
 
-lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr };
+lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr, nullptr };
 int       current_page = 0;
 
 // Round 39: tap-based page navigation — requested after round 38 confirmed
@@ -785,110 +775,319 @@ void buildOverviewPage() {
     }
 }
 
-// Per-cell layout/typography spec. dx/dy are LV_ALIGN_CENTER offsets in
-// screen px; w/h are tile dimensions; radius rounds the corners.
-// chart_h = 0 means "no sparkline for this cell" (the diagonals where
-// there's no room).
-struct CellSpec {
-    int                 dx, dy;
-    int                 w, h;
-    int                 radius;
-    const lv_font_t*    title_font;
-    const lv_font_t*    value_font;
-    int                 chart_h;
-    const char*         title;
-};
+// Round 54 — buildMainPage / buildSimulatorPage replace the
+// round-41-52 sparkline data grid. The data grid (DataCell, DataPage,
+// MetricHistory, CellSpec, kSpecs, buildDataCell, buildDataPage,
+// recordHistorySnapshot, refreshDataCell, refreshData, metricValue,
+// metricFmt, CellMetric) was removed wholesale.
 
-// Round-table layout. Indices match the CellMetric enum so kSpecs[m]
-// directly describes the tile for metric m.
-static const CellSpec kSpecs[kCellCount] = {
-    /* 0 BSPD centre  */ {   0,    0, 170, 170, 24, &lv_font_montserrat_16, &lv_font_montserrat_48, 40, "BSPD kn"     },
-    /* 1 HDG  N       */ {   0, -160, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "HDG  \xC2\xB0" },
-    /* 2 AWS  E       */ { 160,    0, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "AWS  kn"     },
-    /* 3 TWS  S       */ {   0,  160, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "TWS  kn"     },
-    /* 4 AWA  W       */ {-160,    0, 130,  80,  8, &lv_font_montserrat_16, &lv_font_montserrat_28, 22, "AWA  \xC2\xB0" },
-    /* 5 TWD  NW      */ {-124, -124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "TWD \xC2\xB0"  },
-    /* 6 TWA  NE      */ { 124, -124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "TWA \xC2\xB0"  },
-    /* 7 VMG  SW      */ {-124,  124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "VMG kn"      },
-    /* 8 SOG  SE      */ { 124,  124,  90,  60,  6, &lv_font_montserrat_14, &lv_font_montserrat_20,  0, "SOG kn"      },
-};
-
-// Build one tile from a spec: dark background, brighter title at top,
-// big white value in the middle, optional area-fill sparkline at the
-// bottom. Used by buildDataPage to materialise all 9 cells uniformly.
-DataCell buildDataCell(lv_obj_t* parent, const CellSpec& s) {
-    DataCell c{};
-
-    lv_obj_t* root = lv_obj_create(parent);
-    lv_obj_set_size(root, s.w, s.h);
-    lv_obj_align(root, LV_ALIGN_CENTER, s.dx, s.dy);
-    lv_obj_set_style_radius(root, s.radius, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(root, lv_color_hex(0x101418), LV_PART_MAIN);
-    lv_obj_set_style_border_width(root, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(root,
-                                  lv_palette_darken(LV_PALETTE_GREY, 2),
-                                  LV_PART_MAIN);
-    lv_obj_set_style_pad_all(root, 4, LV_PART_MAIN);
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Round 41 (per user feedback "name of the data is unreadable"):
-    // titles bumped from montserrat_14 grey to a near-white tone at
-    // montserrat_16 (cardinals/centre) or montserrat_14 (diagonals) so
-    // metric names are legible at a glance even on the smaller tiles.
-    c.title_lbl = makeLabel(root, s.title_font,
-                            lv_palette_lighten(LV_PALETTE_GREY, 4),
-                            s.title);
-    lv_obj_align(c.title_lbl, LV_ALIGN_TOP_MID, 0, 2);
-
-    c.value_lbl = makeLabel(root, s.value_font, lv_color_white(), "--");
-    if (s.chart_h > 0) {
-        // Value sits in the upper half of the cell, leaving the lower
-        // chart_h px (+a 4 px gap) clear for the sparkline.
-        lv_obj_align(c.value_lbl, LV_ALIGN_CENTER, 0, -s.chart_h / 2 - 2);
-    } else {
-        // No chart — value is centred-ish, nudged down a touch to leave
-        // room for the title at top.
-        lv_obj_align(c.value_lbl, LV_ALIGN_CENTER, 0, 6);
-    }
-
-    if (s.chart_h > 0) {
-        // Round 41 (per user feedback "use a fill area but have less
-        // resolution so it becomes readable"): 20-bar histogram instead
-        // of a 100-point line. Bars are ≈ 5 px wide with no column
-        // padding, so adjacent bars merge into a single coloured strip
-        // — the "fill area" look. Each bar represents 15 s of history
-        // (kStride = 15 in refreshDataCell), so 20 bars × 15 s = 5 min.
-        constexpr uint16_t kChartPoints = 20;
-        c.chart = lv_chart_create(root);
-        lv_obj_set_size(c.chart, s.w - 16, s.chart_h);
-        lv_obj_align(c.chart, LV_ALIGN_BOTTOM_MID, 0, -2);
-        lv_chart_set_type(c.chart, LV_CHART_TYPE_BAR);
-        lv_chart_set_point_count(c.chart, kChartPoints);
-        lv_chart_set_div_line_count(c.chart, 0, 0);
-        lv_obj_set_style_bg_opa(c.chart, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_border_width(c.chart, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(c.chart, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_column(c.chart, 0, LV_PART_MAIN);
-        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
-        c.series = lv_chart_add_series(c.chart,
-                                       lv_palette_main(LV_PALETTE_CYAN),
-                                       LV_CHART_AXIS_PRIMARY_Y);
-    } else {
-        c.chart  = nullptr;
-        c.series = nullptr;
-    }
-
-    c.root = root;
-    return c;
-}
-
-void buildDataPage() {
+// Build the Main display page — central boat with a fixed outer 0..180
+// mirrored ring and a rotating compass ring inside it.
+void buildMainPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
-    data_pg.root = scr;
-    for (size_t i = 0; i < kCellCount; ++i) {
-        data_pg.cells[i] = buildDataCell(scr, kSpecs[i]);
+    main_pg.root = scr;
+
+    // ----- Outer ring (FIXED) -----
+    constexpr int kCompassSize = 460;
+    lv_obj_t* compass = lv_meter_create(scr);
+    lv_obj_set_size(compass, kCompassSize, kCompassSize);
+    lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(compass, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(compass, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(compass, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
+    // Hide auto labels (we use manual mirrored labels instead).
+    lv_obj_set_style_text_color(compass, lv_color_black(), LV_PART_TICKS);
+    lv_obj_set_style_text_font(compass, &lv_font_montserrat_20, LV_PART_TICKS);
+
+    lv_meter_scale_t* scale = lv_meter_add_scale(compass);
+    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_white());
+    lv_meter_set_scale_major_ticks(compass, scale, 12, 3, 16,
+                                   lv_color_white(), 18);
+    lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
+    main_pg.compass = compass;
+
+    // Manual mirrored labels (0..180 each side of the bow).
+    {
+        constexpr float kLabelRadius = 188.0f;
+        for (int i = 0; i < 12; ++i) {
+            const float angle_deg = static_cast<float>(i) * 30.0f;
+            const float a = angle_deg * static_cast<float>(M_PI) / 180.0f;
+            const int dx = static_cast<int>(kLabelRadius * sinf(a));
+            const int dy = -static_cast<int>(kLabelRadius * cosf(a));
+            const int val = (i <= 6) ? (i * 30) : ((12 - i) * 30);
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", val);
+            lv_obj_t* lbl = makeLabel(compass, &lv_font_montserrat_20,
+                                      lv_color_white(), buf);
+            lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
+        }
     }
+
+    // Close-hauled red/green sectors at the top.
+    main_pg.port_sector = lv_meter_add_arc(
+        compass, scale, 26, lv_color_hex(0xCC0000), -22);
+    lv_meter_set_indicator_start_value(compass, main_pg.port_sector, 300);
+    lv_meter_set_indicator_end_value  (compass, main_pg.port_sector, 360);
+
+    main_pg.stbd_sector = lv_meter_add_arc(
+        compass, scale, 26, lv_color_hex(0x006400), -22);
+    lv_meter_set_indicator_start_value(compass, main_pg.stbd_sector, 0);
+    lv_meter_set_indicator_end_value  (compass, main_pg.stbd_sector, 60);
+
+    // ----- Blue "T" target marker on the outer rim -----
+    //
+    // Built as a 36×230 lv_canvas with a blue triangle in the top 26 px
+    // and the letter "T" stamped on top, registered as a needle_img so
+    // we can rotate it to the set-course angle. Bottom 204 px are
+    // transparent (just for the rotation pivot).
+    constexpr int kTgtW = 36;
+    constexpr int kTgtH = 230;
+    constexpr int kTgtTriH = 26;
+    const size_t tgt_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kTgtW, kTgtH);
+    lv_color_t* tgt_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(tgt_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (tgt_buf) {
+        lv_obj_t* tgt_canvas = lv_canvas_create(compass);
+        lv_canvas_set_buffer(tgt_canvas, tgt_buf, kTgtW, kTgtH,
+                             LV_IMG_CF_TRUE_COLOR_ALPHA);
+        lv_canvas_fill_bg(tgt_canvas, lv_color_black(), LV_OPA_TRANSP);
+
+        lv_draw_rect_dsc_t tri_dsc;
+        lv_draw_rect_dsc_init(&tri_dsc);
+        tri_dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE);
+        tri_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t tri[3] = {
+            {0,            0},
+            {kTgtW - 1,    0},
+            {kTgtW / 2,    kTgtTriH},
+        };
+        lv_canvas_draw_polygon(tgt_canvas, tri, 3, &tri_dsc);
+
+        // White "T" stamped on the triangle.
+        lv_draw_label_dsc_t lbl_dsc;
+        lv_draw_label_dsc_init(&lbl_dsc);
+        lbl_dsc.color = lv_color_white();
+        lbl_dsc.font  = &lv_font_montserrat_14;
+        lv_canvas_draw_text(tgt_canvas, kTgtW / 2 - 5, 4, kTgtW,
+                            &lbl_dsc, "T");
+
+        lv_obj_add_flag(tgt_canvas, LV_OBJ_FLAG_HIDDEN);
+
+        main_pg.target_marker = lv_meter_add_needle_img(
+            compass, scale,
+            lv_canvas_get_img(tgt_canvas),
+            kTgtW / 2, kTgtH - 1);
+        lv_meter_set_indicator_value(compass, main_pg.target_marker, 0);
+    } else {
+        main_pg.target_marker = nullptr;
+    }
+
+    // ----- TWD wide-arrow cone -----
+    //
+    // Reuses the round-46 cone canvas pattern but rotated to TWD instead
+    // of AWA. Cone tip at the rim, base just above the boat hull.
+    constexpr int kConeW           = 50;
+    constexpr int kConeH           = 140;
+    constexpr int kConeVisibleBase = 90;
+    const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
+    lv_color_t* cone_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(cone_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cone_buf) {
+        lv_obj_t* cone_canvas = lv_canvas_create(compass);
+        lv_canvas_set_buffer(cone_canvas, cone_buf, kConeW, kConeH,
+                             LV_IMG_CF_TRUE_COLOR_ALPHA);
+        lv_canvas_fill_bg(cone_canvas, lv_color_black(), LV_OPA_TRANSP);
+        lv_draw_rect_dsc_t outer_dsc;
+        lv_draw_rect_dsc_init(&outer_dsc);
+        outer_dsc.bg_color = lv_color_white();
+        outer_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t outer_tri[3] = {
+            {kConeW / 2,                  0},
+            {kConeW - 5, kConeVisibleBase   },
+            {         5, kConeVisibleBase   },
+        };
+        lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
+        lv_draw_rect_dsc_t inner_dsc;
+        lv_draw_rect_dsc_init(&inner_dsc);
+        inner_dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE);
+        inner_dsc.bg_opa   = LV_OPA_COVER;
+        const lv_point_t inner_tri[3] = {
+            {kConeW / 2,                   6},
+            {kConeW - 8, kConeVisibleBase - 4},
+            {         8, kConeVisibleBase - 4},
+        };
+        lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
+        lv_obj_add_flag(cone_canvas, LV_OBJ_FLAG_HIDDEN);
+
+        main_pg.twd_arrow = lv_meter_add_needle_img(
+            compass, scale,
+            lv_canvas_get_img(cone_canvas),
+            kConeW / 2, kConeH - 1);
+        lv_meter_set_indicator_value(compass, main_pg.twd_arrow, 180); // pointing down by default
+    } else {
+        main_pg.twd_arrow = nullptr;
+    }
+
+    // ----- Rotating inner compass ring (children of compass widget) -----
+    //
+    // Container holds 12 numeric labels positioned on a circle. Setting
+    // transform_pivot to the container centre and transform_angle to
+    // -heading rotates the whole ring together so the boat's actual
+    // heading appears at the top of the ring.
+    constexpr int kInnerRingSize = 360;
+    main_pg.inner_ring = lv_obj_create(compass);
+    lv_obj_set_size(main_pg.inner_ring, kInnerRingSize, kInnerRingSize);
+    lv_obj_align(main_pg.inner_ring, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_opa(main_pg.inner_ring, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(main_pg.inner_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(main_pg.inner_ring, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(main_pg.inner_ring, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_transform_pivot_x(main_pg.inner_ring,
+                                       kInnerRingSize / 2, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_y(main_pg.inner_ring,
+                                       kInnerRingSize / 2, LV_PART_MAIN);
+    {
+        constexpr float kInnerLabelR = 150.0f;
+        for (int i = 0; i < 12; ++i) {
+            const float angle_deg = static_cast<float>(i) * 30.0f;
+            const float a = angle_deg * static_cast<float>(M_PI) / 180.0f;
+            const int dx = static_cast<int>(kInnerLabelR * sinf(a));
+            const int dy = -static_cast<int>(kInnerLabelR * cosf(a));
+            const int val = i * 30;  // 000, 030, 060 ... 330
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%03d", val);
+            lv_obj_t* lbl = makeLabel(main_pg.inner_ring,
+                                      &lv_font_montserrat_16,
+                                      i == 0 ? lv_palette_main(LV_PALETTE_GREEN)
+                                             : lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                      i == 0 ? "N" : buf);
+            lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
+        }
+    }
+
+    // ----- Boat hull at centre (slim 24-point polygon) -----
+    static const lv_point_t hull_pts[] = {
+        {230,  90}, {238, 108}, {248, 130}, {258, 160}, {268, 190},
+        {276, 220}, {280, 245}, {280, 275}, {275, 305}, {265, 330},
+        {250, 355}, {240, 366}, {235, 370}, {225, 370}, {220, 366},
+        {210, 355}, {195, 330}, {185, 305}, {180, 275}, {180, 245},
+        {184, 220}, {192, 190}, {202, 160}, {212, 130}, {222, 108},
+        {230,  90},
+    };
+    lv_obj_t* hull = lv_line_create(compass);
+    lv_line_set_points(hull, hull_pts,
+                       sizeof(hull_pts) / sizeof(hull_pts[0]));
+    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(hull, 4, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
+
+    // ----- Heading label "038" at the bow -----
+    {
+        lv_obj_t* hdg_box = lv_obj_create(compass);
+        lv_obj_set_size(hdg_box, 64, 30);
+        lv_obj_align(hdg_box, LV_ALIGN_CENTER, 0, -130);
+        lv_obj_set_style_radius(hdg_box, 4, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(hdg_box, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_border_width(hdg_box, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(hdg_box, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(hdg_box, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(hdg_box, LV_OBJ_FLAG_SCROLLABLE);
+
+        main_pg.heading_lbl = makeLabel(hdg_box, &lv_font_montserrat_20,
+                                        lv_color_black(), "---");
+        lv_obj_align(main_pg.heading_lbl, LV_ALIGN_CENTER, 0, 0);
+    }
+
+    // ----- Boat speed at the stern -----
+    main_pg.bspd_lbl = makeLabel(compass, &lv_font_montserrat_28,
+                                 lv_color_white(), "--");
+    lv_obj_align(main_pg.bspd_lbl, LV_ALIGN_CENTER, 0, 145);
+
+    // ----- Depth on the right side -----
+    {
+        lv_obj_t* depth_sub = makeLabel(compass, &lv_font_montserrat_12,
+                                        lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                        "DEPTH");
+        lv_obj_align(depth_sub, LV_ALIGN_CENTER, 110, -20);
+        main_pg.depth_lbl = makeLabel(compass, &lv_font_montserrat_24,
+                                      lv_color_white(), "--");
+        lv_obj_align(main_pg.depth_lbl, LV_ALIGN_CENTER, 110, 0);
+        lv_obj_t* depth_unit = makeLabel(compass, &lv_font_montserrat_12,
+                                         lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                         "m");
+        lv_obj_align(depth_unit, LV_ALIGN_CENTER, 110, 18);
+    }
+
+    // ----- Heel-angle indicator on the left side -----
+    //
+    // We don't have a heel sensor yet — the round-54 placeholder is just
+    // a small "HEEL  0°" readout. A future round will add an actual
+    // graphical tilt indicator (a vertical line that leans with the
+    // boat) once a heel sensor / IMU is available on the bus.
+    {
+        lv_obj_t* heel_sub = makeLabel(compass, &lv_font_montserrat_12,
+                                       lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                       "HEEL");
+        lv_obj_align(heel_sub, LV_ALIGN_CENTER, -110, -20);
+        main_pg.heel_lbl = makeLabel(compass, &lv_font_montserrat_24,
+                                     lv_color_white(), "0\xC2\xB0");
+        lv_obj_align(main_pg.heel_lbl, LV_ALIGN_CENTER, -110, 0);
+    }
+}
+
+void buildSimulatorPage() {
+    lv_obj_t* scr = lv_obj_create(nullptr);
+    styleScreen(scr);
+    sim_pg.root = scr;
+
+    // Header.
+    lv_obj_t* header = makeLabel(scr, &lv_font_montserrat_16,
+                                 lv_color_white(), "SIMULATOR — raw + derived");
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 24);
+
+    // Two columns of label rows. Left column = raw sensor inputs, right
+    // column = values BoatState computed from them. Each row is one
+    // pair (label + value) drawn at a fixed y-offset.
+    auto row = [&](int y, int x_label, int x_value, const char* name,
+                   const lv_font_t* font = &lv_font_montserrat_14)
+        -> lv_obj_t* {
+        lv_obj_t* l = makeLabel(scr, font,
+                                lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                name);
+        lv_obj_align(l, LV_ALIGN_TOP_LEFT, x_label, y);
+        lv_obj_t* v = makeLabel(scr, font, lv_color_white(), "--");
+        lv_obj_align(v, LV_ALIGN_TOP_LEFT, x_value, y);
+        return v;
+    };
+
+    constexpr int kColLeft   = 30;
+    constexpr int kValLeft   = 110;
+    constexpr int kColRight  = 250;
+    constexpr int kValRight  = 330;
+    constexpr int kRowH      = 24;
+    int y = 60;
+
+    // RAW (left column)
+    sim_pg.lat_lbl   = row(y, kColLeft, kValLeft, "lat");      y += kRowH;
+    sim_pg.lon_lbl   = row(y, kColLeft, kValLeft, "lon");      y += kRowH;
+    sim_pg.sog_lbl   = row(y, kColLeft, kValLeft, "SOG");      y += kRowH;
+    sim_pg.cog_lbl   = row(y, kColLeft, kValLeft, "COG");      y += kRowH;
+    sim_pg.awa_lbl   = row(y, kColLeft, kValLeft, "AWA");      y += kRowH;
+    sim_pg.aws_lbl   = row(y, kColLeft, kValLeft, "AWS");      y += kRowH;
+    sim_pg.hdg_m_lbl = row(y, kColLeft, kValLeft, "HDG\xC2\xB0M"); y += kRowH;
+    sim_pg.var_lbl   = row(y, kColLeft, kValLeft, "VAR");      y += kRowH;
+    sim_pg.stw_lbl   = row(y, kColLeft, kValLeft, "STW");      y += kRowH;
+    sim_pg.depth_lbl = row(y, kColLeft, kValLeft, "depth");
+
+    // DERIVED (right column)
+    int yr = 60;
+    sim_pg.hdg_t_lbl = row(yr, kColRight, kValRight, "HDG\xC2\xB0T"); yr += kRowH;
+    sim_pg.twa_lbl   = row(yr, kColRight, kValRight, "TWA");          yr += kRowH;
+    sim_pg.tws_lbl   = row(yr, kColRight, kValRight, "TWS");          yr += kRowH;
+    sim_pg.twd_lbl   = row(yr, kColRight, kValRight, "TWD");          yr += kRowH;
+    sim_pg.vmg_lbl   = row(yr, kColRight, kValRight, "VMG");
 }
 
 void buildDebugPage() {
@@ -999,131 +1198,107 @@ void refreshOverview(const Instruments& s) {
     }
 }
 
-// Pull the current value of one cell's metric out of the BoatState
-// snapshot. Returns NaN if the metric isn't available yet.
-double metricValue(CellMetric m, const Instruments& s) {
-    switch (m) {
-        case CellMetric::AWA:  return s.awa;
-        case CellMetric::AWS:  return s.aws;
-        case CellMetric::TWA:  return s.twa;
-        case CellMetric::TWS:  return s.tws;
-        case CellMetric::BSPD: return !isnan(s.stw) ? s.stw : s.sog;
-        case CellMetric::SOG:  return s.sog;
-        case CellMetric::HDG:  return s.heading_true_deg;
-        case CellMetric::TWD:  return s.twd;
-        case CellMetric::VMG:  return s.vmg;
+// Round 54: refreshMain — Main display page. Updates the rotating
+// inner compass ring (transform_angle = -heading), the heading label
+// at the bow, the BSPD readout at the stern, the TWD wide-arrow needle,
+// the depth readout on the right, and a placeholder heel readout on
+// the left. The blue T target marker on the rim is pinned to
+// heading + 30° for v1 (will follow a real autopilot SET command in a
+// future round once we expose that on the bus).
+void refreshMain(const Instruments& s) {
+    // Rotating inner compass ring. transform_angle is in 0.1° units;
+    // negative because rotating the LABELS opposite to the heading
+    // change keeps the boat's actual heading at the top of the ring.
+    if (!isnan(s.heading_true_deg) && main_pg.inner_ring) {
+        const int16_t ang_01 =
+            -static_cast<int16_t>(std::lround(s.heading_true_deg * 10.0));
+        lv_obj_set_style_transform_angle(main_pg.inner_ring,
+                                         ang_01, LV_PART_MAIN);
     }
-    return NAN;
-}
 
-// Format string for a metric's value label. Angles are zero-padded
-// integer degrees (HDG/TWD are 0..360, AWA/TWA are signed); speeds are
-// one decimal knot.
-const char* metricFmt(CellMetric m) {
-    switch (m) {
-        case CellMetric::AWA:  return "%+.0f";
-        case CellMetric::AWS:  return "%.1f";
-        case CellMetric::TWA:  return "%+.0f";
-        case CellMetric::TWS:  return "%.1f";
-        case CellMetric::BSPD: return "%.1f";
-        case CellMetric::SOG:  return "%.1f";
-        case CellMetric::HDG:  return "%03.0f";
-        case CellMetric::TWD:  return "%03.0f";
-        case CellMetric::VMG:  return "%.1f";
-    }
-    return "%.1f";
-}
-
-// Refresh one cell's value label and (if present) area-fill sparkline.
-// Y-axis range auto-scales to (min, max) of the visible window with a
-// tiny padding so a flat trace doesn't render right at the border.
-// Empty history (all NaN) leaves the trace cleared.
-void refreshDataCell(CellMetric m, const Instruments& s) {
-    DataCell& c = data_pg.cells[static_cast<size_t>(m)];
-    const double v = metricValue(m, s);
-
-    if (isnan(v)) {
-        lv_label_set_text(c.value_lbl, "--");
+    // Heading label at the bow.
+    if (isnan(s.heading_true_deg)) {
+        lv_label_set_text(main_pg.heading_lbl, "---");
     } else {
-        char buf[12];
-        snprintf(buf, sizeof(buf), metricFmt(m), v);
-        lv_label_set_text(c.value_lbl, buf);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%03.0f", s.heading_true_deg);
+        lv_label_set_text(main_pg.heading_lbl, buf);
     }
 
-    if (c.chart == nullptr) return;   // diagonal tile — value-only
+    // BSPD at the stern.
+    const double bspd = !isnan(s.stw) ? s.stw : s.sog;
+    if (isnan(bspd)) {
+        lv_label_set_text(main_pg.bspd_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", bspd);
+        lv_label_set_text(main_pg.bspd_lbl, buf);
+    }
 
-    // Round 41: 300-sample history is downsampled to 20 chart bars by
-    // averaging every kStride samples. With kStride = 15 each bar
-    // represents 15 s of history → 5 min total visible. Fewer, wider
-    // bars (vs. round 40's 100-point line) read cleanly on the 22 px
-    // tall strip the cardinal cells allow.
-    const MetricHistory& h = g_history[static_cast<size_t>(m)];
-    const size_t n_hist = h.count();
-    constexpr uint16_t kChartPoints = 20;
-    constexpr size_t   kStride      = kHistoryLen / kChartPoints;  // = 15
+    // Depth on the right side.
+    if (isnan(s.depth_m)) {
+        lv_label_set_text(main_pg.depth_lbl, "--");
+    } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.1f", s.depth_m);
+        lv_label_set_text(main_pg.depth_lbl, buf);
+    }
 
-    float vmin =  INFINITY;
-    float vmax = -INFINITY;
+    // TWD wide-arrow rotated to true wind direction in BOAT-relative
+    // angle (the compass widget's scale is 0..360 with 0 = bow). TWD
+    // is in degrees true; convert to boat frame: twd - heading_true,
+    // normalised to 0..360.
+    if (main_pg.twd_arrow != nullptr &&
+        !isnan(s.twd) && !isnan(s.heading_true_deg)) {
+        double rel = s.twd - s.heading_true_deg;
+        while (rel <    0.0) rel += 360.0;
+        while (rel >= 360.0) rel -= 360.0;
+        lv_meter_set_indicator_value(main_pg.compass,
+                                     main_pg.twd_arrow,
+                                     static_cast<int32_t>(rel));
+    }
 
-    for (uint16_t i = 0; i < kChartPoints; ++i) {
-        // Bar i (0 = oldest) covers the kStride-sized history window
-        // [n_hist - kStride*(kChartPoints - i),
-        //  n_hist - kStride*(kChartPoints - i - 1)).
-        if (n_hist < kStride * (kChartPoints - i)) {
-            lv_chart_set_value_by_id(c.chart, c.series, i,
-                                     LV_CHART_POINT_NONE);
-            continue;
-        }
-        const size_t start = n_hist - kStride * (kChartPoints - i);
-        float sum = 0.0f;
-        int   cnt = 0;
-        for (size_t j = 0; j < kStride; ++j) {
-            float sample = NAN;
-            h.at(start + j, &sample);
-            if (!isnan(sample)) {
-                sum += sample;
-                ++cnt;
-            }
-        }
-        if (cnt == 0) {
-            lv_chart_set_value_by_id(c.chart, c.series, i,
-                                     LV_CHART_POINT_NONE);
+    // Blue T target marker on the rim — pinned to heading + 30° for
+    // now (no autopilot SET source yet).
+    if (main_pg.target_marker != nullptr) {
+        lv_meter_set_indicator_value(main_pg.compass,
+                                     main_pg.target_marker, 30);
+    }
+}
+
+// Round 54: refreshSimulator — populate the labels on Page 3 with the
+// raw sensor values being fed into BoatState plus the values BoatState
+// computed from them.
+void refreshSimulator(const Instruments& s) {
+    char buf[24];
+    auto setVal = [&](lv_obj_t* lbl, double v, const char* fmt) {
+        if (lbl == nullptr) return;
+        if (isnan(v)) {
+            lv_label_set_text(lbl, "--");
         } else {
-            const float avg = sum / static_cast<float>(cnt);
-            if (avg < vmin) vmin = avg;
-            if (avg > vmax) vmax = avg;
-            lv_chart_set_value_by_id(c.chart, c.series, i,
-                                     static_cast<lv_coord_t>(avg));
+            snprintf(buf, sizeof(buf), fmt, v);
+            lv_label_set_text(lbl, buf);
         }
-    }
+    };
 
-    if (vmin == INFINITY || vmax == -INFINITY) {
-        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1);
-    } else {
-        // Pad the range a touch so flat traces don't sit on the border.
-        float pad = (vmax - vmin) * 0.1f;
-        if (pad < 0.5f) pad = 0.5f;
-        lv_chart_set_range(c.chart, LV_CHART_AXIS_PRIMARY_Y,
-                           static_cast<lv_coord_t>(vmin - pad),
-                           static_cast<lv_coord_t>(vmax + pad));
-    }
-    lv_chart_refresh(c.chart);
-}
+    // Raw.
+    setVal(sim_pg.lat_lbl,   s.lat,                    "%.4f");
+    setVal(sim_pg.lon_lbl,   s.lon,                    "%.4f");
+    setVal(sim_pg.sog_lbl,   s.sog,                    "%.1f kn");
+    setVal(sim_pg.cog_lbl,   s.cog,                    "%03.0f\xC2\xB0");
+    setVal(sim_pg.awa_lbl,   s.awa,                    "%+.0f\xC2\xB0");
+    setVal(sim_pg.aws_lbl,   s.aws,                    "%.1f kn");
+    setVal(sim_pg.hdg_m_lbl, s.heading_mag_deg,        "%03.0f\xC2\xB0");
+    setVal(sim_pg.var_lbl,   s.magnetic_variation_deg, "%+.1f\xC2\xB0");
+    setVal(sim_pg.stw_lbl,   s.stw,                    "%.1f kn");
+    setVal(sim_pg.depth_lbl, s.depth_m,                "%.1f m");
 
-void refreshData(const Instruments& s, size_t /*ais_count*/) {
-    for (size_t i = 0; i < kCellCount; i++) {
-        refreshDataCell(static_cast<CellMetric>(i), s);
-    }
-}
-
-// Push the current snapshot into every metric history buffer. Called
-// once per second from tick() — bounded rate independent of how often
-// the bus or simulator updates BoatState.
-void recordHistorySnapshot(const Instruments& s) {
-    for (size_t i = 0; i < kCellCount; i++) {
-        const double v = metricValue(static_cast<CellMetric>(i), s);
-        g_history[i].push(static_cast<float>(v));   // NaN passes through
-    }
+    // Derived.
+    setVal(sim_pg.hdg_t_lbl, s.heading_true_deg, "%03.0f\xC2\xB0");
+    setVal(sim_pg.twa_lbl,   s.twa,              "%+.0f\xC2\xB0");
+    setVal(sim_pg.tws_lbl,   s.tws,              "%.1f kn");
+    setVal(sim_pg.twd_lbl,   s.twd,              "%03.0f\xC2\xB0");
+    setVal(sim_pg.vmg_lbl,   s.vmg,              "%.1f kn");
 }
 
 void refreshDebug() {
@@ -1164,17 +1339,15 @@ void refreshDebug() {
 
 void refreshFromState() {
     if (!g_state) return;
-    const Instruments s   = g_state->snapshot();
-    const auto        ais = g_state->aisSnapshot();
-    size_t ais_count = 0;
-    for (const auto& t : ais) if (t.mmsi != 0) ais_count++;
+    const Instruments s = g_state->snapshot();
 
-    // Only refresh the currently visible page — cheaper, and hidden pages will
-    // refresh next time they're shown.
+    // Only refresh the currently visible page — cheaper, and hidden pages
+    // will refresh next time they're shown.
     switch (current_page) {
-        case 0: refreshOverview(s);        break;
-        case 1: refreshData(s, ais_count); break;
+        case 0: refreshMain(s);            break;
+        case 1: refreshOverview(s);        break;
         case 2: refreshDebug();            break;
+        case 3: refreshSimulator(s);       break;
     }
 }
 
@@ -1574,12 +1747,14 @@ void begin(BoatState& state) {
     lv_indev_drv_register(&indev_drv);
 
     step("build pages");
+    buildMainPage();
     buildOverviewPage();
-    buildDataPage();
     buildDebugPage();
-    pages[0] = overview.root;
-    pages[1] = data_pg.root;
-    pages[2] = debug_pg.root;
+    buildSimulatorPage();
+    pages[0] = main_pg.root;       // Main display (Round 54: was wind page)
+    pages[1] = overview.root;      // Wind display
+    pages[2] = debug_pg.root;      // Debug page
+    pages[3] = sim_pg.root;        // Simulator page (raw + derived values)
 
     lv_scr_load(pages[0]);
     // Round 39: no LV_EVENT_GESTURE handler — tap detection lives in
@@ -1603,7 +1778,6 @@ uint32_t tick() {
     // lv_timer_handler() call below still runs every iteration so
     // animations, gestures and timers stay responsive.
     static uint32_t last_data_refresh_ms = 0;
-    static uint32_t last_history_ms      = 0;
     const uint32_t now = millis();
     // Round 42: throttle dropped from 100 ms (10 Hz, round 35) to 250 ms
     // (4 Hz). Reasoning: the bounce-buffer flicker fix didn't make it
@@ -1617,19 +1791,9 @@ uint32_t tick() {
         last_data_refresh_ms = now;
         refreshFromState();
     }
-
-    // Round 40: sample BoatState into the per-metric history ring buffers
-    // once per second. This drives the Page 2 sparklines — kHistoryLen=300
-    // samples × 1 Hz = 5 minutes of trail. Sampling here (not from the
-    // NMEA bridge directly) gives us a clean uniform timeline regardless
-    // of bus burstiness or sim cadence, and it keeps the chart's resample
-    // stride (kStride = 3) well-defined. Runs even when Page 2 isn't
-    // visible so the sparkline already has trace data when the user
-    // taps over to it.
-    if (g_state && now - last_history_ms >= 1000) {
-        last_history_ms = now;
-        recordHistorySnapshot(g_state->snapshot());
-    }
+    // Round 54: the per-metric 1 Hz history-sampling block was removed
+    // along with the rest of the data-grid page (Page 2 sparklines). No
+    // current page consumes a rolling history buffer.
 
     // Round 39: apply any pending page change queued by touchReadCb's
     // tap detection. We do this here (between LVGL timer ticks) instead

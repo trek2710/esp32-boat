@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 53: BoatState split into RAW (lat/lon, SOG/COG, AWA/AWS, mag heading, mag variation, STW, depth) + DERIVED (heading_true = mag + variation; TWA/TWS computed from AWA/AWS/STW via vector subtraction; TWD = heading_true + TWA; VMG = STW · cos TWA). Auto-recompute via recomputeDerived_locked() inside every raw setter. Added src/magnetic_variation.{h,cpp} with stub lookupMagneticVariation (Copenhagen ≈ +5° east; TODO: load WMM from SD). NmeaBridge: real PGN 127250 → mag heading + variation; PGN 130306 → apparent only; PGN 129025 also pumps variation lookup. Sim publishes ONLY raw values now (TWA/TWS hardcoded inputs gone). Ui.cpp computeTwd/computeVmg retired — Page 2 reads s.twd / s.vmg directly."
+DEFAULT_MSG="Round 54: page restructure 4 pages — 0=Main display (NEW: boat in centre, fixed outer 0..180 mirrored ring with red/green close-hauled sectors, rotating inner compass ring with N + 030..330 labels, heading at bow, BSPD at stern, blue TWD wide-arrow cone via needle_img, depth right, heel-angle placeholder left, blue T target marker on rim pinned to heading + 30° until autopilot SET source lands), 1=Wind display (unchanged), 2=Debug, 3=Simulator (NEW: list of raw sensor values + values BoatState computed). Removed round-41-52 sparkline data grid wholesale + the 1 Hz history-sampling block. kNumPages 3 → 4."
 
 set -euo pipefail
 
