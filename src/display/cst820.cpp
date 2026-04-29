@@ -109,6 +109,26 @@ bool Cst820::begin(Tca9554& expander) {
 bool Cst820::read(uint16_t* x, uint16_t* y) {
     if (!ready_ || x == nullptr || y == nullptr) return false;
 
+    // Round 60: periodically re-write MotionMask (0xEC = 0x06) so the
+    // chip's continuous-slide config survives any auto-sleep cycles
+    // that may have dropped it. The round-59 trace showed the first
+    // touch after a long idle occasionally produced dx=0 dy=0 even
+    // though the boot-time write succeeded — symptomatic of the chip
+    // having defaulted MotionMask back to 0 during a power-save
+    // dropout. Refreshing every 2 s costs one ~150 µs I2C write and
+    // is well below the chip's typical sleep cycle.
+    {
+        static uint32_t last_motion_refresh_ms = 0;
+        const uint32_t now = millis();
+        if (now - last_motion_refresh_ms > 2000) {
+            Wire.beginTransmission(TP_I2C_ADDR);
+            Wire.write(static_cast<uint8_t>(0xEC));
+            Wire.write(static_cast<uint8_t>(0x06));
+            Wire.endTransmission();
+            last_motion_refresh_ms = now;
+        }
+    }
+
     // Round 37 fix: start the read at register 0x01, not 0x00.
     //
     // Round 36's first cut read 6 bytes from 0x00, putting the gesture byte

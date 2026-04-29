@@ -247,15 +247,16 @@ int       current_page = 0;
 //
 // The split is left-half = previous page, right-half = next page. With 3
 // pages this gives full bidirectional navigation in one tap.
-// Round 55/57/58: SWIPE nav qualifier. A release counts as a swipe when:
+// Round 55/57/58/60: SWIPE nav qualifier. A release counts as a swipe when:
 //   * total held time < kSwipeMaxMs       (mis-classifies long-press)
 //   * horizontal travel ≥ kSwipeMinPx     (deliberate sideways motion)
 //   * |dx| > |dy|                          (more horizontal than vertical)
-// Round 58: kSwipeMinPx 80 → 50 (round-57 still missed swipes 18/20 — a
-// 50 px threshold is ~10 % of the 480 px screen, plenty for an
-// intentional finger drag while still rejecting accidental motion).
-constexpr uint32_t kSwipeMaxMs   = 1500;
-constexpr int32_t  kSwipeMinPx   = 50;
+// Round 60 widens both thresholds after the round-59 trace: deliberate
+// slow swipes were taking 1.0-2.2 s and 1500 ms was rejecting plenty of
+// good ones; bumped to 3000 ms. kSwipeMinPx down 50 → 40 (8 % of screen
+// width) so any unmistakable finger drag qualifies.
+constexpr uint32_t kSwipeMaxMs   = 3000;
+constexpr int32_t  kSwipeMinPx   = 40;
 
 // -1 = go to previous page, +1 = next page, 0 = no pending change.
 // Volatile because it's written from the indev callback (called from

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 59: ROOT CAUSE — every swipe failure had dx=0 dy=0 held=455 ms exactly. The CST816S/CST820 family ships with continuous-slide reporting DISABLED, so the chip publishes the initial touch and then goes silent. Write 0x06 to register 0xEC (MotionMask) at boot — bits 1+2 = EnConUD + EnConLR. Same incantation as InfiniTime's CST816S driver. With those set, the chip pushes a fresh x/y on every 100 Hz internal sample for the whole duration of a slide, so last_x/last_y actually track the finger and the swipe qualifier's dx is meaningful."
+DEFAULT_MSG="Round 60: round-59 working but finicky — slow deliberate swipes hit kSwipeMaxMs=1500 cap (a 2245 ms one rejected even with -307 px motion). Bumped kSwipeMaxMs 1500 → 3000 ms; kSwipeMinPx 50 → 40 px (8 % of screen). Also: first touch after long idle still occasionally dropped to dx=0 dy=0 — chip defaulting MotionMask back to 0 during sleep. Added 2 s periodic re-write of 0xEC=0x06 from inside Cst820::read() so any chip that lost config gets it back before the next touch."
 
 set -euo pipefail
 
