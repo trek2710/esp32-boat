@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 58: round-57's swipe still failed 18/20 — three more aggressive fixes. (1) kHoldThroughGapMs 80 → 250 ms (ESPHome's CST820 component recommends ≥ 50 ms polling, so the chip's no-finger gaps mid-touch can plausibly run longer than 80 ms). (2) Cst820::read parses the touch event flag in buf[2] high nibble: explicit event=lift now treated as no-touch even if fingers != 0, catching the very moment of release. (3) kSwipeMinPx 80 → 50 px so shorter genuine swipes register. (4) Per-transition logging in touchReadCb prints touch DOWN / touch UP with dx, dy, held_ms, and swipe verdict so the serial monitor shows why each swipe attempt did/didn't fire."
+DEFAULT_MSG="Round 59: ROOT CAUSE — every swipe failure had dx=0 dy=0 held=455 ms exactly. The CST816S/CST820 family ships with continuous-slide reporting DISABLED, so the chip publishes the initial touch and then goes silent. Write 0x06 to register 0xEC (MotionMask) at boot — bits 1+2 = EnConUD + EnConLR. Same incantation as InfiniTime's CST816S driver. With those set, the chip pushes a fresh x/y on every 100 Hz internal sample for the whole duration of a slide, so last_x/last_y actually track the finger and the swipe qualifier's dx is meaningful."
 
 set -euo pipefail
 

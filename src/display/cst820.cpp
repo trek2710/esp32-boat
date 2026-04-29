@@ -72,7 +72,35 @@ bool Cst820::begin(Tca9554& expander) {
               "miss the first tap after idle", sleep_err);
     }
 
-    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, auto-sleep disabled)",
+    // Step 5 (round 59): enable continuous-slide reporting.
+    //
+    // The CST816S/CST820 ships with bits 1+2 of MotionMask (register
+    // 0xEC) cleared. In that default mode the chip publishes the
+    // INITIAL touch point and then goes mostly silent for the rest of
+    // the gesture — round-58's monitor trace showed every failed swipe
+    // had dx=0 dy=0 because last_x/last_y were never updated past the
+    // press point.
+    //
+    //   0xEC bit 0  EnDClick — enable double-click gesture
+    //   0xEC bit 1  EnConUD  — "Slide up and down to enable continuous operation"
+    //   0xEC bit 2  EnConLR  — "Continuous operation can slide around"
+    //
+    // Writing 0x06 (bits 1 + 2) makes the chip push a fresh x/y on
+    // every 100 Hz internal sample for the whole duration of a slide,
+    // which is what our touchReadCb needs to compute a real dx.
+    // Pattern is the one used by InfiniTime's CST816S driver (the most
+    // polished community implementation). Non-fatal if it NACKs.
+    Wire.beginTransmission(TP_I2C_ADDR);
+    Wire.write(static_cast<uint8_t>(0xEC));
+    Wire.write(static_cast<uint8_t>(0x06));
+    const uint8_t mask_err = Wire.endTransmission();
+    if (mask_err != 0) {
+        log_w("[cst820] MotionMask write NACKed (err=%u) — swipes may "
+              "register a single press point with no motion", mask_err);
+    }
+
+    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, auto-sleep disabled, "
+          "MotionMask=0x06 → continuous slide)",
           TP_I2C_ADDR, TP_PIN_INT);
     ready_ = true;
     return true;
