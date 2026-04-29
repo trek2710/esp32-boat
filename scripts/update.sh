@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 57: swipe nav debugged after web research. Two LVGL-forum-documented gotchas for CST816/CST820: (1) LV_INDEV_DEF_READ_PERIOD = 30 ms gave only ≈ 7 polls during a 200 ms swipe — bumped to 10 ms, comfortably below the chip's 100 Hz native rate. (2) The chip's intermittent no-finger reports during a continuous touch were triggering false release events that reset press_x mid-swipe. Added kHoldThroughGapMs = 80 ms hold-through window in touchReadCb — a no-finger sample within 80 ms of the last real contact keeps reporting PRESSED to LVGL; only a sustained release evaluates the swipe."
+DEFAULT_MSG="Round 58: round-57's swipe still failed 18/20 — three more aggressive fixes. (1) kHoldThroughGapMs 80 → 250 ms (ESPHome's CST820 component recommends ≥ 50 ms polling, so the chip's no-finger gaps mid-touch can plausibly run longer than 80 ms). (2) Cst820::read parses the touch event flag in buf[2] high nibble: explicit event=lift now treated as no-touch even if fingers != 0, catching the very moment of release. (3) kSwipeMinPx 80 → 50 px so shorter genuine swipes register. (4) Per-transition logging in touchReadCb prints touch DOWN / touch UP with dx, dy, held_ms, and swipe verdict so the serial monitor shows why each swipe attempt did/didn't fire."
 
 set -euo pipefail
 

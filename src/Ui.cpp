@@ -247,17 +247,15 @@ int       current_page = 0;
 //
 // The split is left-half = previous page, right-half = next page. With 3
 // pages this gives full bidirectional navigation in one tap.
-// Round 55: tap nav replaced with SWIPE nav so taps remain free for
-// in-page interactions (autopilot SET, menu picks, etc. — coming in
-// later rounds). A release qualifies as a swipe when:
-//   * total time held < kSwipeMaxMs (so the gesture doesn't get
-//     mis-classified as a long-press / drag-and-hold);
-//   * horizontal travel ≥ kSwipeMinPx (deliberate sideways motion);
-//   * |dx| > |dy| (gesture is more horizontal than vertical).
-// Right-swipe = previous page, left-swipe = next page (matches mobile
-// UX expectations).
+// Round 55/57/58: SWIPE nav qualifier. A release counts as a swipe when:
+//   * total held time < kSwipeMaxMs       (mis-classifies long-press)
+//   * horizontal travel ≥ kSwipeMinPx     (deliberate sideways motion)
+//   * |dx| > |dy|                          (more horizontal than vertical)
+// Round 58: kSwipeMinPx 80 → 50 (round-57 still missed swipes 18/20 — a
+// 50 px threshold is ~10 % of the 480 px screen, plenty for an
+// intentional finger drag while still rejecting accidental motion).
 constexpr uint32_t kSwipeMaxMs   = 1500;
-constexpr int32_t  kSwipeMinPx   = 80;
+constexpr int32_t  kSwipeMinPx   = 50;
 
 // -1 = go to previous page, +1 = next page, 0 = no pending change.
 // Volatile because it's written from the indev callback (called from
@@ -1454,7 +1452,15 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     static uint32_t last_real_press_ms  = 0;
     static bool     reported_pressed    = false;
 
-    constexpr uint32_t kHoldThroughGapMs = 80;
+    // Round 58: hold-through gap 80 → 250 ms. Round-57's 80 ms wasn't
+    // enough — ESPHome's CST820 component recommends polling at no
+    // faster than 50 ms intervals, which implies the chip's "no
+    // finger" gaps during a continuous touch can run > 80 ms. 250 ms
+    // gives ample headroom while still letting taps work for in-page
+    // interactions later (a tap will read as "pressed" for an extra
+    // ~250 ms of latency, which is acceptable for boat-instrument
+    // controls).
+    constexpr uint32_t kHoldThroughGapMs = 250;
 
     uint16_t raw_x = 0, raw_y = 0;
     const bool fresh = g_touch.read(&raw_x, &raw_y);
@@ -1469,6 +1475,9 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             press_x  = last_x;
             press_y  = last_y;
             press_ms = now;
+            // Round 58: log the swipe-anchor point so a serial trace
+            // shows exactly where the gesture started.
+            log_i("[ui] touch DOWN at (%d, %d)", last_x, last_y);
         }
     }
 
@@ -1489,11 +1498,18 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             const uint32_t held_ms = now - press_ms;
             const int32_t dx = static_cast<int32_t>(last_x) - press_x;
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
-            if (held_ms < kSwipeMaxMs &&
-                std::abs(dx) >= kSwipeMinPx &&
-                std::abs(dx) >  std::abs(dy)) {
+            const bool qualifies = (held_ms < kSwipeMaxMs &&
+                                    std::abs(dx) >= kSwipeMinPx &&
+                                    std::abs(dx) >  std::abs(dy));
+            if (qualifies) {
                 g_pending_page_step = (dx > 0) ? -1 : +1;
             }
+            // Round 58: log every release with the qualifier verdict so
+            // we can see from a swipe attempt why it did or didn't fire.
+            log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s",
+                  last_x, last_y, (long)dx, (long)dy,
+                  (unsigned long)held_ms,
+                  qualifies ? "→ SWIPE" : "(ignored)");
         }
         data->state = LV_INDEV_STATE_RELEASED;
     }

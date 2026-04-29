@@ -121,22 +121,25 @@ bool Cst820::read(uint16_t* x, uint16_t* y) {
     uint8_t buf[kNeeded];
     for (size_t i = 0; i < kNeeded; ++i) buf[i] = Wire.read();
 
-    // buf[0] = gesture (unused for now), buf[1] = finger count.
+    // buf[0] = gesture (unused), buf[1] = finger count, buf[2] = X high
+    // byte where the top two bits are the touch event flag:
+    //   00 = press down,  01 = lift up,  10 = contact
+    // Round 58: parse the event flag explicitly. The chip occasionally
+    // reports fingers != 0 with event = lift on the very moment of
+    // release; treat that as "no touch" so we don't latch a stale
+    // finger position into the swipe state machine.
     const uint8_t fingers = buf[1];
+    const uint8_t event   = buf[2] >> 6;
 
-    // Round 38 diagnostic: log the first few non-zero reads so we can confirm
-    // touches are reaching us. Rate-limited to once per ~30 reads (≈1 s at
-    // the LVGL indev poll rate) so we don't flood the serial monitor while
-    // a finger is held down. Remove or guard behind a #define once touch is
-    // proven working.
     static uint32_t touch_log_skip = 0;
     if (fingers != 0 && (touch_log_skip++ % 30) == 0) {
-        log_i("[cst820] touch: gesture=0x%02X fingers=%u "
+        log_i("[cst820] touch: gesture=0x%02X fingers=%u event=%u "
               "raw=[%02X %02X %02X %02X %02X %02X]",
-              buf[0], fingers, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+              buf[0], fingers, event,
+              buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
     }
 
-    if (fingers == 0) return false;  // no touch
+    if (fingers == 0 || event == 0x01) return false;  // no finger / lift
 
     // 12-bit X = (buf[2] & 0x0F) << 8 | buf[3]
     // 12-bit Y = (buf[4] & 0x0F) << 8 | buf[5]
