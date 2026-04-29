@@ -1453,15 +1453,20 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     static uint32_t last_real_press_ms  = 0;
     static bool     reported_pressed    = false;
 
-    // Round 58: hold-through gap 80 → 250 ms. Round-57's 80 ms wasn't
-    // enough — ESPHome's CST820 component recommends polling at no
-    // faster than 50 ms intervals, which implies the chip's "no
-    // finger" gaps during a continuous touch can run > 80 ms. 250 ms
-    // gives ample headroom while still letting taps work for in-page
-    // interactions later (a tap will read as "pressed" for an extra
-    // ~250 ms of latency, which is acceptable for boat-instrument
-    // controls).
-    constexpr uint32_t kHoldThroughGapMs = 250;
+    // Round 61: hold-through gap 250 → 1200 ms. The round-60 trace
+    // showed every dx=0 failure had held≈455 ms exactly — i.e. ~205 ms
+    // of chip activity + 250 ms debounce. That 205 ms is the CST820's
+    // tap-detection window: when the user presses without immediate
+    // motion the chip classifies the touch as a tap candidate and
+    // stops streaming coordinates while it waits to see if anything
+    // happens. If the user starts moving AFTER that window, our 250 ms
+    // gap timed out before the chip resumed streaming, so we declared
+    // a false release. 1200 ms gives a generous ride-through window
+    // — enough to cover a press-pause-move pattern with slack to
+    // spare. A real release without further input still cleanly
+    // declares as released after 1.2 s, fine for tap responses we'll
+    // wire up later.
+    constexpr uint32_t kHoldThroughGapMs = 1200;
 
     uint16_t raw_x = 0, raw_y = 0;
     const bool fresh = g_touch.read(&raw_x, &raw_y);
@@ -1496,7 +1501,13 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
         // Either we were already released last call, or the gap window
         // just elapsed → this is a TRUE release. Evaluate the swipe.
         if (reported_pressed) {
-            const uint32_t held_ms = now - press_ms;
+            // Round 61: measure held_ms from the LAST real chip contact,
+            // not from `now`. `now` is the moment kHoldThroughGapMs
+            // elapsed and we declared release; the actual finger-down
+            // span ended at last_real_press_ms. With the gap bumped
+            // to 1200 ms, computing from `now` was eating 1.2 s into
+            // every swipe's kSwipeMaxMs budget.
+            const uint32_t held_ms = last_real_press_ms - press_ms;
             const int32_t dx = static_cast<int32_t>(last_x) - press_x;
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
             const bool qualifies = (held_ms < kSwipeMaxMs &&

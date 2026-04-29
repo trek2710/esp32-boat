@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 60: round-59 working but finicky — slow deliberate swipes hit kSwipeMaxMs=1500 cap (a 2245 ms one rejected even with -307 px motion). Bumped kSwipeMaxMs 1500 → 3000 ms; kSwipeMinPx 50 → 40 px (8 % of screen). Also: first touch after long idle still occasionally dropped to dx=0 dy=0 — chip defaulting MotionMask back to 0 during sleep. Added 2 s periodic re-write of 0xEC=0x06 from inside Cst820::read() so any chip that lost config gets it back before the next touch."
+DEFAULT_MSG="Round 61: round-60 trace identified the chip's tap-detection window — every dx=0 failure had held≈455 ms = ~205 ms of CST820 activity + 250 ms debounce. The chip stops streaming coords during its tap-detection window when the user presses without immediate motion; with kHoldThroughGapMs=250 the state machine declared release before the chip could resume. Bumped kHoldThroughGapMs 250 → 1200 ms (covers press-pause-move). Also fixed held_ms: was now-press_ms (included debounce wait), now last_real_press_ms-press_ms (actual finger-down time) so the 1200 ms gap doesn't eat into the kSwipeMaxMs budget."
 
 set -euo pipefail
 
