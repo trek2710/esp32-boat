@@ -67,13 +67,21 @@ bool Cst820::begin(Tca9554& expander) {
     }
     delay(100);
 
-    // Step 2 (round 66): configure the INT pin as input AND attach a
-    // FALLING-edge interrupt. The chip pulls TP_INT low briefly on every
-    // event it wants reported (press, motion sample, lift, gesture). The
-    // ISR just sets a flag — the next read_cb tick consumes the flag and
-    // does the I2C round-trip outside ISR context. See the round-66 note
-    // at the top of this file for why this matters.
-    pinMode(TP_PIN_INT, INPUT);
+    // Step 2 (round 66/67): configure the INT pin as INPUT_PULLUP and
+    // attach a FALLING-edge interrupt. The chip pulls TP_INT low briefly
+    // on every event it wants reported (press, motion sample, lift,
+    // gesture); idle, it releases the line.
+    //
+    // Round 67: the boot-time GPIO scan in Ui.cpp shows GPIO 4 reads LOW
+    // when configured as plain INPUT — i.e. there is NO external pullup
+    // on this board's TP_INT trace. With the line floating-low, a FALLING
+    // edge can never happen (we're already at the low state), the ISR
+    // never fires, s_irq_pending stays false after boot, and read() bails
+    // forever. INPUT_PULLUP enables the ESP32-S3's internal pullup so the
+    // line idles HIGH and the chip's open-drain pulse-LOW creates a real
+    // falling edge. The ISR just sets a flag — the next read_cb tick
+    // consumes it and does the I2C round-trip outside ISR context.
+    pinMode(TP_PIN_INT, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(TP_PIN_INT), onTouchIrq, FALLING);
 
     // Step 3: probe by I2C address. Don't try to read a register here — the
@@ -224,6 +232,22 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
             Wire.endTransmission();
 
             last_motion_refresh_ms = now;
+        }
+    }
+
+    // Round 67: heartbeat — log the IRQ counter every 5 s plus the live
+    // TP_INT level. If interrupts are misconfigured (wrong edge, missing
+    // pullup, wrong GPIO), this line shows zero growth and a stuck level
+    // immediately, instead of presenting as silent dead touch like the
+    // round-66 first cut did.
+    {
+        static uint32_t last_heartbeat_ms = 0;
+        const uint32_t now_hb = millis();
+        if (now_hb - last_heartbeat_ms > 5000) {
+            log_i("[cst820] heartbeat: irqs=%lu, TP_INT=%s",
+                  (unsigned long)s_irq_count,
+                  digitalRead(TP_PIN_INT) ? "HIGH" : "LOW");
+            last_heartbeat_ms = now_hb;
         }
     }
 
