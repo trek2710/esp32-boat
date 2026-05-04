@@ -1502,9 +1502,6 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             press_y  = last_y;
             press_ms = now;
             gesture_fired_this_touch = false;  // round 63
-            // Round 58: log the swipe-anchor point so a serial trace
-            // shows exactly where the gesture started.
-            log_i("[ui] touch DOWN at (%d, %d)", last_x, last_y);
         }
     }
 
@@ -1529,9 +1526,8 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
         (gesture == 0x03 || gesture == 0x04)) {
         g_pending_page_step = (gesture == 0x03) ? -1 : +1;
         gesture_fired_this_touch = true;
-        log_i("[ui] chip gesture 0x%02X → page step %+d (fresh=%d lift=%d)",
-              gesture, (int)g_pending_page_step,
-              fresh ? 1 : 0, lift_event ? 1 : 0);
+        log_i("[ui] swipe → %s page",
+              g_pending_page_step < 0 ? "prev" : "next");
     }
 
     // Round 64: lift_event is the chip's "finger just released" signal,
@@ -1598,25 +1594,21 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
                 g_pending_page_step =
                     (press_x < DISPLAY_WIDTH / 2) ? -1 : +1;
             }
-            // Round 58: log every release with the qualifier verdict so
-            // we can see from a swipe attempt why it did or didn't fire.
-            // Round 63: distinguish chip-gesture firings from dx/dy ones.
-            // Round 64: tag the release source — [lift] means we got the
-            // chip's lift-event coord this tick (good — final coord is
-            // accurate), [gap] means hold-through expired with no lift
-            // event (chip went silent through the entire touch).
-            // Round 70: tag tap-fallback firings with the resolved half.
-            log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s%s",
-                  last_x, last_y, (long)dx, (long)dy,
-                  (unsigned long)held_ms,
-                  lift_event ? "[lift] " : "[gap] ",
-                  gesture_fired_this_touch
-                      ? "(chip gesture already fired)"
-                      : (qualifies
-                             ? "→ SWIPE"
-                             : (press_x < DISPLAY_WIDTH / 2
-                                    ? "→ TAP-LEFT (prev)"
-                                    : "→ TAP-RIGHT (next)")));
+            // Round 71: one concise line per touch. Skip if the chip
+            // gesture path already logged a verdict for this touch.
+            if (!gesture_fired_this_touch) {
+                if (qualifies) {
+                    log_i("[ui] swipe → %s page",
+                          g_pending_page_step < 0 ? "prev" : "next");
+                } else {
+                    log_i("[ui] tap %s → %s page",
+                          press_x < DISPLAY_WIDTH / 2 ? "left" : "right",
+                          g_pending_page_step < 0 ? "prev" : "next");
+                }
+            }
+            // Suppress unused-variable warnings now that the verbose
+            // postfix log is gone.
+            (void)dx; (void)dy; (void)held_ms; (void)lift_event;
             gesture_fired_this_touch = false;
         }
         data->state = LV_INDEV_STATE_RELEASED;
@@ -1745,23 +1737,33 @@ void begin(BoatState& state) {
         pinMode(sda, INPUT);
         pinMode(scl, INPUT);
     };
+    (void)probeIdle;  // round 71: only used inside the gated kVerboseBoot block
 
     // Wait for USB CDC to stabilize before spraying diagnostics — otherwise
     // the early log lines get eaten during enumeration after reset.
     delay(1000);
 
-    // Chip identity banner. Confirms module variant so we can cross-check
-    // which ESP32-S3 SKU (N16R8? N8R2?) is actually on the board. Some GPIOs
-    // are only internally-tied-off on specific PSRAM-equipped variants.
-    log_i("[ui] ===== CHIP IDENTITY =====");
-    log_i("[ui] chip:           %s rev %d, %d core(s)",
-          ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
-    log_i("[ui] cpu freq:       %u MHz", (unsigned)ESP.getCpuFreqMHz());
-    log_i("[ui] flash size:     %u MB", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
-    log_i("[ui] psram size:     %u MB", (unsigned)(ESP.getPsramSize() / (1024 * 1024)));
-    log_i("[ui] sdk version:    %s", ESP.getSdkVersion());
-    log_i("[ui] ===== END CHIP IDENTITY =====");
-    delay(100);
+    // Round 71: gate the bring-up diagnostics behind a flag. Boot logs were
+    // valuable when we were guessing at I2C pin pairs and tracking down
+    // which GPIO held the touch IRQ; with the board now stable and tap nav
+    // shipped, the 60+ lines of every-boot scan output is just noise on
+    // the monitor. Flip kVerboseBoot to true to re-enable for any future
+    // hardware re-diagnosis (new board rev, mystery I2C device, etc.).
+    constexpr bool kVerboseBoot = false;
+
+    if (kVerboseBoot) {
+        // Chip identity banner. Confirms module variant so we can cross-check
+        // which ESP32-S3 SKU (N16R8? N8R2?) is actually on the board.
+        log_i("[ui] ===== CHIP IDENTITY =====");
+        log_i("[ui] chip:           %s rev %d, %d core(s)",
+              ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
+        log_i("[ui] cpu freq:       %u MHz", (unsigned)ESP.getCpuFreqMHz());
+        log_i("[ui] flash size:     %u MB", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
+        log_i("[ui] psram size:     %u MB", (unsigned)(ESP.getPsramSize() / (1024 * 1024)));
+        log_i("[ui] sdk version:    %s", ESP.getSdkVersion());
+        log_i("[ui] ===== END CHIP IDENTITY =====");
+        delay(100);
+    }
 
     // Broad GPIO idle-state scan. Previous rounds only probed three pairs we
     // guessed at (8/9, 10/11, 6/7) — all either electrically fine-but-silent
@@ -1779,75 +1781,66 @@ void begin(BoatState& state) {
     //   43, 44 — UART0 tx/rx (debug console routing; safer to leave alone).
     // Everything else is either general-purpose or strap-only and safe to
     // read as INPUT_PULLUP.
-    static const int kScanPins[] = {
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21,
-        38, 39, 40, 41, 42, 45, 46, 47, 48,
-    };
-    log_i("[ui] ===== GPIO IDLE-STATE SCAN =====");
-    delay(50);
-    for (size_t i = 0; i < sizeof(kScanPins) / sizeof(kScanPins[0]); ++i) {
-        const int p = kScanPins[i];
-        pinMode(p, INPUT_PULLUP);
-        delayMicroseconds(200);
-        const int hi = digitalRead(p);
-        log_i("[ui] gpio %2d : %s",
-              p, hi ? "HIGH (free / pulled-up)" : "LOW  (tied down — device?)");
-        pinMode(p, INPUT);   // release cleanly
-        // Small pacing so log_i doesn't overflow the CDC drain.
-        if ((i % 4) == 3) {
-            delay(30);
+    if (kVerboseBoot) {
+        static const int kScanPins[] = {
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            16, 17, 18, 19, 20, 21,
+            38, 39, 40, 41, 42, 45, 46, 47, 48,
+        };
+        log_i("[ui] ===== GPIO IDLE-STATE SCAN =====");
+        delay(50);
+        for (size_t i = 0; i < sizeof(kScanPins) / sizeof(kScanPins[0]); ++i) {
+            const int p = kScanPins[i];
+            pinMode(p, INPUT_PULLUP);
+            delayMicroseconds(200);
+            const int hi = digitalRead(p);
+            log_i("[ui] gpio %2d : %s",
+                  p, hi ? "HIGH (free / pulled-up)" : "LOW  (tied down — device?)");
+            pinMode(p, INPUT);   // release cleanly
+            if ((i % 4) == 3) {
+                delay(30);
+            }
         }
-    }
-    log_i("[ui] ===== END GPIO IDLE-STATE SCAN =====");
-    delay(100);
+        log_i("[ui] ===== END GPIO IDLE-STATE SCAN =====");
+        delay(100);
 
-    // Idle-state sanity probe on the locked-in I2C pair. With the pivot
-    // we already know SDA=15 / SCL=7 is the right answer; this probe stays
-    // as a quick visual "are the lines free?" check before Wire.begin(). If
-    // either line reads LOW here something is electrically wrong — usually
-    // a device holding the line low because its reset isn't driven.
-    log_i("[ui] ===== I2C IDLE-STATE DIAGNOSTIC =====");
-    delay(100);
-    probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);
-    delay(100);
-    log_i("[ui] ===== END I2C IDLE-STATE DIAGNOSTIC =====");
-    delay(100);
+        log_i("[ui] ===== I2C IDLE-STATE DIAGNOSTIC =====");
+        delay(100);
+        probeIdle(display::I2C_PIN_SDA, display::I2C_PIN_SCL);
+        delay(100);
+        log_i("[ui] ===== END I2C IDLE-STATE DIAGNOSTIC =====");
+        delay(100);
 
-    // ---- one-shot I2C bus enumeration (round 11) ------------------------
-    // SDA=GPIO15 / SCL=GPIO7 locked in per the round-10 scan (see
-    // display_pins.h). We still dump the full 127-address scan at boot so
-    // every bring-up log captures "here's what was on the bus this time" —
-    // cheap (~50 ms), makes failure modes ("expander missing!") jump out.
-    //
-    // Known bus fingerprint for this board rev:
-    //   0x15  CST820 touch
-    //   0x20  TCA9554 I/O expander
-    //   0x51  PCF85063 RTC
-    //   0x6B  (probably QMI8658 IMU — round-10 discovery, not yet used)
-    //   0x7E  (unknown — may be a real device or a hal-i2c artefact)
-    log_i("[ui] ===== I2C BUS ENUMERATION (SDA=GPIO%d, SCL=GPIO%d) =====",
-          display::I2C_PIN_SDA, display::I2C_PIN_SCL);
-    delay(50);
-    Wire.end();
-    Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
-    int enum_hits = 0;
-    for (uint8_t addr = 1; addr < 127; ++addr) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            log_i("[ui]   ACK 0x%02X", addr);
-            ++enum_hits;
+        // ---- one-shot I2C bus enumeration (round 11) --------------------
+        // Known bus fingerprint for this board rev:
+        //   0x15  CST820 touch
+        //   0x20  TCA9554 I/O expander
+        //   0x51  PCF85063 RTC
+        //   0x6B  (probably QMI8658 IMU — round-10 discovery, not yet used)
+        //   0x7E  (unknown — may be a real device or a hal-i2c artefact)
+        log_i("[ui] ===== I2C BUS ENUMERATION (SDA=GPIO%d, SCL=GPIO%d) =====",
+              display::I2C_PIN_SDA, display::I2C_PIN_SCL);
+        delay(50);
+        Wire.end();
+        Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);
+        int enum_hits = 0;
+        for (uint8_t addr = 1; addr < 127; ++addr) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) {
+                log_i("[ui]   ACK 0x%02X", addr);
+                ++enum_hits;
+            }
+            if ((addr & 0x1F) == 0x1F) delay(5);
         }
-        if ((addr & 0x1F) == 0x1F) delay(5);
+        log_i("[ui] bus enumeration: %d device(s) ACKed", enum_hits);
+        if (enum_hits < 3) {
+            log_e("[ui] expected at least 0x15/0x20/0x51 — bus may be mis-wired "
+                  "or a reset line is held. Check display_pins.h.");
+        }
+        Wire.end();
+        log_i("[ui] ===== END I2C BUS ENUMERATION =====");
+        delay(50);
     }
-    log_i("[ui] bus enumeration: %d device(s) ACKed", enum_hits);
-    if (enum_hits < 3) {
-        log_e("[ui] expected at least 0x15/0x20/0x51 — bus may be mis-wired "
-              "or a reset line is held. Check display_pins.h.");
-    }
-    Wire.end();
-    log_i("[ui] ===== END I2C BUS ENUMERATION =====");
-    delay(50);
 
     step("Wire.begin() [primary from display_pins.h]");
     Wire.begin(display::I2C_PIN_SDA, display::I2C_PIN_SCL, display::I2C_FREQ_HZ);

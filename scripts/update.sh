@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 70: ship tap fallback. Round-69 bench was 0/12 — the chip's silent-touch behaviour on isolated touches is not changeable by any register tweak we've found across rounds 65-69. Accepting the hardware floor. Tap fallback in touchReadCb's release path: when no chip gesture fired AND dx/dy doesn't qualify as a swipe, use press_x for half-screen nav (left half → previous page, right half → next page). Same direction mapping as swipes, so user-visible behaviour stays consistent whether the chip cooperated or not. Swipe paths (chip gesture, dx/dy qualifier) untouched — they still fire when the chip happens to play along. Net result: every touch reliably navigates."
+DEFAULT_MSG="Round 71: clean up monitor noise now that tap nav is shipped. Removed cst820 5 s heartbeat block (was for the round-66/67 interrupt experiment, no longer needed), removed the per-touch rate-limited [cst820] touch raw-buffer log, removed the [ui] touch DOWN line. Collapsed the verbose [ui] touch UP line (dx/dy/held/[gap]/[lift]/SWIPE/ignored postfix) into a single concise verdict per touch — '[ui] tap left → prev page' or '[ui] tap right → next page', or '[ui] swipe → ... page' on the rare cases the chip cooperates. Gated the boot-time GPIO/I2C diagnostic blocks behind kVerboseBoot=false (flip true to re-enable for any future board re-diagnosis)."
 
 set -euo pipefail
 

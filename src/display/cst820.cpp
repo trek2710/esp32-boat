@@ -242,22 +242,6 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
         }
     }
 
-    // Round 67: heartbeat — log the IRQ counter every 5 s plus the live
-    // TP_INT level. If interrupts are misconfigured (wrong edge, missing
-    // pullup, wrong GPIO), this line shows zero growth and a stuck level
-    // immediately, instead of presenting as silent dead touch like the
-    // round-66 first cut did.
-    {
-        static uint32_t last_heartbeat_ms = 0;
-        const uint32_t now_hb = millis();
-        if (now_hb - last_heartbeat_ms > 5000) {
-            log_i("[cst820] heartbeat: irqs=%lu, TP_INT=%s",
-                  (unsigned long)s_irq_count,
-                  digitalRead(TP_PIN_INT) ? "HIGH" : "LOW");
-            last_heartbeat_ms = now_hb;
-        }
-    }
-
     // Round 69: periodic chip poke. Round-68 bench (one swipe per ~10 s
     // heartbeat-spaced touches) showed 0/9 swipes detected — the chip
     // emits one coord at press and goes silent for the entire touch when
@@ -345,20 +329,6 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
     // tick right after lift, and round 63's "only set on success path"
     // dropped those.
     if (gesture != nullptr) *gesture = buf[0];
-
-    static uint32_t touch_log_skip = 0;
-    if ((fingers != 0 || buf[0] != 0) && (touch_log_skip++ % 30) == 0) {
-        // Round 66: include IRQ count so the bench trace shows how
-        // often TP_INT actually pulses. Compare consecutive lines to
-        // estimate IRQs per touch — a healthy slow swipe should show
-        // many IRQs (one per chip motion sample); the failing class
-        // would show only the press IRQ before the chip goes silent.
-        log_i("[cst820] touch: gesture=0x%02X fingers=%u event=%u "
-              "raw=[%02X %02X %02X %02X %02X %02X] irqs=%lu",
-              buf[0], fingers, event,
-              buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
-              (unsigned long)s_irq_count);
-    }
 
     if (fingers == 0) return false;  // no finger; gesture already exposed
 
