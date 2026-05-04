@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 65: write IRQ_CTL=0x70 to register 0xFA (EnTouch | EnChange | EnMotion) at boot and refresh every 2 s. Round-64 bench showed the chip going silent mid-touch even with MotionMask=0x06 set — many gestures had dx=0 held=0ms because the chip simply stopped updating its sample registers ~200 ms into a slow touch. ESPHome's production cst816 driver writes this exact register/value at setup; without it, the chip's internal sample-update pipeline isn't gated on motion and falls into tap-detection silence. Also added a one-time read of register 0xA7 at boot to log the chip ID (CST820 = 0xB7) so any sibling-chip variant on a future board shows up in the trace."
+DEFAULT_MSG="Round 66: switch CST820 reads to interrupt-driven. Round-65 bench showed chip silence ~30% of the time even with IRQ_CTL=0x70 set. Every working CST816S/CST820 driver in the wild (fbiego, ESPHome, mmMicky/TouchLib, the LVGL gold-standard pattern) reads on TP_INT falling-edge — we were the polling outlier. ISR on GPIO 4 sets a flag and bumps an IRQ counter; cst820::read() bails early when the flag is clear instead of doing an I2C round-trip against stale chip state. Existing touch-log line now reports irqs=N so the bench trace shows TP_INT firing rate per touch."
 
 set -euo pipefail
 

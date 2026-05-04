@@ -10,6 +10,41 @@
 
 namespace display {
 
+// Round 66: interrupt-driven reads.
+//
+// Round-65's bench trace showed the chip going silent through ~30% of
+// slow touches even with IRQ_CTL=0x70 set. Every working CST816S/CST820
+// driver I could find (fbiego, ESPHome, mmMicky/TouchLib, the LVGL
+// forum gold-standard pattern) reads the chip ONLY when its TP_INT line
+// pulses low — they don't poll. The hypothesis is that the chip's
+// internal sample/gesture pipeline only progresses when its interrupt is
+// being serviced; polling against an interrupt-expecting chip puts its
+// state machine into modes that explain the silence.
+//
+// Implementation:
+//   - s_irq_pending is set by the ISR on every TP_INT falling edge,
+//     cleared by Cst820::read() once the chip has been read.
+//   - s_irq_count bumps on every IRQ — exposed via the existing
+//     rate-limited touch-log line so we can see chip event frequency
+//     on the bench.
+//   - read() returns false unless s_irq_pending is set, EXCEPT for
+//     the periodic MotionMask/IRQ_CTL refresh which still runs every
+//     tick (those writes don't depend on chip state).
+//
+// Initialised true so the very first read() after begin() does one
+// I2C round-trip to seed last_x/last_y from whatever the chip is
+// holding — without this, the first touch would have to wait for a
+// fresh IRQ before the indev driver knows the chip is alive.
+namespace {
+volatile bool     s_irq_pending = true;
+volatile uint32_t s_irq_count   = 0;
+
+void IRAM_ATTR onTouchIrq() {
+    s_irq_pending = true;
+    s_irq_count++;
+}
+}  // namespace
+
 bool Cst820::begin(Tca9554& expander) {
     // Step 1: pulse the reset line via TCA9554 IO1 (TP_RST, active low).
     //
@@ -32,10 +67,14 @@ bool Cst820::begin(Tca9554& expander) {
     }
     delay(100);
 
-    // Step 2: configure the INT pin as input. We don't currently wire it as
-    // an interrupt — LVGL's read_cb runs once per LVGL tick (~30 ms) which
-    // is well below the 100 Hz CST820 sample rate, so polling is fine.
+    // Step 2 (round 66): configure the INT pin as input AND attach a
+    // FALLING-edge interrupt. The chip pulls TP_INT low briefly on every
+    // event it wants reported (press, motion sample, lift, gesture). The
+    // ISR just sets a flag — the next read_cb tick consumes the flag and
+    // does the I2C round-trip outside ISR context. See the round-66 note
+    // at the top of this file for why this matters.
     pinMode(TP_PIN_INT, INPUT);
+    attachInterrupt(digitalPinToInterrupt(TP_PIN_INT), onTouchIrq, FALLING);
 
     // Step 3: probe by I2C address. Don't try to read a register here — the
     // CST820's auto-sleep wakes on the first I2C transaction, and we want a
@@ -143,8 +182,9 @@ bool Cst820::begin(Tca9554& expander) {
         chip_id = Wire.read();
     }
 
-    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, chip_id=0x%02X%s, "
-          "auto-sleep disabled, MotionMask=0x06, IRQ_CTL=0x70)",
+    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d [FALLING ISR], "
+          "chip_id=0x%02X%s, auto-sleep disabled, MotionMask=0x06, "
+          "IRQ_CTL=0x70)",
           TP_I2C_ADDR, TP_PIN_INT, chip_id,
           chip_id == 0xB7 ? " [CST820]" : " [unknown]");
     ready_ = true;
@@ -186,6 +226,14 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
             last_motion_refresh_ms = now;
         }
     }
+
+    // Round 66: gate the I2C touch read on the chip's own TP_INT signal.
+    // Between IRQs there's no fresh data — bail out and let touchReadCb's
+    // hold-through state machine keep the swipe context alive. Reading
+    // s_irq_pending is safe without a critical section because it's a
+    // single-byte volatile and the ISR only ever sets it to true.
+    if (!s_irq_pending) return false;
+    s_irq_pending = false;
 
     // Round 37 fix: start the read at register 0x01, not 0x00.
     //
@@ -241,10 +289,16 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
 
     static uint32_t touch_log_skip = 0;
     if ((fingers != 0 || buf[0] != 0) && (touch_log_skip++ % 30) == 0) {
+        // Round 66: include IRQ count so the bench trace shows how
+        // often TP_INT actually pulses. Compare consecutive lines to
+        // estimate IRQs per touch — a healthy slow swipe should show
+        // many IRQs (one per chip motion sample); the failing class
+        // would show only the press IRQ before the chip goes silent.
         log_i("[cst820] touch: gesture=0x%02X fingers=%u event=%u "
-              "raw=[%02X %02X %02X %02X %02X %02X]",
+              "raw=[%02X %02X %02X %02X %02X %02X] irqs=%lu",
               buf[0], fingers, event,
-              buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+              buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+              (unsigned long)s_irq_count);
     }
 
     if (fingers == 0) return false;  // no finger; gesture already exposed
