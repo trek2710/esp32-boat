@@ -251,13 +251,17 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
         }
     }
 
-    // Round 66: gate the I2C touch read on the chip's own TP_INT signal.
-    // Between IRQs there's no fresh data — bail out and let touchReadCb's
-    // hold-through state machine keep the swipe context alive. Reading
-    // s_irq_pending is safe without a critical section because it's a
-    // single-byte volatile and the ISR only ever sets it to true.
-    if (!s_irq_pending) return false;
-    s_irq_pending = false;
+    // Round 66/68: the round-66 cut gated the I2C read on s_irq_pending.
+    // Round-67's heartbeat trace then revealed the chip is NOT pulsing
+    // TP_INT on touch events on this hardware — only ~4 IRQs at boot
+    // (chip startup chatter), then nothing during touches. With the gate,
+    // touch went completely dead. Round 68: drop the gate, fall back to
+    // polling (which round 65 confirmed works partially). Keep the ISR
+    // wired and the heartbeat live so we still measure TP_INT activity —
+    // if some future register experiment ever gets the chip to fire
+    // touch IRQs, the heartbeat will show it immediately and we can
+    // re-enable the gate.
+    (void)s_irq_pending;
 
     // Round 37 fix: start the read at register 0x01, not 0x00.
     //

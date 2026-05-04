@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 67: TP_INT pinMode INPUT → INPUT_PULLUP, plus a 5 s heartbeat log of the IRQ count and live TP_INT level. Round 66 wired up the FALLING-edge ISR but the boot GPIO scan (line 'gpio 4 : LOW (tied down — device?)') showed TP_INT idles LOW with plain INPUT — no external pullup on this board's trace, so a FALLING edge could never happen and the ISR never fired. Touch died completely. INPUT_PULLUP enables the ESP32-S3's internal pullup so the line idles HIGH and the chip's open-drain pulse-LOW creates a real falling edge. The heartbeat surfaces this kind of misconfiguration as a stuck irqs=0/TP_INT=LOW line instead of as silent dead touch."
+DEFAULT_MSG="Round 68: revert the round-66 IRQ gate; restore polling. Round-67 heartbeat trace proved the chip is not pulsing TP_INT on touch events on this hardware (irqs=4 at boot from startup chatter, then locked at 4 forever despite touches). With the gate in place, touch was completely dead. Drop the s_irq_pending check in cst820::read() so it does the I2C round-trip every tick again; this restores round 65's working state (5/7 swipes recognised). Keep the ISR wired, the INPUT_PULLUP, and the heartbeat — they're cheap and they'll instantly show if some future IRQ_CTL experiment ever gets the chip to fire touch IRQs."
 
 set -euo pipefail
 
