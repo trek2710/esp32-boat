@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 64: capture lift-event coords and post-lift gesture. Round-63 bench showed three swipe attempts where the chip went silent through the entire touch — neither streamed coords nor fired a gesture during the press window. cst820::read() now (a) returns true on event=0x01 lift events with the chip's final coord (round 58 used to discard these) and (b) exposes the gesture byte even on no-finger ticks. touchReadCb declares release immediately on lift_event (skips the 1.2 s hold-through gap, dx/dy reconstruction gets the real end-of-swipe coord) and runs the chip-gesture short-circuit on every tick (catches gesture codes the chip latches after lift). Release log now tags [lift] vs [gap] so we can see the source on the bench."
+DEFAULT_MSG="Round 65: write IRQ_CTL=0x70 to register 0xFA (EnTouch | EnChange | EnMotion) at boot and refresh every 2 s. Round-64 bench showed the chip going silent mid-touch even with MotionMask=0x06 set — many gestures had dx=0 held=0ms because the chip simply stopped updating its sample registers ~200 ms into a slow touch. ESPHome's production cst816 driver writes this exact register/value at setup; without it, the chip's internal sample-update pipeline isn't gated on motion and falls into tap-detection silence. Also added a one-time read of register 0xA7 at boot to log the chip ID (CST820 = 0xB7) so any sibling-chip variant on a future board shows up in the trace."
 
 set -euo pipefail
 

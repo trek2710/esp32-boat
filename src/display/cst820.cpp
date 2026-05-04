@@ -99,9 +99,54 @@ bool Cst820::begin(Tca9554& expander) {
               "register a single press point with no motion", mask_err);
     }
 
-    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, auto-sleep disabled, "
-          "MotionMask=0x06 → continuous slide)",
-          TP_I2C_ADDR, TP_PIN_INT);
+    // Step 6 (round 65): enable touch / change / motion IRQs.
+    //
+    // Round-64 bench showed the chip going silent through entire slow
+    // touches — emitted one coord at press, then nothing at all (no
+    // motion samples, no gesture byte, no lift event) for the full
+    // 1.2 s hold-through window. This is the chip's default IRQ
+    // behaviour: register 0xFA (IRQ_CTL) ships with most of its
+    // event-source bits cleared, so even though MotionMask=0x06 says
+    // "report continuous slide", the chip's internal sample-update
+    // path isn't gated on motion — it just stops.
+    //
+    //   0xFA bit 4  EnTouch  — IRQ on each touch
+    //   0xFA bit 5  EnChange — IRQ on press/release transitions
+    //   0xFA bit 6  EnMotion — IRQ on motion samples
+    //
+    // Writing 0x70 (bits 4+5+6) is the value ESPHome's production
+    // cst816 driver uses verbatim. Even with our polled read_cb (we
+    // don't yet hook TP_INT as a real ISR), enabling all three event
+    // sources keeps the chip's register-update pipeline running
+    // through the whole touch instead of falling into tap-detection
+    // silence at ~200 ms. Non-fatal if it NACKs.
+    Wire.beginTransmission(TP_I2C_ADDR);
+    Wire.write(static_cast<uint8_t>(0xFA));
+    Wire.write(static_cast<uint8_t>(0x70));
+    const uint8_t irq_err = Wire.endTransmission();
+    if (irq_err != 0) {
+        log_w("[cst820] IRQ_CTL write NACKed (err=%u) — chip may stop "
+              "updating registers mid-touch", irq_err);
+    }
+
+    // Step 7 (round 65): read chip ID for diagnostics. Register 0xA7
+    // returns 0xB7 on a real CST820 (per ESPHome's chip-ID table).
+    // Other CST816 family parts: CST816S=0xB4, CST816T=0xB5,
+    // CST816D=0xB6, CST826=0x11, CST836=0x13, CST716=0x20. If we ever
+    // get a board variant that ships a different sibling chip the
+    // monitor trace will show it immediately.
+    uint8_t chip_id = 0;
+    Wire.beginTransmission(TP_I2C_ADDR);
+    Wire.write(static_cast<uint8_t>(0xA7));
+    if (Wire.endTransmission() == 0 &&
+        Wire.requestFrom(static_cast<int>(TP_I2C_ADDR), 1) == 1) {
+        chip_id = Wire.read();
+    }
+
+    log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d, chip_id=0x%02X%s, "
+          "auto-sleep disabled, MotionMask=0x06, IRQ_CTL=0x70)",
+          TP_I2C_ADDR, TP_PIN_INT, chip_id,
+          chip_id == 0xB7 ? " [CST820]" : " [unknown]");
     ready_ = true;
     return true;
 }
@@ -119,6 +164,11 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
     // having defaulted MotionMask back to 0 during a power-save
     // dropout. Refreshing every 2 s costs one ~150 µs I2C write and
     // is well below the chip's typical sleep cycle.
+    //
+    // Round 65: also refresh IRQ_CTL (0xFA = 0x70) on the same cadence
+    // for the same reason — if MotionMask can be dropped by a sleep
+    // cycle, IRQ_CTL probably can too, and losing IRQ_CTL silently
+    // re-introduces the chip-silence-mid-touch failure mode.
     {
         static uint32_t last_motion_refresh_ms = 0;
         const uint32_t now = millis();
@@ -127,6 +177,12 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
             Wire.write(static_cast<uint8_t>(0xEC));
             Wire.write(static_cast<uint8_t>(0x06));
             Wire.endTransmission();
+
+            Wire.beginTransmission(TP_I2C_ADDR);
+            Wire.write(static_cast<uint8_t>(0xFA));
+            Wire.write(static_cast<uint8_t>(0x70));
+            Wire.endTransmission();
+
             last_motion_refresh_ms = now;
         }
     }
