@@ -1575,8 +1575,28 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             const bool qualifies = !gesture_fired_this_touch &&
                                    (std::abs(dx) >= kSwipeMinPx &&
                                     std::abs(dx) >  std::abs(dy));
+            // Round 70: tap fallback. Rounds 65-69 nailed down that the
+            // CST820 on this board goes silent for ~entirety of isolated
+            // touches (one coord at press, then nothing — no motion
+            // samples, no gesture byte, no TP_INT pulses) and no register
+            // tweak changes that. Polling sometimes catches a stream of
+            // mid-touch coords; usually it doesn't. Result: rounds-65-69
+            // hovered between 0% and 86% swipe detection, dependent on
+            // user touch cadence in ways we can't influence.
+            //
+            // Tap fallback: when we get to release with no gesture fired
+            // and no qualifying dx/dy swipe, use the PRESS location for
+            // half-screen nav. Same direction mapping as swipes — left
+            // half is "previous" (chip-cooperative swipe-right also
+            // queues -1), right half is "next" (chip-cooperative
+            // swipe-left also queues +1) — so the user-visible behaviour
+            // stays consistent whether the chip cooperated or not.
+            const bool tap_fallback = !gesture_fired_this_touch && !qualifies;
             if (qualifies) {
                 g_pending_page_step = (dx > 0) ? -1 : +1;
+            } else if (tap_fallback) {
+                g_pending_page_step =
+                    (press_x < DISPLAY_WIDTH / 2) ? -1 : +1;
             }
             // Round 58: log every release with the qualifier verdict so
             // we can see from a swipe attempt why it did or didn't fire.
@@ -1585,13 +1605,18 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             // chip's lift-event coord this tick (good — final coord is
             // accurate), [gap] means hold-through expired with no lift
             // event (chip went silent through the entire touch).
+            // Round 70: tag tap-fallback firings with the resolved half.
             log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s%s",
                   last_x, last_y, (long)dx, (long)dy,
                   (unsigned long)held_ms,
                   lift_event ? "[lift] " : "[gap] ",
-                  gesture_fired_this_touch ? "(chip gesture already fired)"
-                                           : (qualifies ? "→ SWIPE"
-                                                        : "(ignored)"));
+                  gesture_fired_this_touch
+                      ? "(chip gesture already fired)"
+                      : (qualifies
+                             ? "→ SWIPE"
+                             : (press_x < DISPLAY_WIDTH / 2
+                                    ? "→ TAP-LEFT (prev)"
+                                    : "→ TAP-RIGHT (next)")));
             gesture_fired_this_touch = false;
         }
         data->state = LV_INDEV_STATE_RELEASED;

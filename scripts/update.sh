@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 69: chip-keepalive experiments. Round-68 bench (one swipe per heartbeat-spaced touch) was 0/9 — the chip emits one coord at press and goes silent for the entire touch when isolated by several seconds of idle, despite DisAutoSleep being written. Two changes: (1) DisAutoSleep value 0xFF → 0xFE (the canonical fbiego/CST816S library value, in case the chip is picky), (2) periodic 500 ms poke of register 0xA7 (chip ID) in cst820::read() to keep the I2C bus active and prevent the chip from settling into deep idle between touches. If the chip still goes silent on isolated touches after this, we accept the hardware limit and ship tap fallback as round 70."
+DEFAULT_MSG="Round 70: ship tap fallback. Round-69 bench was 0/12 — the chip's silent-touch behaviour on isolated touches is not changeable by any register tweak we've found across rounds 65-69. Accepting the hardware floor. Tap fallback in touchReadCb's release path: when no chip gesture fired AND dx/dy doesn't qualify as a swipe, use press_x for half-screen nav (left half → previous page, right half → next page). Same direction mapping as swipes, so user-visible behaviour stays consistent whether the chip cooperated or not. Swipe paths (chip gesture, dx/dy qualifier) untouched — they still fire when the chip happens to play along. Net result: every touch reliably navigates."
 
 set -euo pipefail
 
