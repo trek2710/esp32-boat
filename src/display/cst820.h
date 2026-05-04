@@ -35,8 +35,12 @@
 //   display::Cst820 touch;
 //   if (!touch.begin(g_expander)) { /* probe failed */ }
 //   uint16_t x, y;
-//   uint8_t gesture = 0;            // optional, see read() below
-//   if (touch.read(&x, &y, &gesture)) { /* finger at (x, y), gesture maybe set */ }
+//   uint8_t gesture = 0;       // optional — chip's onboard gesture code
+//   bool    lift   = false;    // optional — true on the lift-event tick
+//   if (touch.read(&x, &y, &gesture, &lift)) {
+//       // finger at (x, y); if lift==true this is the FINAL coord,
+//       // declare release immediately rather than waiting for fingers=0.
+//   }
 //
 // Reset sequence (from the CST820 datasheet):
 //   1. Drive TP_RST low for ≥10 ms.
@@ -59,22 +63,34 @@ public:
     // Caller must have already initialised Wire and the TCA9554 expander.
     bool begin(Tca9554& expander);
 
-    // Read one finger position. Returns true if a finger is currently
-    // touching the panel and writes the raw (pre-rotation) coordinates to
-    // *x and *y. Returns false if no finger is present, the I2C read NACKs,
-    // or begin() never ran. Cheap enough (8 bytes over 100 kHz I2C ≈ 800 µs)
-    // to call from LVGL's input-device read_cb every input poll.
+    // Read one finger position. Returns true if the chip reports a finger
+    // touching the panel — INCLUDING the lift-event tick where the chip
+    // signals "finger just released, here's the final coord" (round 64).
+    // Returns false if no finger is present, the I2C read NACKs, or begin()
+    // never ran. Cheap enough (8 bytes over 100 kHz I2C ≈ 800 µs) to call
+    // from LVGL's input-device read_cb every input poll.
     //
     // Round 63: optional `gesture` out-param exposes register 0x01 (the
-    // chip's onboard gesture engine). When non-null and the call returns
-    // true, *gesture holds the latest code from the chip:
+    // chip's onboard gesture engine). Always populated when non-null,
+    // including on no-finger ticks (round 64) — the chip occasionally
+    // latches the slide code AFTER the finger transitions to fingers=0,
+    // and we don't want to miss those:
     //   0x00 = none, 0x01 = swipe up, 0x02 = swipe down,
     //   0x03 = swipe left, 0x04 = swipe right,
     //   0x05 = single tap, 0x0B = double tap, 0x0C = long press.
-    // Note these are CHIP-frame codes (pre 180° screen rotation). The
-    // chip latches a non-zero code on the tick the gesture is recognised
-    // — typically once per swipe — and returns 0x00 the rest of the time.
-    bool read(uint16_t* x, uint16_t* y, uint8_t* gesture = nullptr);
+    // Note these are CHIP-frame codes (pre 180° screen rotation).
+    //
+    // Round 64: optional `lift_event` out-param distinguishes the chip's
+    // lift tick (event flag = 0x01) from ongoing-contact ticks (0x00/0x02).
+    // When true, the returned coord is the chip's FINAL touch position —
+    // the caller should declare release immediately and reconstruct dx/dy
+    // from this point. Previously (round 58) this tick was discarded out
+    // of fear of stale-coord latching; the round-63 trace showed too many
+    // swipes failing because the chip went silent through the entire touch
+    // and the lift-event coord was the only useful end-of-swipe data.
+    bool read(uint16_t* x, uint16_t* y,
+              uint8_t* gesture    = nullptr,
+              bool*    lift_event = nullptr);
 
     // True after a successful begin().
     bool ready() const { return ready_; }

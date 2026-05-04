@@ -1488,7 +1488,8 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
 
     uint16_t raw_x = 0, raw_y = 0;
     uint8_t  gesture = 0;
-    const bool fresh = g_touch.read(&raw_x, &raw_y, &gesture);
+    bool     lift_event = false;
+    const bool fresh = g_touch.read(&raw_x, &raw_y, &gesture, &lift_event);
     const uint32_t now = millis();
 
     if (fresh) {
@@ -1505,37 +1506,49 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             // shows exactly where the gesture started.
             log_i("[ui] touch DOWN at (%d, %d)", last_x, last_y);
         }
-
-        // Round 63: short-circuit on the chip's onboard gesture engine.
-        // Bench trace from round 62 caught gesture=0x04 firing in the
-        // middle of a successful swipe — the chip itself recognised the
-        // gesture, but our software was ignoring buf[0] and trying to
-        // reconstruct the swipe from coordinates the chip had stopped
-        // sending. Trusting the chip's verdict avoids the whole class
-        // of "dx=0 held=0ms" failures where the coord stream gated.
-        //
-        // Frame mapping: the panel is mounted upside-down and we apply
-        // a 180° software rotation in flushCb / coordinate read above,
-        // so chip-frame "swipe right" (0x04) is what the user perceives
-        // as a left-swipe → next page (+1). Mirror for 0x03.
-        //
-        // Up/down chip codes (0x01/0x02) are deliberately not wired —
-        // we only navigate horizontally.
-        if (!gesture_fired_this_touch &&
-            (gesture == 0x03 || gesture == 0x04)) {
-            g_pending_page_step = (gesture == 0x03) ? -1 : +1;
-            gesture_fired_this_touch = true;
-            log_i("[ui] chip gesture 0x%02X → page step %+d",
-                  gesture, (int)g_pending_page_step);
-        }
     }
 
-    bool effective = fresh;
-    if (!fresh && reported_pressed &&
-        (now - last_real_press_ms) < kHoldThroughGapMs) {
-        // CST820 dropped finger this sample but we were just touched —
-        // hold the press state for the gap window.
+    // Round 64: gesture-fire check moved out of the `if (fresh)` block.
+    // The chip occasionally latches the slide code on the no-finger tick
+    // immediately after lift (round-63 bench showed three quick-swipe
+    // attempts where the chip never streamed coords AND never fired the
+    // gesture during the press window — but it might have fired post-lift,
+    // and the round-63 driver was discarding gesture on no-finger reads).
+    // gesture_fired_this_touch latches per touch sequence, so this is
+    // still single-fire. reported_pressed gates against stale codes from
+    // an already-evaluated touch.
+    //
+    // Frame mapping: the panel is mounted upside-down and we apply a
+    // 180° software rotation in flushCb / coordinate read above, so
+    // chip-frame "swipe right" (0x04) is what the user perceives as a
+    // left-swipe → next page (+1). Mirror for 0x03.
+    //
+    // Up/down chip codes (0x01/0x02) are deliberately not wired — we
+    // only navigate horizontally.
+    if (reported_pressed && !gesture_fired_this_touch &&
+        (gesture == 0x03 || gesture == 0x04)) {
+        g_pending_page_step = (gesture == 0x03) ? -1 : +1;
+        gesture_fired_this_touch = true;
+        log_i("[ui] chip gesture 0x%02X → page step %+d (fresh=%d lift=%d)",
+              gesture, (int)g_pending_page_step,
+              fresh ? 1 : 0, lift_event ? 1 : 0);
+    }
+
+    // Round 64: lift_event is the chip's "finger just released" signal,
+    // and the coords on this tick are the FINAL touch position. Declare
+    // release immediately — no need to wait for the hold-through gap.
+    bool effective;
+    if (fresh && lift_event) {
+        effective = false;  // lift = release this tick
+    } else if (fresh) {
         effective = true;
+    } else if (reported_pressed &&
+               (now - last_real_press_ms) < kHoldThroughGapMs) {
+        // CST820 dropped finger this sample but we were just touched —
+        // hold the press state for the gap window (round 61).
+        effective = true;
+    } else {
+        effective = false;
     }
 
     if (effective) {
@@ -1568,9 +1581,14 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             // Round 58: log every release with the qualifier verdict so
             // we can see from a swipe attempt why it did or didn't fire.
             // Round 63: distinguish chip-gesture firings from dx/dy ones.
-            log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s",
+            // Round 64: tag the release source — [lift] means we got the
+            // chip's lift-event coord this tick (good — final coord is
+            // accurate), [gap] means hold-through expired with no lift
+            // event (chip went silent through the entire touch).
+            log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s%s",
                   last_x, last_y, (long)dx, (long)dy,
                   (unsigned long)held_ms,
+                  lift_event ? "[lift] " : "[gap] ",
                   gesture_fired_this_touch ? "(chip gesture already fired)"
                                            : (qualifies ? "→ SWIPE"
                                                         : "(ignored)"));

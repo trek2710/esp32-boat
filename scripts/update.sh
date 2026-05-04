@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 63: trust the CST820's onboard gesture engine. Round-62 trace showed the chip emitting gesture=0x04 (slide) mid-swipe while our software was still trying to reconstruct the gesture from coordinates the chip had stopped streaming. cst820::read() now returns the chip's gesture byte; touchReadCb fires the page change immediately on chip codes 0x03/0x04 and falls back to the dx/dy state machine otherwise. Also dropped kSwipeMinPx 40 → 30 to catch the dx≈31-px swipe class round 62 missed."
+DEFAULT_MSG="Round 64: capture lift-event coords and post-lift gesture. Round-63 bench showed three swipe attempts where the chip went silent through the entire touch — neither streamed coords nor fired a gesture during the press window. cst820::read() now (a) returns true on event=0x01 lift events with the chip's final coord (round 58 used to discard these) and (b) exposes the gesture byte even on no-finger ticks. touchReadCb declares release immediately on lift_event (skips the 1.2 s hold-through gap, dx/dy reconstruction gets the real end-of-swipe coord) and runs the chip-gesture short-circuit on every tick (catches gesture codes the chip latches after lift). Release log now tags [lift] vs [gap] so we can see the source on the bench."
 
 set -euo pipefail
 

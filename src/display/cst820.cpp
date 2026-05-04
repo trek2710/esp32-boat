@@ -106,8 +106,10 @@ bool Cst820::begin(Tca9554& expander) {
     return true;
 }
 
-bool Cst820::read(uint16_t* x, uint16_t* y, uint8_t* gesture) {
+bool Cst820::read(uint16_t* x, uint16_t* y,
+                  uint8_t* gesture, bool* lift_event) {
     if (!ready_ || x == nullptr || y == nullptr) return false;
+    if (lift_event != nullptr) *lift_event = false;
 
     // Round 60: periodically re-write MotionMask (0xEC = 0x06) so the
     // chip's continuous-slide config survives any auto-sleep cycles
@@ -169,35 +171,42 @@ bool Cst820::read(uint16_t* x, uint16_t* y, uint8_t* gesture) {
     uint8_t buf[kNeeded];
     for (size_t i = 0; i < kNeeded; ++i) buf[i] = Wire.read();
 
-    // buf[0] = gesture (unused), buf[1] = finger count, buf[2] = X high
+    // buf[0] = gesture, buf[1] = finger count, buf[2] = X high
     // byte where the top two bits are the touch event flag:
     //   00 = press down,  01 = lift up,  10 = contact
-    // Round 58: parse the event flag explicitly. The chip occasionally
-    // reports fingers != 0 with event = lift on the very moment of
-    // release; treat that as "no touch" so we don't latch a stale
-    // finger position into the swipe state machine.
     const uint8_t fingers = buf[1];
     const uint8_t event   = buf[2] >> 6;
 
+    // Round 64: expose the gesture byte ALWAYS when requested — including
+    // when fingers=0. The chip sometimes latches the slide code on the
+    // tick right after lift, and round 63's "only set on success path"
+    // dropped those.
+    if (gesture != nullptr) *gesture = buf[0];
+
     static uint32_t touch_log_skip = 0;
-    if (fingers != 0 && (touch_log_skip++ % 30) == 0) {
+    if ((fingers != 0 || buf[0] != 0) && (touch_log_skip++ % 30) == 0) {
         log_i("[cst820] touch: gesture=0x%02X fingers=%u event=%u "
               "raw=[%02X %02X %02X %02X %02X %02X]",
               buf[0], fingers, event,
               buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
     }
 
-    if (fingers == 0 || event == 0x01) return false;  // no finger / lift
+    if (fingers == 0) return false;  // no finger; gesture already exposed
 
     // 12-bit X = (buf[2] & 0x0F) << 8 | buf[3]
     // 12-bit Y = (buf[4] & 0x0F) << 8 | buf[5]
     *x = static_cast<uint16_t>((static_cast<uint16_t>(buf[2] & 0x0F) << 8) | buf[3]);
     *y = static_cast<uint16_t>((static_cast<uint16_t>(buf[4] & 0x0F) << 8) | buf[5]);
 
-    // Round 63: expose the chip's onboard gesture code (register 0x01)
-    // so the indev read_cb can short-circuit the dx/dy state machine
-    // when the chip has already classified the touch as a swipe.
-    if (gesture != nullptr) *gesture = buf[0];
+    // Round 64: pass through the lift-event flag. Round 58 used to drop
+    // event=0x01 reads entirely; round 63's bench trace showed too many
+    // swipes failing because the chip went silent through the touch and
+    // the lift-event coord was our only end-of-swipe signal. The caller
+    // (touchReadCb) uses lift_event to update last_x/last_y to the final
+    // position AND declare release immediately without waiting for the
+    // hold-through-gap timeout to elapse.
+    if (lift_event != nullptr) *lift_event = (event == 0x01);
+
     return true;
 }
 
