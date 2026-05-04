@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 61: round-60 trace identified the chip's tap-detection window — every dx=0 failure had held≈455 ms = ~205 ms of CST820 activity + 250 ms debounce. The chip stops streaming coords during its tap-detection window when the user presses without immediate motion; with kHoldThroughGapMs=250 the state machine declared release before the chip could resume. Bumped kHoldThroughGapMs 250 → 1200 ms (covers press-pause-move). Also fixed held_ms: was now-press_ms (included debounce wait), now last_real_press_ms-press_ms (actual finger-down time) so the 1200 ms gap doesn't eat into the kSwipeMaxMs budget."
+DEFAULT_MSG="Round 62: dropped kSwipeMaxMs duration check from the swipe state machine. Slow gestures were being rejected even with held_ms reporting the real finger-down time. Now any release with |dx| >= 40 px and |dx| > |dy| fires a page change regardless of how long the touch lasted."
 
 set -euo pipefail
 

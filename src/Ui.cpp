@@ -247,15 +247,22 @@ int       current_page = 0;
 //
 // The split is left-half = previous page, right-half = next page. With 3
 // pages this gives full bidirectional navigation in one tap.
-// Round 55/57/58/60: SWIPE nav qualifier. A release counts as a swipe when:
-//   * total held time < kSwipeMaxMs       (mis-classifies long-press)
+// Round 55/57/58/60/62: SWIPE nav qualifier. A release counts as a swipe when:
 //   * horizontal travel ≥ kSwipeMinPx     (deliberate sideways motion)
 //   * |dx| > |dy|                          (more horizontal than vertical)
-// Round 60 widens both thresholds after the round-59 trace: deliberate
-// slow swipes were taking 1.0-2.2 s and 1500 ms was rejecting plenty of
-// good ones; bumped to 3000 ms. kSwipeMinPx down 50 → 40 (8 % of screen
-// width) so any unmistakable finger drag qualifies.
-constexpr uint32_t kSwipeMaxMs   = 3000;
+//
+// Round 62 dropped the kSwipeMaxMs duration cap. The CST820 streams
+// coordinates intermittently — sometimes 32 ms, sometimes 10 s — and
+// our held_ms = last_real_press_ms - press_ms only counts the actively
+// streaming portion, which gave wildly inconsistent values for
+// objectively-similar finger gestures. Round-61 trace had a clear
+// -191 px swipe rejected on held=10521 ms even though the user was
+// clearly intending to swipe. If the chip reported motion, the user
+// moved; that's enough to call it a swipe. The 1200 ms hold-through
+// gap already keeps lazy long-presses from accidentally registering.
+//
+// kSwipeMaxMs is kept around for the diagnostic log line below.
+constexpr uint32_t kSwipeMaxMs   = 3000;   // (informational only — see above)
 constexpr int32_t  kSwipeMinPx   = 40;
 
 // -1 = go to previous page, +1 = next page, 0 = no pending change.
@@ -1510,8 +1517,10 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             const uint32_t held_ms = last_real_press_ms - press_ms;
             const int32_t dx = static_cast<int32_t>(last_x) - press_x;
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
-            const bool qualifies = (held_ms < kSwipeMaxMs &&
-                                    std::abs(dx) >= kSwipeMinPx &&
+            // Round 62: motion + horizontal-bias only; duration check
+            // dropped (see kSwipeMaxMs comment for why).
+            (void)kSwipeMaxMs;
+            const bool qualifies = (std::abs(dx) >= kSwipeMinPx &&
                                     std::abs(dx) >  std::abs(dy));
             if (qualifies) {
                 g_pending_page_step = (dx > 0) ? -1 : +1;
