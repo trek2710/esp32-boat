@@ -35,7 +35,8 @@
 //   display::Cst820 touch;
 //   if (!touch.begin(g_expander)) { /* probe failed */ }
 //   uint16_t x, y;
-//   if (touch.read(&x, &y)) { /* finger present at (x, y) */ }
+//   uint8_t gesture = 0;            // optional, see read() below
+//   if (touch.read(&x, &y, &gesture)) { /* finger at (x, y), gesture maybe set */ }
 //
 // Reset sequence (from the CST820 datasheet):
 //   1. Drive TP_RST low for ≥10 ms.
@@ -63,7 +64,17 @@ public:
     // *x and *y. Returns false if no finger is present, the I2C read NACKs,
     // or begin() never ran. Cheap enough (8 bytes over 100 kHz I2C ≈ 800 µs)
     // to call from LVGL's input-device read_cb every input poll.
-    bool read(uint16_t* x, uint16_t* y);
+    //
+    // Round 63: optional `gesture` out-param exposes register 0x01 (the
+    // chip's onboard gesture engine). When non-null and the call returns
+    // true, *gesture holds the latest code from the chip:
+    //   0x00 = none, 0x01 = swipe up, 0x02 = swipe down,
+    //   0x03 = swipe left, 0x04 = swipe right,
+    //   0x05 = single tap, 0x0B = double tap, 0x0C = long press.
+    // Note these are CHIP-frame codes (pre 180° screen rotation). The
+    // chip latches a non-zero code on the tick the gesture is recognised
+    // — typically once per swipe — and returns 0x00 the rest of the time.
+    bool read(uint16_t* x, uint16_t* y, uint8_t* gesture = nullptr);
 
     // True after a successful begin().
     bool ready() const { return ready_; }

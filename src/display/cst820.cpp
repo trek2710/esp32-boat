@@ -106,7 +106,7 @@ bool Cst820::begin(Tca9554& expander) {
     return true;
 }
 
-bool Cst820::read(uint16_t* x, uint16_t* y) {
+bool Cst820::read(uint16_t* x, uint16_t* y, uint8_t* gesture) {
     if (!ready_ || x == nullptr || y == nullptr) return false;
 
     // Round 60: periodically re-write MotionMask (0xEC = 0x06) so the
@@ -193,6 +193,11 @@ bool Cst820::read(uint16_t* x, uint16_t* y) {
     // 12-bit Y = (buf[4] & 0x0F) << 8 | buf[5]
     *x = static_cast<uint16_t>((static_cast<uint16_t>(buf[2] & 0x0F) << 8) | buf[3]);
     *y = static_cast<uint16_t>((static_cast<uint16_t>(buf[4] & 0x0F) << 8) | buf[5]);
+
+    // Round 63: expose the chip's onboard gesture code (register 0x01)
+    // so the indev read_cb can short-circuit the dx/dy state machine
+    // when the chip has already classified the touch as a swipe.
+    if (gesture != nullptr) *gesture = buf[0];
     return true;
 }
 

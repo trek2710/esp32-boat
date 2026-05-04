@@ -263,7 +263,11 @@ int       current_page = 0;
 //
 // kSwipeMaxMs is kept around for the diagnostic log line below.
 constexpr uint32_t kSwipeMaxMs   = 3000;   // (informational only — see above)
-constexpr int32_t  kSwipeMinPx   = 40;
+// Round 63: 40 → 30. The round-62 trace had a clear left-swipe at
+// dx=-31 px held=1799 ms rejected for being just under the 40-px floor.
+// 30 px is still well above noise (a stationary finger jitters ≤ 4 px on
+// the CST820) but covers shorter, faster swipes.
+constexpr int32_t  kSwipeMinPx   = 30;
 
 // -1 = go to previous page, +1 = next page, 0 = no pending change.
 // Volatile because it's written from the indev callback (called from
@@ -1459,6 +1463,13 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     static uint32_t press_ms            = 0;
     static uint32_t last_real_press_ms  = 0;
     static bool     reported_pressed    = false;
+    // Round 63: latches true the first time the chip's onboard gesture
+    // engine reports a horizontal-slide code during the current touch
+    // sequence. Used to (a) suppress duplicate firing if the chip
+    // re-reports the same code on a later tick within the same touch
+    // and (b) skip the dx/dy fallback at release time so a single
+    // swipe doesn't queue two page steps.
+    static bool     gesture_fired_this_touch = false;
 
     // Round 61: hold-through gap 250 → 1200 ms. The round-60 trace
     // showed every dx=0 failure had held≈455 ms exactly — i.e. ~205 ms
@@ -1476,7 +1487,8 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     constexpr uint32_t kHoldThroughGapMs = 1200;
 
     uint16_t raw_x = 0, raw_y = 0;
-    const bool fresh = g_touch.read(&raw_x, &raw_y);
+    uint8_t  gesture = 0;
+    const bool fresh = g_touch.read(&raw_x, &raw_y, &gesture);
     const uint32_t now = millis();
 
     if (fresh) {
@@ -1488,9 +1500,33 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             press_x  = last_x;
             press_y  = last_y;
             press_ms = now;
+            gesture_fired_this_touch = false;  // round 63
             // Round 58: log the swipe-anchor point so a serial trace
             // shows exactly where the gesture started.
             log_i("[ui] touch DOWN at (%d, %d)", last_x, last_y);
+        }
+
+        // Round 63: short-circuit on the chip's onboard gesture engine.
+        // Bench trace from round 62 caught gesture=0x04 firing in the
+        // middle of a successful swipe — the chip itself recognised the
+        // gesture, but our software was ignoring buf[0] and trying to
+        // reconstruct the swipe from coordinates the chip had stopped
+        // sending. Trusting the chip's verdict avoids the whole class
+        // of "dx=0 held=0ms" failures where the coord stream gated.
+        //
+        // Frame mapping: the panel is mounted upside-down and we apply
+        // a 180° software rotation in flushCb / coordinate read above,
+        // so chip-frame "swipe right" (0x04) is what the user perceives
+        // as a left-swipe → next page (+1). Mirror for 0x03.
+        //
+        // Up/down chip codes (0x01/0x02) are deliberately not wired —
+        // we only navigate horizontally.
+        if (!gesture_fired_this_touch &&
+            (gesture == 0x03 || gesture == 0x04)) {
+            g_pending_page_step = (gesture == 0x03) ? -1 : +1;
+            gesture_fired_this_touch = true;
+            log_i("[ui] chip gesture 0x%02X → page step %+d",
+                  gesture, (int)g_pending_page_step);
         }
     }
 
@@ -1519,18 +1555,26 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             const int32_t dy = static_cast<int32_t>(last_y) - press_y;
             // Round 62: motion + horizontal-bias only; duration check
             // dropped (see kSwipeMaxMs comment for why).
+            // Round 63: skip the dx/dy fallback entirely if the chip's
+            // onboard gesture engine already fired during this touch —
+            // otherwise a single swipe queues two page steps.
             (void)kSwipeMaxMs;
-            const bool qualifies = (std::abs(dx) >= kSwipeMinPx &&
+            const bool qualifies = !gesture_fired_this_touch &&
+                                   (std::abs(dx) >= kSwipeMinPx &&
                                     std::abs(dx) >  std::abs(dy));
             if (qualifies) {
                 g_pending_page_step = (dx > 0) ? -1 : +1;
             }
             // Round 58: log every release with the qualifier verdict so
             // we can see from a swipe attempt why it did or didn't fire.
+            // Round 63: distinguish chip-gesture firings from dx/dy ones.
             log_i("[ui] touch UP at (%d, %d) dx=%ld dy=%ld held=%lums %s",
                   last_x, last_y, (long)dx, (long)dy,
                   (unsigned long)held_ms,
-                  qualifies ? "→ SWIPE" : "(ignored)");
+                  gesture_fired_this_touch ? "(chip gesture already fired)"
+                                           : (qualifies ? "→ SWIPE"
+                                                        : "(ignored)"));
+            gesture_fired_this_touch = false;
         }
         data->state = LV_INDEV_STATE_RELEASED;
     }

@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 62: dropped kSwipeMaxMs duration check from the swipe state machine. Slow gestures were being rejected even with held_ms reporting the real finger-down time. Now any release with |dx| >= 40 px and |dx| > |dy| fires a page change regardless of how long the touch lasted."
+DEFAULT_MSG="Round 63: trust the CST820's onboard gesture engine. Round-62 trace showed the chip emitting gesture=0x04 (slide) mid-swipe while our software was still trying to reconstruct the gesture from coordinates the chip had stopped streaming. cst820::read() now returns the chip's gesture byte; touchReadCb fires the page change immediately on chip codes 0x03/0x04 and falls back to the dx/dy state machine otherwise. Also dropped kSwipeMinPx 40 → 30 to catch the dx≈31-px swipe class round 62 missed."
 
 set -euo pipefail
 
