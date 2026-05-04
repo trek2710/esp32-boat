@@ -28,7 +28,7 @@
 # just run `./scripts/update.sh` with no arguments and get a meaningful
 # commit. Override by passing a message as the first positional argument.
 # ============================================================================
-DEFAULT_MSG="Round 68: revert the round-66 IRQ gate; restore polling. Round-67 heartbeat trace proved the chip is not pulsing TP_INT on touch events on this hardware (irqs=4 at boot from startup chatter, then locked at 4 forever despite touches). With the gate in place, touch was completely dead. Drop the s_irq_pending check in cst820::read() so it does the I2C round-trip every tick again; this restores round 65's working state (5/7 swipes recognised). Keep the ISR wired, the INPUT_PULLUP, and the heartbeat — they're cheap and they'll instantly show if some future IRQ_CTL experiment ever gets the chip to fire touch IRQs."
+DEFAULT_MSG="Round 69: chip-keepalive experiments. Round-68 bench (one swipe per heartbeat-spaced touch) was 0/9 — the chip emits one coord at press and goes silent for the entire touch when isolated by several seconds of idle, despite DisAutoSleep being written. Two changes: (1) DisAutoSleep value 0xFF → 0xFE (the canonical fbiego/CST816S library value, in case the chip is picky), (2) periodic 500 ms poke of register 0xA7 (chip ID) in cst820::read() to keep the I2C bus active and prevent the chip from settling into deep idle between touches. If the chip still goes silent on isolated touches after this, we accept the hardware limit and ship tap fallback as round 70."
 
 set -euo pipefail
 

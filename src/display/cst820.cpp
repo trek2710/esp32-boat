@@ -110,9 +110,16 @@ bool Cst820::begin(Tca9554& expander) {
     // essentially every community driver (fbiego/CST816S, lewisxhe/SensorLib,
     // Bodmer/TFT_eSPI's CST820 demo). Non-fatal if it NACKs — we log a
     // warning and carry on.
+    // Round 69: changed value 0xFF → 0xFE. The CST816S/CST820 datasheet
+    // says "any non-zero value" disables auto-sleep, so 0xFF should also
+    // work — but the canonical fbiego/CST816S library uses 0xFE verbatim,
+    // and round-68 bench data shows the chip dropping into a silence
+    // mode on isolated touches that "auto-sleep disabled" was supposed
+    // to prevent. Trying the canonical value in case the chip is picky
+    // about which non-zero value is written.
     Wire.beginTransmission(TP_I2C_ADDR);
     Wire.write(static_cast<uint8_t>(0xFE));
-    Wire.write(static_cast<uint8_t>(0xFF));
+    Wire.write(static_cast<uint8_t>(0xFE));
     const uint8_t sleep_err = Wire.endTransmission();
     if (sleep_err != 0) {
         log_w("[cst820] DisableAutoSleep write NACKed (err=%u) — touch may "
@@ -191,8 +198,8 @@ bool Cst820::begin(Tca9554& expander) {
     }
 
     log_i("[cst820] ok (addr=0x%02X, INT=GPIO%d [FALLING ISR], "
-          "chip_id=0x%02X%s, auto-sleep disabled, MotionMask=0x06, "
-          "IRQ_CTL=0x70)",
+          "chip_id=0x%02X%s, DisAutoSleep=0xFE, MotionMask=0x06, "
+          "IRQ_CTL=0x70, poke=500ms)",
           TP_I2C_ADDR, TP_PIN_INT, chip_id,
           chip_id == 0xB7 ? " [CST820]" : " [unknown]");
     ready_ = true;
@@ -248,6 +255,30 @@ bool Cst820::read(uint16_t* x, uint16_t* y,
                   (unsigned long)s_irq_count,
                   digitalRead(TP_PIN_INT) ? "HIGH" : "LOW");
             last_heartbeat_ms = now_hb;
+        }
+    }
+
+    // Round 69: periodic chip poke. Round-68 bench (one swipe per ~10 s
+    // heartbeat-spaced touches) showed 0/9 swipes detected — the chip
+    // emits one coord at press and goes silent for the entire touch when
+    // it has been idle for several seconds. Hypothesis: even with
+    // DisAutoSleep written, the chip drifts into a deeper-than-advertised
+    // power state during long idles, and the first touch after wakes the
+    // chip too late to capture the gesture. Polling register 0xA7 (chip
+    // ID) every 500 ms keeps the I2C bus active and gives the chip a
+    // recurring "you're still in service" signal. The value we read is
+    // discarded; the act of reading is the point.
+    {
+        static uint32_t last_poke_ms = 0;
+        const uint32_t now_pk = millis();
+        if (now_pk - last_poke_ms > 500) {
+            Wire.beginTransmission(TP_I2C_ADDR);
+            Wire.write(static_cast<uint8_t>(0xA7));
+            if (Wire.endTransmission() == 0 &&
+                Wire.requestFrom(static_cast<int>(TP_I2C_ADDR), 1) == 1) {
+                (void)Wire.read();  // discard
+            }
+            last_poke_ms = now_pk;
         }
     }
 
