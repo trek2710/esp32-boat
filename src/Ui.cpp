@@ -67,6 +67,12 @@ uint32_t tick() {
 #include "display/st7701_panel.h"
 #include "display/tca9554.h"
 
+// Round 72 — pulled in for the simulator-page channel-enable checkboxes.
+// The SimEnables struct + g_sim_enables global only exist when
+// SIMULATED_DATA is set; the checkbox-build path below is gated on the
+// same macro.
+#include "NmeaBridge.h"
+
 namespace ui {
 namespace {
 
@@ -208,6 +214,18 @@ struct SimulatorPage {
     lv_obj_t* tws_lbl;
     lv_obj_t* twd_lbl;
     lv_obj_t* vmg_lbl;
+
+    // Round 72 — per-channel enable checkboxes laid out in the middle
+    // 40 % of the screen so taps on them fall in the touch-zones
+    // passthrough band. Toggling a box flips the matching field on
+    // g_sim_enables and the next simulator tick stops publishing.
+#if SIMULATED_DATA
+    lv_obj_t* cb_gps;
+    lv_obj_t* cb_wind;
+    lv_obj_t* cb_heading;
+    lv_obj_t* cb_stw;
+    lv_obj_t* cb_depth;
+#endif
 };
 SimulatorPage sim_pg;
 
@@ -1159,6 +1177,50 @@ void buildSimulatorPage() {
     sim_pg.tws_lbl   = row(yr, kColRight, kValRight, "TWS");          yr += kRowH;
     sim_pg.twd_lbl   = row(yr, kColRight, kValRight, "TWD");          yr += kRowH;
     sim_pg.vmg_lbl   = row(yr, kColRight, kValRight, "VMG");
+
+#if SIMULATED_DATA
+    // Round 72 — channel-enable checkboxes. Anchored at x=180 so the box
+    // + label sit comfortably inside the 144..336 middle band defined by
+    // touchReadCb's kNavZone constant. Anything inside that band is
+    // passthrough to LVGL widgets; anything outside fires page nav.
+    //
+    // The raw-value rows above end at y=276 (10 rows × 24 px starting at
+    // y=60). We start the checkboxes at y=320 to leave a clear visual
+    // separator and to clear the longest derived value row on the right.
+    constexpr int kCbX     = 180;
+    constexpr int kCbY0    = 320;
+    constexpr int kCbStep  = 28;
+    lv_obj_t* hdr = makeLabel(scr, &lv_font_montserrat_14,
+                              lv_palette_lighten(LV_PALETTE_GREY, 2),
+                              "SIM CHANNELS");
+    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, kCbX, kCbY0 - 24);
+
+    auto makeCb = [&](int idx, const char* text, bool initial,
+                      bool* target) -> lv_obj_t* {
+        lv_obj_t* cb = lv_checkbox_create(scr);
+        lv_checkbox_set_text(cb, text);
+        lv_obj_set_style_text_color(cb, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(cb, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_align(cb, LV_ALIGN_TOP_LEFT, kCbX, kCbY0 + idx * kCbStep);
+        if (initial) lv_obj_add_state(cb, LV_STATE_CHECKED);
+        // Stash the pointer-to-flag in user_data; callback flips it on
+        // LV_EVENT_VALUE_CHANGED. Avoids needing one callback per channel.
+        lv_obj_set_user_data(cb, target);
+        lv_obj_add_event_cb(cb, [](lv_event_t* ev) {
+            lv_obj_t* w = lv_event_get_target(ev);
+            bool* flag = static_cast<bool*>(lv_obj_get_user_data(w));
+            if (!flag) return;
+            *flag = lv_obj_has_state(w, LV_STATE_CHECKED);
+        }, LV_EVENT_VALUE_CHANGED, nullptr);
+        return cb;
+    };
+
+    sim_pg.cb_gps     = makeCb(0, "GPS",     g_sim_enables.gps,     &g_sim_enables.gps);
+    sim_pg.cb_wind    = makeCb(1, "Wind",    g_sim_enables.wind,    &g_sim_enables.wind);
+    sim_pg.cb_heading = makeCb(2, "Heading", g_sim_enables.heading, &g_sim_enables.heading);
+    sim_pg.cb_stw     = makeCb(3, "STW",     g_sim_enables.stw,     &g_sim_enables.stw);
+    sim_pg.cb_depth   = makeCb(4, "Depth",   g_sim_enables.depth,   &g_sim_enables.depth);
+#endif
 }
 
 void buildDebugPage() {
@@ -1587,23 +1649,48 @@ void touchReadCb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
             // queues -1), right half is "next" (chip-cooperative
             // swipe-left also queues +1) — so the user-visible behaviour
             // stays consistent whether the chip cooperated or not.
-            const bool tap_fallback = !gesture_fired_this_touch && !qualifies;
+            //
+            // Round 72: touch-zones. Round 70's tap fallback fired on
+            // EVERY touch UP, which made it impossible to interact with
+            // any per-page widget — every checkbox tap also navigated.
+            // Now the screen splits into three vertical bands:
+            //
+            //   left  30 %    (x <  kNavZone)             → prev page
+            //   middle 40 %   (kNavZone ≤ x < kNavZoneR)  → passes through
+            //                                                to LVGL widgets
+            //   right 30 %    (x ≥  kNavZoneR)            → next page
+            //
+            // Swipes (chip-gesture path higher up) deliberately bypass the
+            // zone check — a horizontal sweep is unambiguous nav intent
+            // regardless of where it lands. Widgets that need horizontal
+            // drags should live outside the zone-eligible nav region.
+            constexpr int16_t kNavZone  = (DISPLAY_WIDTH * 30) / 100;  // 144
+            constexpr int16_t kNavZoneR = DISPLAY_WIDTH - kNavZone;    // 336
+            const bool in_left_nav  = press_x <  kNavZone;
+            const bool in_right_nav = press_x >= kNavZoneR;
+            const bool in_nav_zone  = in_left_nav || in_right_nav;
+            const bool tap_fallback = !gesture_fired_this_touch &&
+                                      !qualifies && in_nav_zone;
             if (qualifies) {
                 g_pending_page_step = (dx > 0) ? -1 : +1;
             } else if (tap_fallback) {
-                g_pending_page_step =
-                    (press_x < DISPLAY_WIDTH / 2) ? -1 : +1;
+                g_pending_page_step = in_left_nav ? -1 : +1;
             }
-            // Round 71: one concise line per touch. Skip if the chip
+            // Round 71/72: one concise line per touch. Skip if the chip
             // gesture path already logged a verdict for this touch.
             if (!gesture_fired_this_touch) {
                 if (qualifies) {
                     log_i("[ui] swipe → %s page",
                           g_pending_page_step < 0 ? "prev" : "next");
-                } else {
+                } else if (tap_fallback) {
                     log_i("[ui] tap %s → %s page",
-                          press_x < DISPLAY_WIDTH / 2 ? "left" : "right",
+                          in_left_nav ? "left" : "right",
                           g_pending_page_step < 0 ? "prev" : "next");
+                } else {
+                    // Middle zone — LVGL handled (or will handle) the
+                    // press itself. We still log a single line so the
+                    // monitor shows the touch was seen.
+                    log_i("[ui] tap middle → widget");
                 }
             }
             // Suppress unused-variable warnings now that the verbose

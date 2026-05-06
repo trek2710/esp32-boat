@@ -234,6 +234,11 @@ bool NmeaBridge::begin() {
     return true;
 }
 
+// Round 72 — definition for the extern declared in NmeaBridge.h. Defaults
+// match pre-round-72 behaviour (everything publishing); the UI's simulator-
+// page checkboxes flip these at runtime.
+SimEnables g_sim_enables;
+
 // Synthesises one fake PGN event at a time so the debug screen sees a steady,
 // human-readable trickle instead of a blur. Real bus traffic is rarely above
 // ~50 msg/s; aim for roughly that.
@@ -308,15 +313,24 @@ void NmeaBridge::simulateTick() {
     const double hdg_m = normalizeDeg(115.0 + 5.0 * sin(t * 0.05));  // magnetic
     const double stw   = 5.9 + 0.4 * sin(t * 0.25);
 
-    state_.setGps(lat, lon);
-    state_.setApparentWind(awa, aws);
-    state_.setMagneticHeading(hdg_m);
-    state_.setStw(stw);
-    state_.setDepth(depth, temp_c);
+    // Round 72 — per-channel gating. When a checkbox on the simulator
+    // page is unchecked we skip the corresponding setter so downstream
+    // values freeze at their last update (and the PGN log loop below
+    // suppresses the matching log lines too).
+    if (g_sim_enables.gps)     state_.setGps(lat, lon);
+    if (g_sim_enables.wind)    state_.setApparentWind(awa, aws);
+    if (g_sim_enables.heading) state_.setMagneticHeading(hdg_m);
+    if (g_sim_enables.stw)     state_.setStw(stw);
+    if (g_sim_enables.depth)   state_.setDepth(depth, temp_c);
 
-    // Magnetic variation from the WMM-on-SD lookup (round-49 stub).
-    const double var_deg = navmath::lookupMagneticVariation(lat, lon);
-    if (!std::isnan(var_deg)) state_.setMagneticVariation(var_deg);
+    // Magnetic variation from the WMM-on-SD lookup (round-49 stub). Tied
+    // to the heading channel because variation is only meaningful in
+    // combination with magnetic heading (we use it to derive heading_true).
+    double var_deg = NAN;
+    if (g_sim_enables.heading) {
+        var_deg = navmath::lookupMagneticVariation(lat, lon);
+        if (!std::isnan(var_deg)) state_.setMagneticVariation(var_deg);
+    }
 
     // Fire simulated PGN log entries on their per-PGN intervals so the
     // debug screen sees a realistic-looking trickle.
@@ -324,6 +338,18 @@ void NmeaBridge::simulateTick() {
     for (auto& e : sim_events) {
         if (now - e.last_ms < e.interval_ms) continue;
         e.last_ms = now;
+        // Round 72 — suppress the log entry when the channel is off so
+        // the Debug page reflects the same "channel went silent" state
+        // the data labels show.
+        bool channel_on = true;
+        switch (e.pgn) {
+            case 129025L: case 129026L: channel_on = g_sim_enables.gps;     break;
+            case 130306L:               channel_on = g_sim_enables.wind;    break;
+            case 128267L: case 130316L: channel_on = g_sim_enables.depth;   break;
+            case 127250L:               channel_on = g_sim_enables.heading; break;
+            case 128259L:               channel_on = g_sim_enables.stw;     break;
+        }
+        if (!channel_on) continue;
         switch (e.pgn) {
             case 129025L:
                 snprintf(summary, sizeof(summary), "GPS lat=%.4f lon=%.4f", lat, lon);

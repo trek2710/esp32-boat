@@ -46,3 +46,30 @@ private:
     static void handleMsg(const tN2kMsg& msg);
 #endif
 };
+
+#if SIMULATED_DATA
+// Round 72 — per-channel enables for the sim. Five logical streams map onto
+// the five state_.set*() calls inside simulateTick():
+//
+//   gps     → setGps(lat, lon)               (also gates SOG/COG since they
+//                                             are derived from GPS deltas)
+//   wind    → setApparentWind(awa, aws)      (also gates derived TWA/TWS/
+//                                             TWD/VMG)
+//   heading → setMagneticHeading + setMagneticVariation
+//   stw     → setStw(stw)
+//   depth   → setDepth(depth_m, water_temp_c)
+//
+// When a flag is false the setter is skipped AND the matching PGN log
+// entries are suppressed, so the Debug page also shows the channel going
+// silent. Default is all-true (matches pre-round-72 behaviour). The
+// simulator page wires checkboxes to these so you can verify "what does the
+// UI do when GPS drops?" on the bench.
+struct SimEnables {
+    bool gps     = true;
+    bool wind    = true;
+    bool heading = true;
+    bool stw     = true;
+    bool depth   = true;
+};
+extern SimEnables g_sim_enables;
+#endif
