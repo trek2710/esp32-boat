@@ -313,23 +313,65 @@ void NmeaBridge::simulateTick() {
     const double hdg_m = normalizeDeg(115.0 + 5.0 * sin(t * 0.05));  // magnetic
     const double stw   = 5.9 + 0.4 * sin(t * 0.25);
 
-    // Round 72 — per-channel gating. When a checkbox on the simulator
-    // page is unchecked we skip the corresponding setter so downstream
-    // values freeze at their last update (and the PGN log loop below
-    // suppresses the matching log lines too).
-    if (g_sim_enables.gps)     state_.setGps(lat, lon);
-    if (g_sim_enables.wind)    state_.setApparentWind(awa, aws);
-    if (g_sim_enables.heading) state_.setMagneticHeading(hdg_m);
-    if (g_sim_enables.stw)     state_.setStw(stw);
-    if (g_sim_enables.depth)   state_.setDepth(depth, temp_c);
+    // Round 72 — per-channel enable gating. Skipped if the user
+    // unchecked the channel's toggle button on the Sim page.
+    //
+    // Round 73 — per-channel publish CADENCE matching the NMEA 2000
+    // spec transmission intervals. Before round 73 the setters fired
+    // on every loop iteration (~30 Hz from the LVGL tick), which made
+    // the labels visibly flicker and didn't reflect any real boat. The
+    // intervals below are the standard NMEA 2000 rates (cross-checked
+    // against canboat / Maretron / Garmin docs):
+    //
+    //   PGN 129025 Position Rapid Update     100 ms (10 Hz)
+    //   PGN 130306 Wind Data                 100 ms (10 Hz)
+    //   PGN 127250 Vessel Heading            100 ms (10 Hz)
+    //   PGN 128259 Speed, Water Referenced  1000 ms (1 Hz)
+    //   PGN 128267 Water Depth              1000 ms (1 Hz)
+    //
+    // (PGN 130316 Temperature is 2 s in the spec but setDepth() is
+    // atomic over depth+temp, so we publish temp at the depth cadence
+    // and let the 130316 log entry below keep its own 2 s cadence.)
+    constexpr uint32_t kGpsIntervalMs     = 100;
+    constexpr uint32_t kWindIntervalMs    = 100;
+    constexpr uint32_t kHeadingIntervalMs = 100;
+    constexpr uint32_t kStwIntervalMs     = 1000;
+    constexpr uint32_t kDepthIntervalMs   = 1000;
 
-    // Magnetic variation from the WMM-on-SD lookup (round-49 stub). Tied
-    // to the heading channel because variation is only meaningful in
-    // combination with magnetic heading (we use it to derive heading_true).
-    double var_deg = NAN;
-    if (g_sim_enables.heading) {
-        var_deg = navmath::lookupMagneticVariation(lat, lon);
+    static uint32_t last_gps_pub_ms     = 0;
+    static uint32_t last_wind_pub_ms    = 0;
+    static uint32_t last_heading_pub_ms = 0;
+    static uint32_t last_stw_pub_ms     = 0;
+    static uint32_t last_depth_pub_ms   = 0;
+
+    // Magnetic variation lookup is cheap; compute it unconditionally
+    // (when heading is enabled) so the PGN 127250 log summary further
+    // down can read it whether or not we actually published this tick.
+    const double var_deg = g_sim_enables.heading
+        ? navmath::lookupMagneticVariation(lat, lon)
+        : NAN;
+
+    if (g_sim_enables.gps && (now - last_gps_pub_ms >= kGpsIntervalMs)) {
+        state_.setGps(lat, lon);
+        last_gps_pub_ms = now;
+    }
+    if (g_sim_enables.wind && (now - last_wind_pub_ms >= kWindIntervalMs)) {
+        state_.setApparentWind(awa, aws);
+        last_wind_pub_ms = now;
+    }
+    if (g_sim_enables.heading &&
+        (now - last_heading_pub_ms >= kHeadingIntervalMs)) {
+        state_.setMagneticHeading(hdg_m);
         if (!std::isnan(var_deg)) state_.setMagneticVariation(var_deg);
+        last_heading_pub_ms = now;
+    }
+    if (g_sim_enables.stw && (now - last_stw_pub_ms >= kStwIntervalMs)) {
+        state_.setStw(stw);
+        last_stw_pub_ms = now;
+    }
+    if (g_sim_enables.depth && (now - last_depth_pub_ms >= kDepthIntervalMs)) {
+        state_.setDepth(depth, temp_c);
+        last_depth_pub_ms = now;
     }
 
     // Fire simulated PGN log entries on their per-PGN intervals so the
