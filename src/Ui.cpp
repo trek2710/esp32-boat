@@ -215,16 +215,19 @@ struct SimulatorPage {
     lv_obj_t* twd_lbl;
     lv_obj_t* vmg_lbl;
 
-    // Round 72 — per-channel enable checkboxes laid out in the middle
-    // 40 % of the screen so taps on them fall in the touch-zones
-    // passthrough band. Toggling a box flips the matching field on
+    // Round 72 — per-channel enable toggle buttons laid out in the
+    // middle 40 % of the screen so taps on them fall in the touch-zones
+    // passthrough band. Each button is GREEN when the channel is on,
+    // RED when off; clicking it flips the matching field on
     // g_sim_enables and the next simulator tick stops publishing.
+    // (First pass used lv_checkbox; the boxes were too small to tap
+    // on the round 2.1" panel, so we switched to full-width buttons.)
 #if SIMULATED_DATA
-    lv_obj_t* cb_gps;
-    lv_obj_t* cb_wind;
-    lv_obj_t* cb_heading;
-    lv_obj_t* cb_stw;
-    lv_obj_t* cb_depth;
+    lv_obj_t* btn_gps;
+    lv_obj_t* btn_wind;
+    lv_obj_t* btn_heading;
+    lv_obj_t* btn_stw;
+    lv_obj_t* btn_depth;
 #endif
 };
 SimulatorPage sim_pg;
@@ -1179,47 +1182,64 @@ void buildSimulatorPage() {
     sim_pg.vmg_lbl   = row(yr, kColRight, kValRight, "VMG");
 
 #if SIMULATED_DATA
-    // Round 72 — channel-enable checkboxes. Anchored at x=180 so the box
-    // + label sit comfortably inside the 144..336 middle band defined by
-    // touchReadCb's kNavZone constant. Anything inside that band is
-    // passthrough to LVGL widgets; anything outside fires page nav.
+    // Round 72 — channel-enable toggle buttons. Full-width, generously-
+    // sized rectangles so they're easy to tap on the round 2.1" panel.
+    // GREEN when the channel is publishing, RED when it's silenced.
+    // Anchored inside the 144..336 middle band defined by touchReadCb's
+    // kNavZone constants — anything in that band passes through to
+    // LVGL widgets; anything outside fires page nav.
     //
-    // The raw-value rows above end at y=276 (10 rows × 24 px starting at
-    // y=60). We start the checkboxes at y=320 to leave a clear visual
-    // separator and to clear the longest derived value row on the right.
-    constexpr int kCbX     = 180;
-    constexpr int kCbY0    = 320;
-    constexpr int kCbStep  = 28;
-    lv_obj_t* hdr = makeLabel(scr, &lv_font_montserrat_14,
-                              lv_palette_lighten(LV_PALETTE_GREY, 2),
-                              "SIM CHANNELS");
-    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, kCbX, kCbY0 - 24);
+    // The left-column raw-value rows above end at y=276 (10 rows × 24
+    // px starting at y=60). The button stack starts at y=300, leaving
+    // an 8 px gap below "depth", and ends at y=476 (kBtnY0 + 5*32 +
+    // 4*4 = 476) — 4 px clear of the 480 px panel bottom. No header
+    // label: the channel names + green/red colour states are self-
+    // explanatory and adding a header pushes the block off-screen.
+    constexpr int kBtnX    = 150;   // inside [144, 336]
+    constexpr int kBtnW    = 180;   // ends at x=330, still inside the band
+    constexpr int kBtnH    = 32;
+    constexpr int kBtnGap  = 4;
+    constexpr int kBtnY0   = 300;
 
-    auto makeCb = [&](int idx, const char* text, bool initial,
-                      bool* target) -> lv_obj_t* {
-        lv_obj_t* cb = lv_checkbox_create(scr);
-        lv_checkbox_set_text(cb, text);
-        lv_obj_set_style_text_color(cb, lv_color_white(), LV_PART_MAIN);
-        lv_obj_set_style_text_font(cb, &lv_font_montserrat_14, LV_PART_MAIN);
-        lv_obj_align(cb, LV_ALIGN_TOP_LEFT, kCbX, kCbY0 + idx * kCbStep);
-        if (initial) lv_obj_add_state(cb, LV_STATE_CHECKED);
-        // Stash the pointer-to-flag in user_data; callback flips it on
-        // LV_EVENT_VALUE_CHANGED. Avoids needing one callback per channel.
-        lv_obj_set_user_data(cb, target);
-        lv_obj_add_event_cb(cb, [](lv_event_t* ev) {
+    auto makeChannelBtn = [&](int idx, const char* text,
+                              bool* target) -> lv_obj_t* {
+        lv_obj_t* btn = lv_btn_create(scr);
+        lv_obj_set_size(btn, kBtnW, kBtnH);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, kBtnX,
+                     kBtnY0 + idx * (kBtnH + kBtnGap));
+        lv_color_t initial_c = *target
+            ? lv_palette_darken(LV_PALETTE_GREEN, 2)
+            : lv_palette_darken(LV_PALETTE_RED,   2);
+        lv_obj_set_style_bg_color(btn, initial_c, LV_PART_MAIN);
+
+        lv_obj_t* lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, text);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_center(lbl);
+
+        // Stash the pointer-to-flag in user_data; callback toggles it
+        // and re-paints the bg. Captureless lambda → fits the C event
+        // callback signature without one wrapper per channel.
+        lv_obj_set_user_data(btn, target);
+        lv_obj_add_event_cb(btn, [](lv_event_t* ev) {
             lv_obj_t* w = lv_event_get_target(ev);
             bool* flag = static_cast<bool*>(lv_obj_get_user_data(w));
             if (!flag) return;
-            *flag = lv_obj_has_state(w, LV_STATE_CHECKED);
-        }, LV_EVENT_VALUE_CHANGED, nullptr);
-        return cb;
+            *flag = !*flag;
+            lv_color_t nc = *flag
+                ? lv_palette_darken(LV_PALETTE_GREEN, 2)
+                : lv_palette_darken(LV_PALETTE_RED,   2);
+            lv_obj_set_style_bg_color(w, nc, LV_PART_MAIN);
+        }, LV_EVENT_CLICKED, nullptr);
+        return btn;
     };
 
-    sim_pg.cb_gps     = makeCb(0, "GPS",     g_sim_enables.gps,     &g_sim_enables.gps);
-    sim_pg.cb_wind    = makeCb(1, "Wind",    g_sim_enables.wind,    &g_sim_enables.wind);
-    sim_pg.cb_heading = makeCb(2, "Heading", g_sim_enables.heading, &g_sim_enables.heading);
-    sim_pg.cb_stw     = makeCb(3, "STW",     g_sim_enables.stw,     &g_sim_enables.stw);
-    sim_pg.cb_depth   = makeCb(4, "Depth",   g_sim_enables.depth,   &g_sim_enables.depth);
+    sim_pg.btn_gps     = makeChannelBtn(0, "GPS",     &g_sim_enables.gps);
+    sim_pg.btn_wind    = makeChannelBtn(1, "Wind",    &g_sim_enables.wind);
+    sim_pg.btn_heading = makeChannelBtn(2, "Heading", &g_sim_enables.heading);
+    sim_pg.btn_stw     = makeChannelBtn(3, "STW",     &g_sim_enables.stw);
+    sim_pg.btn_depth   = makeChannelBtn(4, "Depth",   &g_sim_enables.depth);
 #endif
 }
 
