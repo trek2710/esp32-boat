@@ -51,6 +51,7 @@ uint32_t tick() {
 #else  // !DISPLAY_SAFE_MODE — the real LVGL UI.
 
 #include <Arduino.h>
+#include <Preferences.h>       // round 74: persist g_nogo_half_deg to NVS
 #include <Wire.h>
 #include <esp_heap_caps.h>     // for heap_caps_malloc (cone-canvas buffer)
 // NOTE: include real LVGL via the lvgl/ subpath. Historical reason kept in
@@ -93,7 +94,9 @@ BoatState* g_state = nullptr;
 
 // --- Page state -------------------------------------------------------------
 
-constexpr int kNumPages = 4;
+// Round 74: bumped 4 → 5 to add the Settings page (page 4) where the
+// no-go-zone half-angle is adjusted via -/+ buttons.
+constexpr int kNumPages = 5;
 
 // ---- Overview page (round 42 — second B&G reference, black dial) ----
 //
@@ -172,8 +175,10 @@ struct MainPage {
     lv_obj_t* root;
 
     lv_obj_t* compass;                   // outer fixed ring (lv_meter)
-    lv_meter_indicator_t* port_sector;
-    lv_meter_indicator_t* stbd_sector;
+    lv_meter_indicator_t* port_sector;   // red close-hauled (left of bow)
+    lv_meter_indicator_t* port_black;    // round 74: black bow-zone wedge (left of 0°)
+    lv_meter_indicator_t* stbd_black;    // round 74: black bow-zone wedge (right of 0°)
+    lv_meter_indicator_t* stbd_sector;   // green close-hauled (right of bow)
     lv_meter_indicator_t* target_marker; // blue T triangle on outer rim
 
     lv_obj_t* inner_ring;                // rotating compass container
@@ -240,8 +245,73 @@ struct DebugPage {
 };
 DebugPage debug_pg;
 
-lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr, nullptr };
+// ---- Settings page (round 74) ----
+//
+// One adjustable value for now: the wind no-go-zone half-angle (see
+// g_nogo_half_deg). Two big tap-targets for −/+, a big readout in the
+// middle. Lives inside the [144, 335] middle-x band so taps don't fall
+// into the nav-zone outer 30 %. Persists every change to NVS via
+// saveNogoToPrefs() so it survives a power cycle.
+struct SettingsPage {
+    lv_obj_t* root;
+    lv_obj_t* nogo_value_lbl;   // "±20°"
+};
+SettingsPage settings_pg;
+
+// Round 74 — forward declarations. applyNogoSectors writes g_nogo_half_deg
+// into all four Main-page no-go arcs; refreshSettingsValueLabel updates
+// the "±N°" readout on the Settings page. Both are called from
+// buildMainPage(), buildSettingsPage(), and the settings-page button
+// event handlers, so the simplest layout is to declare them up front.
+void applyNogoSectors();
+void refreshSettingsValueLabel();
+
+lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 int       current_page = 0;
+
+// Round 74 — wind-page no-go-zone half-angle, in degrees, persisted to NVS.
+// The Main display draws four arcs across the top of the dial:
+//   port red    [360-90  .. 360-half]
+//   port black  [360-half .. 360    ]
+//   stbd black  [0        .. half   ]
+//   stbd green  [half     .. 90     ]
+// At the default half=20 this matches the user spec: 0..20° black on each
+// side of the bow, 20..90° red on port and green on stbd. Bumping half via
+// the Settings page (page 4) widens the black bow zone and narrows the
+// coloured close-hauled bars symmetrically.
+//
+// Clamp range: 0..89. At half=0 the black bars vanish and the red/green
+// pair meets at the bow (the round-71 status quo on the wind page); at
+// half=89 the coloured bars are 1° slivers and the black wedge dominates.
+constexpr int kNogoHalfMin     =  0;
+constexpr int kNogoHalfMax     = 89;
+constexpr int kNogoHalfDefault = 20;
+int g_nogo_half_deg = kNogoHalfDefault;
+
+// NVS namespace + key. Same namespace ("boat") is used for any future
+// persisted settings; key "nogo_half" is unique to this one.
+constexpr const char* kPrefsNamespace = "boat";
+constexpr const char* kPrefsNogoKey   = "nogo_half";
+
+void loadNogoFromPrefs() {
+    Preferences p;
+    if (!p.begin(kPrefsNamespace, /*readOnly=*/true)) {
+        // First boot or NVS not formatted — keep the compile-time default.
+        return;
+    }
+    int v = p.getInt(kPrefsNogoKey, kNogoHalfDefault);
+    p.end();
+    if (v < kNogoHalfMin) v = kNogoHalfMin;
+    if (v > kNogoHalfMax) v = kNogoHalfMax;
+    g_nogo_half_deg = v;
+}
+
+void saveNogoToPrefs() {
+    Preferences p;
+    if (!p.begin(kPrefsNamespace, /*readOnly=*/false)) return;
+    p.putInt(kPrefsNogoKey, g_nogo_half_deg);
+    p.end();
+}
 
 // Round 39: tap-based page navigation — requested after round 38 confirmed
 // touch coords arrive cleanly but LVGL swipe-gesture detection only fired
@@ -826,28 +896,40 @@ void buildMainPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
     main_pg.root = scr;
+    // Round 74: Main display flips to a WHITE background with BLACK lines
+    // (per user spec: "white background and black lines"). Other pages
+    // remain black-on-white-text utility screens. styleScreen() above set
+    // the screen bg to black; we override here without touching the
+    // shared helper so the wind/sim/debug pages don't change.
+    lv_obj_set_style_bg_color(scr, lv_color_white(), LV_PART_MAIN);
 
     // ----- Outer ring (FIXED) -----
     constexpr int kCompassSize = 460;
     lv_obj_t* compass = lv_meter_create(scr);
     lv_obj_set_size(compass, kCompassSize, kCompassSize);
     lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(compass, lv_color_black(), LV_PART_MAIN);
+    // Round 74: dial bg flipped black → white.
+    lv_obj_set_style_bg_color(compass, lv_color_white(), LV_PART_MAIN);
     lv_obj_set_style_border_width(compass, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(compass, 0, LV_PART_MAIN);
     lv_obj_clear_flag(compass, LV_OBJ_FLAG_SCROLLABLE);
-    // Hide auto labels (we use manual mirrored labels instead).
-    lv_obj_set_style_text_color(compass, lv_color_black(), LV_PART_TICKS);
+    // Hide auto labels (we use manual mirrored labels instead). Round 74:
+    // colour now matches the white dial bg so the auto labels stay
+    // invisible — the manual labels below carry the actual readout.
+    lv_obj_set_style_text_color(compass, lv_color_white(), LV_PART_TICKS);
     lv_obj_set_style_text_font(compass, &lv_font_montserrat_20, LV_PART_TICKS);
 
     lv_meter_scale_t* scale = lv_meter_add_scale(compass);
-    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_white());
+    // Round 74: ticks flipped white → black for visibility on the new
+    // white dial.
+    lv_meter_set_scale_ticks(compass, scale, 145, 1, 8, lv_color_black());
     lv_meter_set_scale_major_ticks(compass, scale, 12, 3, 16,
-                                   lv_color_white(), 18);
+                                   lv_color_black(), 18);
     lv_meter_set_scale_range(compass, scale, 0, 360, 360, 270);
     main_pg.compass = compass;
 
-    // Manual mirrored labels (0..180 each side of the bow).
+    // Manual mirrored labels (0..180 each side of the bow). Round 74:
+    // text flipped white → black to read on the new white dial.
     {
         constexpr float kLabelRadius = 188.0f;
         for (int i = 0; i < 12; ++i) {
@@ -859,24 +941,31 @@ void buildMainPage() {
             char buf[8];
             snprintf(buf, sizeof(buf), "%d", val);
             lv_obj_t* lbl = makeLabel(compass, &lv_font_montserrat_20,
-                                      lv_color_white(), buf);
+                                      lv_color_black(), buf);
             lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
         }
     }
 
-    // Close-hauled red/green sectors. Round 55: 20°-60° each side of the
-    // bow (was 0°-60°). Leaves a clean 40° "bow zone" with no colour
-    // around dead-ahead, matching the user's reference where the no-go
-    // markers don't touch the bow.
+    // Close-hauled red/green sectors + black bow-zone wedges. Round 74:
+    // four arcs (was two), with the boundary angle held in g_nogo_half_deg
+    // and adjustable from the Settings page. Default half = 20° gives:
+    //   port red    [270 .. 340]
+    //   port black  [340 .. 360]
+    //   stbd black  [0   .. 20 ]
+    //   stbd green  [20  .. 90 ]
+    // applyNogoSectors() (defined below buildSettingsPage) writes the
+    // start/end values from g_nogo_half_deg; we just create the four
+    // arcs here with placeholder bounds.
     main_pg.port_sector = lv_meter_add_arc(
         compass, scale, 26, lv_color_hex(0xCC0000), -22);
-    lv_meter_set_indicator_start_value(compass, main_pg.port_sector, 300);
-    lv_meter_set_indicator_end_value  (compass, main_pg.port_sector, 340);
-
+    main_pg.port_black  = lv_meter_add_arc(
+        compass, scale, 26, lv_color_black(),       -22);
+    main_pg.stbd_black  = lv_meter_add_arc(
+        compass, scale, 26, lv_color_black(),       -22);
     main_pg.stbd_sector = lv_meter_add_arc(
         compass, scale, 26, lv_color_hex(0x006400), -22);
-    lv_meter_set_indicator_start_value(compass, main_pg.stbd_sector, 20);
-    lv_meter_set_indicator_end_value  (compass, main_pg.stbd_sector, 60);
+    // Initial values populated via applyNogoSectors() at the end of
+    // buildMainPage() once main_pg.compass is assigned.
 
     // ----- Blue "T" target marker on the outer rim -----
     //
@@ -937,7 +1026,9 @@ void buildMainPage() {
         lv_canvas_fill_bg(cone_canvas, lv_color_black(), LV_OPA_TRANSP);
         lv_draw_rect_dsc_t outer_dsc;
         lv_draw_rect_dsc_init(&outer_dsc);
-        outer_dsc.bg_color = lv_color_white();
+        // Round 74: cone outer border flipped white → black so it reads
+        // on the new white dial. Inner blue triangle stays blue.
+        outer_dsc.bg_color = lv_color_black();
         outer_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t outer_tri[3] = {
             {kConeW / 2,                  0},
@@ -994,10 +1085,13 @@ void buildMainPage() {
             const int val = i * 30;  // 000, 030, 060 ... 330
             char buf[8];
             snprintf(buf, sizeof(buf), "%03d", val);
+            // Round 74: non-N labels flipped from light-grey-on-black to
+            // dark-grey-on-white so they remain readable on the new
+            // white dial. The green N marker is unchanged.
             lv_obj_t* lbl = makeLabel(main_pg.inner_ring,
                                       &lv_font_montserrat_16,
                                       i == 0 ? lv_palette_main(LV_PALETTE_GREEN)
-                                             : lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                             : lv_palette_darken(LV_PALETTE_GREY, 3),
                                       i == 0 ? "N" : buf);
             lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
         }
@@ -1071,7 +1165,8 @@ void buildMainPage() {
     lv_obj_t* hull = lv_line_create(compass);
     lv_line_set_points(hull, hull_pts,
                        sizeof(hull_pts) / sizeof(hull_pts[0]));
-    lv_obj_set_style_line_color(hull, lv_color_white(), LV_PART_MAIN);
+    // Round 74: hull line flipped white → black for the white dial.
+    lv_obj_set_style_line_color(hull, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_line_width(hull, 4, LV_PART_MAIN);
     lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
 
@@ -1093,21 +1188,23 @@ void buildMainPage() {
     }
 
     // ----- Boat speed at the stern -----
+    // Round 74: white → black for the white dial.
     main_pg.bspd_lbl = makeLabel(compass, &lv_font_montserrat_28,
-                                 lv_color_white(), "--");
+                                 lv_color_black(), "--");
     lv_obj_align(main_pg.bspd_lbl, LV_ALIGN_CENTER, 0, 145);
 
     // ----- Depth on the right side -----
+    // Round 74: light-grey-on-black labels → dark-grey + black on white.
     {
         lv_obj_t* depth_sub = makeLabel(compass, &lv_font_montserrat_12,
-                                        lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                        lv_palette_darken(LV_PALETTE_GREY, 3),
                                         "DEPTH");
         lv_obj_align(depth_sub, LV_ALIGN_CENTER, 110, -20);
         main_pg.depth_lbl = makeLabel(compass, &lv_font_montserrat_24,
-                                      lv_color_white(), "--");
+                                      lv_color_black(), "--");
         lv_obj_align(main_pg.depth_lbl, LV_ALIGN_CENTER, 110, 0);
         lv_obj_t* depth_unit = makeLabel(compass, &lv_font_montserrat_12,
-                                         lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                         lv_palette_darken(LV_PALETTE_GREY, 3),
                                          "m");
         lv_obj_align(depth_unit, LV_ALIGN_CENTER, 110, 18);
     }
@@ -1119,14 +1216,51 @@ void buildMainPage() {
     // graphical tilt indicator (a vertical line that leans with the
     // boat) once a heel sensor / IMU is available on the bus.
     {
+        // Round 74: subtitle dark-grey on white, value black on white.
         lv_obj_t* heel_sub = makeLabel(compass, &lv_font_montserrat_12,
-                                       lv_palette_lighten(LV_PALETTE_GREY, 2),
+                                       lv_palette_darken(LV_PALETTE_GREY, 3),
                                        "HEEL");
         lv_obj_align(heel_sub, LV_ALIGN_CENTER, -110, -20);
         main_pg.heel_lbl = makeLabel(compass, &lv_font_montserrat_24,
-                                     lv_color_white(), "0\xC2\xB0");
+                                     lv_color_black(), "0\xC2\xB0");
         lv_obj_align(main_pg.heel_lbl, LV_ALIGN_CENTER, -110, 0);
     }
+
+    // Round 74: populate the four no-go-zone arc indicator bounds. The
+    // arcs themselves were created higher up; this single call puts the
+    // start/end values where they need to be based on g_nogo_half_deg.
+    applyNogoSectors();
+}
+
+// Round 74: write g_nogo_half_deg into all four Main-page no-go arcs.
+//
+// Compass coords run 0..360 with 0 at the top (the lv_meter scale was
+// configured with rotation_offset=270 in buildMainPage). With half = H:
+//   port red    [360-90 .. 360-H]   (left of bow)
+//   port black  [360-H  .. 360   ]
+//   stbd black  [0      .. H     ]
+//   stbd green  [H      .. 90    ]
+// At H=0 the two black wedges have zero width (start==end) and lv_meter
+// just doesn't draw them — same visual as the round-71 status quo.
+// At H=89 the coloured bars are 1° slivers.
+void applyNogoSectors() {
+    if (main_pg.compass == nullptr) return;
+    const int h = g_nogo_half_deg;
+    lv_meter_set_indicator_start_value(main_pg.compass, main_pg.port_sector, 270);
+    lv_meter_set_indicator_end_value  (main_pg.compass, main_pg.port_sector, 360 - h);
+    lv_meter_set_indicator_start_value(main_pg.compass, main_pg.port_black,  360 - h);
+    lv_meter_set_indicator_end_value  (main_pg.compass, main_pg.port_black,  360);
+    lv_meter_set_indicator_start_value(main_pg.compass, main_pg.stbd_black,  0);
+    lv_meter_set_indicator_end_value  (main_pg.compass, main_pg.stbd_black,  h);
+    lv_meter_set_indicator_start_value(main_pg.compass, main_pg.stbd_sector, h);
+    lv_meter_set_indicator_end_value  (main_pg.compass, main_pg.stbd_sector, 90);
+}
+
+void refreshSettingsValueLabel() {
+    if (settings_pg.nogo_value_lbl == nullptr) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "\xC2\xB1%d\xC2\xB0", g_nogo_half_deg);
+    lv_label_set_text(settings_pg.nogo_value_lbl, buf);
 }
 
 void buildSimulatorPage() {
@@ -1258,6 +1392,90 @@ void buildDebugPage() {
     lv_obj_set_width(debug_pg.body_lbl, 460);
     lv_obj_set_style_text_line_space(debug_pg.body_lbl, 2, LV_PART_MAIN);
     lv_obj_align(debug_pg.body_lbl, LV_ALIGN_TOP_LEFT, 10, 60);
+}
+
+// Round 74 — Settings page. One adjustable value: WIND NO-GO ZONE (half-
+// angle, applied symmetrically to both port and starboard). Two big
+// tap-targets for −/+, one big readout in the middle.
+//
+// Touch-zone constraints (from round 72): nav fires when the press x is
+// outside [144, 335]. Both buttons are 70 × 70 with their *centres* at
+// x=190 and x=290, giving spans of [155, 225] and [255, 325] — both
+// fully inside the widget-pass-through band, so the user can hammer the
+// buttons without accidentally paging away from the screen.
+//
+// Style: standard black bg + white text (matches the Sim/Debug utility
+// pages — only the Main display flipped to white-on-black per the
+// round-74 spec).
+void buildSettingsPage() {
+    lv_obj_t* scr = lv_obj_create(nullptr);
+    styleScreen(scr);
+    settings_pg.root = scr;
+
+    lv_obj_t* header = makeLabel(scr, &lv_font_montserrat_24,
+                                 lv_color_white(), "SETTINGS");
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t* sub = makeLabel(scr, &lv_font_montserrat_16,
+                              lv_palette_lighten(LV_PALETTE_GREY, 2),
+                              "WIND NO-GO ZONE");
+    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 110);
+
+    settings_pg.nogo_value_lbl = makeLabel(scr, &lv_font_montserrat_48,
+                                           lv_color_white(), "");
+    lv_obj_align(settings_pg.nogo_value_lbl, LV_ALIGN_TOP_MID, 0, 160);
+    refreshSettingsValueLabel();
+
+    // Buttons — 70 × 70, centred at x=190 (−) and x=290 (+).
+    constexpr int kBtnSize = 70;
+    constexpr int kBtnY    = 320;
+
+    auto makeStepBtn = [&](int x_centre, const char* glyph,
+                           int delta) -> lv_obj_t* {
+        lv_obj_t* btn = lv_btn_create(scr);
+        lv_obj_set_size(btn, kBtnSize, kBtnSize);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT,
+                     x_centre - kBtnSize / 2, kBtnY);
+        lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_GREY, 3),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
+
+        lv_obj_t* lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, glyph);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_center(lbl);
+
+        // Stash the delta in user_data; captureless lambda → no per-button
+        // wrapper (same pattern as the round-72 sim-channel toggles).
+        lv_obj_set_user_data(btn, reinterpret_cast<void*>(
+            static_cast<intptr_t>(delta)));
+        lv_obj_add_event_cb(btn, [](lv_event_t* ev) {
+            lv_obj_t* w = lv_event_get_target(ev);
+            const int d = static_cast<int>(reinterpret_cast<intptr_t>(
+                lv_obj_get_user_data(w)));
+            int v = g_nogo_half_deg + d;
+            if (v < kNogoHalfMin) v = kNogoHalfMin;
+            if (v > kNogoHalfMax) v = kNogoHalfMax;
+            if (v == g_nogo_half_deg) return;   // already at the rail
+            g_nogo_half_deg = v;
+            applyNogoSectors();
+            refreshSettingsValueLabel();
+            saveNogoToPrefs();
+        }, LV_EVENT_CLICKED, nullptr);
+        return btn;
+    };
+
+    makeStepBtn(190, "-", -1);
+    makeStepBtn(290, "+",  1);
+
+    // Hint at the bottom — reminds the user that swipe / tap nav still
+    // moves between pages, so they don't expect this page to "submit"
+    // anything (changes are live + persisted on every tap).
+    lv_obj_t* hint = makeLabel(scr, &lv_font_montserrat_12,
+                               lv_palette_lighten(LV_PALETTE_GREY, 1),
+                               "saved automatically");
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 
 // --- Page navigation -------------------------------------------------------
@@ -2063,15 +2281,23 @@ void begin(BoatState& state) {
     indev_drv.read_cb = touchReadCb;
     lv_indev_drv_register(&indev_drv);
 
+    // Round 74: load persisted no-go-zone half-angle BEFORE building the
+    // pages — buildMainPage()'s applyNogoSectors() reads g_nogo_half_deg,
+    // and buildSettingsPage() prints it to the value label.
+    step("load prefs");
+    loadNogoFromPrefs();
+
     step("build pages");
     buildMainPage();
     buildOverviewPage();
     buildDebugPage();
     buildSimulatorPage();
+    buildSettingsPage();
     pages[0] = main_pg.root;       // Main display (Round 54: was wind page)
     pages[1] = overview.root;      // Wind display
     pages[2] = debug_pg.root;      // Debug page
     pages[3] = sim_pg.root;        // Simulator page (raw + derived values)
+    pages[4] = settings_pg.root;   // Round 74: Settings (no-go-zone +/-)
 
     lv_scr_load(pages[0]);
     // Round 39: no LV_EVENT_GESTURE handler — tap detection lives in
