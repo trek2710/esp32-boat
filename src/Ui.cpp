@@ -179,11 +179,11 @@ struct MainPage {
     lv_meter_indicator_t* port_black;    // round 74: black bow-zone wedge (left of 0°)
     lv_meter_indicator_t* stbd_black;    // round 74: black bow-zone wedge (right of 0°)
     lv_meter_indicator_t* stbd_sector;   // green close-hauled (right of bow)
-    lv_meter_indicator_t* target_marker; // blue T triangle on outer rim
+    lv_meter_indicator_t* target_marker; // round 76: yellow TWD triangle on outer rim (was blue T set-course marker)
 
     lv_obj_t* inner_ring;                // rotating compass container
     lv_obj_t* twd_canvas_holder;         // hidden canvas backing the cone
-    lv_meter_indicator_t* twd_arrow;     // blue cone for TWD
+    lv_meter_indicator_t* twd_arrow;     // round 76: yellow slim cone for AWA (was blue wide cone for TWD; field name kept for diff-minimisation)
 
     lv_obj_t* heading_lbl;               // "038" at bow
     lv_obj_t* bspd_lbl;                  // boat speed at stern
@@ -398,6 +398,20 @@ lv_obj_t* makeLabel(lv_obj_t* parent,
     lv_obj_set_style_text_color(lbl, color, LV_PART_MAIN);
     lv_obj_set_style_text_font(lbl, font, LV_PART_MAIN);
     return lbl;
+}
+
+// Round 76: 8-point cardinal direction from a heading in degrees true.
+// Maps 0..360 (with wrap) to N / NE / E / SE / S / SW / W / NW. The
+// +22.5° offset shifts the bin centres so that, for example, 22.5..67.5
+// maps to "NE" (centre 45°) rather than 0..45.
+const char* headingCardinal(double deg) {
+    while (deg <    0.0) deg += 360.0;
+    while (deg >= 360.0) deg -= 360.0;
+    static const char* dirs[8] = {
+        "N", "NE", "E", "SE", "S", "SW", "W", "NW"
+    };
+    int idx = static_cast<int>((deg + 22.5) / 45.0) % 8;
+    return dirs[idx];
 }
 
 // --- Page construction ------------------------------------------------------
@@ -918,7 +932,15 @@ void buildMainPage() {
     lv_obj_set_style_bg_color(scr, lv_color_white(), LV_PART_MAIN);
 
     // ----- Outer ring (FIXED) -----
-    constexpr int kCompassSize = 460;
+    // Round 76: 460 → 480 so the dial fills the round panel and the
+    // no-go-zone wedges reach the bezel (user: "the wedge is not at the
+    // border of the screen anymore"). All children align via
+    // LV_ALIGN_CENTER and stay at screen-centre; only the things
+    // referenced by absolute compass-local coordinates (the boat hull,
+    // the heading box) need their pixel positions re-validated against
+    // the new widget centre at (240, 240) — see the rewritten hull_pts
+    // below and the heading-box centring.
+    constexpr int kCompassSize = 480;
     lv_obj_t* compass = lv_meter_create(scr);
     lv_obj_set_size(compass, kCompassSize, kCompassSize);
     lv_obj_align(compass, LV_ALIGN_CENTER, 0, 0);
@@ -981,25 +1003,35 @@ void buildMainPage() {
     // applyNogoSectors() (defined below buildSettingsPage) writes the
     // start/end values from g_nogo_half_deg; we just create the four
     // arcs here with placeholder bounds.
+    // Round 76: r_mod -22 → 0 so the wedges sit flush to the dial rim
+    // (paired with the kCompassSize 460 → 480 bump above the rim now
+    // coincides with the panel bezel).
     main_pg.port_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_color_hex(0xCC0000), -22);
+        compass, scale, 26, lv_color_hex(0xCC0000), 0);
     main_pg.port_black  = lv_meter_add_arc(
-        compass, scale, 26, lv_color_black(),       -22);
+        compass, scale, 26, lv_color_black(),       0);
     main_pg.stbd_black  = lv_meter_add_arc(
-        compass, scale, 26, lv_color_black(),       -22);
+        compass, scale, 26, lv_color_black(),       0);
     main_pg.stbd_sector = lv_meter_add_arc(
-        compass, scale, 26, lv_color_hex(0x006400), -22);
+        compass, scale, 26, lv_color_hex(0x006400), 0);
     // Initial values populated via applyNogoSectors() at the end of
     // buildMainPage() once main_pg.compass is assigned.
 
-    // ----- Blue "T" target marker on the outer rim -----
+    // ----- True-wind triangle on the outer rim -----
     //
-    // Built as a 36×230 lv_canvas with a blue triangle in the top 26 px
-    // and the letter "T" stamped on top, registered as a needle_img so
-    // we can rotate it to the set-course angle. Bottom 204 px are
-    // transparent (just for the rotation pivot).
+    // Round 76: re-purposed from the round-55 autopilot SET marker
+    // ("blue T target") to a TRUE-WIND-DIRECTION indicator. Visual
+    // changes:
+    //   * blue → yellow (matches the new yellow apparent-wind cone, and
+    //     reads strongly against the white dial)
+    //   * canvas height 230 → 241 so the triangle TIP sits at the
+    //     panel bezel (rotation pivot is at canvas y = kTgtH-1, so tip-
+    //     to-pivot distance equals kTgtH-1 = 240 = screen radius)
+    // Data binding flips from the hardcoded kTargetCourse (round-55
+    // stub) to s.twd in refreshMain() — the user explicitly named this
+    // "the true wind triangle indicator at the edge".
     constexpr int kTgtW = 36;
-    constexpr int kTgtH = 230;
+    constexpr int kTgtH = 241;
     constexpr int kTgtTriH = 26;
     const size_t tgt_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kTgtW, kTgtH);
     lv_color_t* tgt_buf = static_cast<lv_color_t*>(
@@ -1012,7 +1044,8 @@ void buildMainPage() {
 
         lv_draw_rect_dsc_t tri_dsc;
         lv_draw_rect_dsc_init(&tri_dsc);
-        tri_dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE);
+        // Round 76: blue → yellow.
+        tri_dsc.bg_color = lv_palette_main(LV_PALETTE_YELLOW);
         tri_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t tri[3] = {
             {0,            0},
@@ -1020,9 +1053,6 @@ void buildMainPage() {
             {kTgtW / 2,    kTgtTriH},
         };
         lv_canvas_draw_polygon(tgt_canvas, tri, 3, &tri_dsc);
-        // Round 55: dropped the "T" letter — user described it as just a
-        // "blue triangle" in the round-55 spec, so the marker is now a
-        // clean coloured triangle on the rim.
         lv_obj_add_flag(tgt_canvas, LV_OBJ_FLAG_HIDDEN);
 
         main_pg.target_marker = lv_meter_add_needle_img(
@@ -1034,13 +1064,22 @@ void buildMainPage() {
         main_pg.target_marker = nullptr;
     }
 
-    // ----- TWD wide-arrow cone -----
+    // ----- Apparent-wind cone -----
     //
-    // Reuses the round-46 cone canvas pattern but rotated to TWD instead
-    // of AWA. Cone tip at the rim, base just above the boat hull.
-    constexpr int kConeW           = 50;
-    constexpr int kConeH           = 140;
-    constexpr int kConeVisibleBase = 90;
+    // Round 76: previously drove TWD; user re-named this "the apparent
+    // wind direction arrow" and asked for it 30 % longer, ~50 % slimmer
+    // at the base, and yellow. Re-bound to s.awa in refreshMain. The
+    // struct field is still `twd_arrow` for diff-minimisation; the
+    // declaration comment was updated to flag the new role.
+    //
+    // Geometry deltas:
+    //   kConeW            50 → 25   (half-width — "50 % smaller at the centre")
+    //   kConeH           140 → 182  (+30 % longer)
+    //   kConeVisibleBase  90 → 117  (scaled with H so the invisible
+    //                                 pivot offset stays 50 px = 65 px)
+    constexpr int kConeW           = 25;
+    constexpr int kConeH           = 182;
+    constexpr int kConeVisibleBase = 117;
     const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
     lv_color_t* cone_buf = static_cast<lv_color_t*>(
         heap_caps_malloc(cone_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1052,23 +1091,29 @@ void buildMainPage() {
         lv_draw_rect_dsc_t outer_dsc;
         lv_draw_rect_dsc_init(&outer_dsc);
         // Round 74: cone outer border flipped white → black so it reads
-        // on the new white dial. Inner blue triangle stays blue.
+        // on the new white dial. Round 76: keep the black border around
+        // the now-yellow inner so the slim cone stays distinguishable
+        // against any future colour clashes.
         outer_dsc.bg_color = lv_color_black();
         outer_dsc.bg_opa   = LV_OPA_COVER;
+        // Round 76: tighter inset margins (was -5 / -8 with kConeW=50;
+        // at kConeW=25 we reduce to -2 / -3 so the inner triangle still
+        // has visible border on each side).
         const lv_point_t outer_tri[3] = {
             {kConeW / 2,                  0},
-            {kConeW - 5, kConeVisibleBase   },
-            {         5, kConeVisibleBase   },
+            {kConeW - 2, kConeVisibleBase   },
+            {         2, kConeVisibleBase   },
         };
         lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
         lv_draw_rect_dsc_t inner_dsc;
         lv_draw_rect_dsc_init(&inner_dsc);
-        inner_dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE);
+        // Round 76: blue → yellow.
+        inner_dsc.bg_color = lv_palette_main(LV_PALETTE_YELLOW);
         inner_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t inner_tri[3] = {
-            {kConeW / 2,                   6},
-            {kConeW - 8, kConeVisibleBase - 4},
-            {         8, kConeVisibleBase - 4},
+            {kConeW / 2,                   4},
+            {kConeW - 4, kConeVisibleBase - 3},
+            {         4, kConeVisibleBase - 3},
         };
         lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
         lv_obj_add_flag(cone_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -1178,14 +1223,31 @@ void buildMainPage() {
             LV_PART_MAIN);
     }
 
-    // ----- Boat hull at centre (slim 24-point polygon) -----
+    // ----- Boat hull at centre (round 76 redesign) -----
+    //
+    // Geometry deltas from the original 24-point polygon:
+    //   * Recentred from x=230 (matched 460-wide widget) to x=240
+    //     (matches the new 480-wide widget — see kCompassSize).
+    //   * 20 % slimmer overall — the widest body half-width drops 50 → 40
+    //     px so the boat occupies x ∈ [200, 280] at its beam.
+    //   * Flat aft 50 px wider than before — the original stern bottom
+    //     was ~10 px across (x ∈ [225, 235] at y=370). The new aft is a
+    //     single horizontal line from (210, 370) → (270, 370), 60 px
+    //     wide.
+    // The new shape tapers gracefully from the bow at (240, 90) down to
+    // the squared-off transom; the side panels straighten out below
+    // y=330 to meet the flat aft instead of curving inward.
     static const lv_point_t hull_pts[] = {
-        {230,  90}, {238, 108}, {248, 130}, {258, 160}, {268, 190},
-        {276, 220}, {280, 245}, {280, 275}, {275, 305}, {265, 330},
-        {250, 355}, {240, 366}, {235, 370}, {225, 370}, {220, 366},
-        {210, 355}, {195, 330}, {185, 305}, {180, 275}, {180, 245},
-        {184, 220}, {192, 190}, {202, 160}, {212, 130}, {222, 108},
-        {230,  90},
+        // Right side, bow → stern.
+        {240,  90}, {246, 108}, {254, 130}, {262, 160}, {270, 190},
+        {277, 220}, {280, 245}, {280, 275}, {278, 305}, {275, 330},
+        {272, 355}, {270, 370},
+        // Flat aft, right → left.
+        {210, 370},
+        // Left side, stern → bow.
+        {208, 355}, {205, 330}, {202, 305}, {200, 275}, {200, 245},
+        {203, 220}, {210, 190}, {218, 160}, {226, 130}, {234, 108},
+        {240,  90},
     };
     lv_obj_t* hull = lv_line_create(compass);
     lv_line_set_points(hull, hull_pts,
@@ -1195,10 +1257,13 @@ void buildMainPage() {
     lv_obj_set_style_line_width(hull, 4, LV_PART_MAIN);
     lv_obj_set_style_line_rounded(hull, true, LV_PART_MAIN);
 
-    // ----- Heading label "038" at the bow -----
+    // ----- Heading label "038° NE" at the bow -----
+    // Round 76: box widened 64 → 100 to fit the new 8-point cardinal
+    // suffix that the user requested ("add a compass label to the
+    // direction").
     {
         lv_obj_t* hdg_box = lv_obj_create(compass);
-        lv_obj_set_size(hdg_box, 64, 30);
+        lv_obj_set_size(hdg_box, 100, 30);
         lv_obj_align(hdg_box, LV_ALIGN_CENTER, 0, -130);
         lv_obj_set_style_radius(hdg_box, 4, LV_PART_MAIN);
         lv_obj_set_style_bg_color(hdg_box, lv_color_white(), LV_PART_MAIN);
@@ -1212,11 +1277,26 @@ void buildMainPage() {
         lv_obj_align(main_pg.heading_lbl, LV_ALIGN_CENTER, 0, 0);
     }
 
-    // ----- Boat speed at the stern -----
-    // Round 74: white → black for the white dial.
-    main_pg.bspd_lbl = makeLabel(compass, &lv_font_montserrat_28,
-                                 lv_color_black(), "--");
-    lv_obj_align(main_pg.bspd_lbl, LV_ALIGN_CENTER, 0, 145);
+    // ----- Boat speed at the centre (round 76 — was at offset 0,145) -----
+    //
+    // User asked for BSPD "in the center of the screen" with the same
+    // subtitle/value/unit triple as DEPTH. Sits inside the new flat-aft
+    // hull at the widget centre — interior of the hull is unfilled
+    // white, so black-on-white text reads cleanly through the hull
+    // outline.
+    {
+        lv_obj_t* bspd_sub = makeLabel(compass, &lv_font_montserrat_12,
+                                       lv_palette_darken(LV_PALETTE_GREY, 3),
+                                       "BSPD");
+        lv_obj_align(bspd_sub, LV_ALIGN_CENTER, 0, -20);
+        main_pg.bspd_lbl = makeLabel(compass, &lv_font_montserrat_28,
+                                     lv_color_black(), "--");
+        lv_obj_align(main_pg.bspd_lbl, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_t* bspd_unit = makeLabel(compass, &lv_font_montserrat_12,
+                                        lv_palette_darken(LV_PALETTE_GREY, 3),
+                                        "kn");
+        lv_obj_align(bspd_unit, LV_ALIGN_CENTER, 0, 18);
+    }
 
     // ----- Depth on the right side -----
     // Round 74: light-grey-on-black labels → dark-grey + black on white.
@@ -1676,12 +1756,16 @@ void refreshMain(const Instruments& s) {
                                          ang_01, LV_PART_MAIN);
     }
 
-    // Heading label at the bow.
+    // Heading label at the bow. Round 76: now appends the 8-point
+    // cardinal abbreviation (N / NE / E / SE / S / SW / W / NW) so the
+    // readout looks like "038\xC2\xB0 NE".
     if (isnan(s.heading_true_deg)) {
         lv_label_set_text(main_pg.heading_lbl, "---");
     } else {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%03.0f", s.heading_true_deg);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%03.0f\xC2\xB0 %s",
+                 s.heading_true_deg,
+                 headingCardinal(s.heading_true_deg));
         lv_label_set_text(main_pg.heading_lbl, buf);
     }
 
@@ -1704,35 +1788,30 @@ void refreshMain(const Instruments& s) {
         lv_label_set_text(main_pg.depth_lbl, buf);
     }
 
-    // TWD wide-arrow rotated to true wind direction in BOAT-relative
-    // angle (the compass widget's scale is 0..360 with 0 = bow). TWD
-    // is in degrees true; convert to boat frame: twd - heading_true,
-    // normalised to 0..360.
-    if (main_pg.twd_arrow != nullptr &&
+    // Round 76: cone (struct field still named twd_arrow for diff-
+    // minimisation) is now bound to APPARENT wind angle. AWA is already
+    // boat-relative (-180..+180 with + = stbd) so the only conversion
+    // is a -ve→+ve wrap into the meter's 0..360 scale. No heading-true
+    // dependency.
+    if (main_pg.twd_arrow != nullptr && !isnan(s.awa)) {
+        double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
+        lv_meter_set_indicator_value(main_pg.compass,
+                                     main_pg.twd_arrow,
+                                     static_cast<int32_t>(deg));
+    }
+
+    // Round 76: outer-rim triangle is now the TRUE WIND DIRECTION
+    // indicator (was the round-55 hardcoded autopilot SET-course stub).
+    // TWD is in degrees true; convert to boat-frame by subtracting
+    // heading_true and normalising into the meter's 0..360 scale.
+    if (main_pg.target_marker != nullptr &&
         !isnan(s.twd) && !isnan(s.heading_true_deg)) {
         double rel = s.twd - s.heading_true_deg;
         while (rel <    0.0) rel += 360.0;
         while (rel >= 360.0) rel -= 360.0;
         lv_meter_set_indicator_value(main_pg.compass,
-                                     main_pg.twd_arrow,
+                                     main_pg.target_marker,
                                      static_cast<int32_t>(rel));
-    }
-
-    // Round 55: outer-rim target triangle at the BOAT-RELATIVE bearing
-    // to the desired course. The hardcoded target (60° true, see
-    // buildMainPage's kTargetCourse) is in compass coords; convert to
-    // bow-relative by subtracting current heading and normalising into
-    // the meter's 0..360 scale. Hidden if heading isn't known yet.
-    if (main_pg.target_marker != nullptr) {
-        constexpr double kTargetCourse = 60.0;
-        if (!isnan(s.heading_true_deg)) {
-            double rel = kTargetCourse - s.heading_true_deg;
-            while (rel <    0.0) rel += 360.0;
-            while (rel >= 360.0) rel -= 360.0;
-            lv_meter_set_indicator_value(main_pg.compass,
-                                         main_pg.target_marker,
-                                         static_cast<int32_t>(rel));
-        }
     }
 }
 
