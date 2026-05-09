@@ -185,8 +185,9 @@ struct MainPage {
     lv_obj_t* twd_canvas_holder;         // hidden canvas backing the cone
     lv_meter_indicator_t* twd_arrow;     // round 76: yellow slim cone for AWA (was blue wide cone for TWD; field name kept for diff-minimisation)
 
-    lv_obj_t* heading_lbl;               // "038" at bow
-    lv_obj_t* bspd_lbl;                  // boat speed at stern
+    lv_obj_t* heading_lbl;               // "038° NE" at bow (round 76)
+    lv_obj_t* bspd_lbl;                  // boat speed at the centre (round 76)
+    lv_obj_t* aws_lbl;                   // round 77: apparent wind speed below BSPD
     lv_obj_t* depth_lbl;                 // depth on right side
     lv_obj_t* heel_lbl;                  // heel angle on left side
 };
@@ -970,12 +971,13 @@ void buildMainPage() {
     main_pg.compass = compass;
 
     // Manual mirrored labels (0..180 each side of the bow). Round 74:
-    // text flipped white → black to read on the new white dial. Round 75:
-    // the i==0 ("0") label sits on the new black bow-zone wedge (the
-    // wedges span [360-half .. 360] and [0 .. half], i.e. they meet at
-    // exactly 0°), so a black "0" disappears against the black bar.
-    // Force the top label white. The other 11 labels stay black against
-    // the white dial.
+    // text flipped white → black to read on the new white dial. Round 75
+    // briefly forced the top "0" white because it overlapped the black
+    // bow-zone wedge at radius ~205. Round 76 moved the wedge out to
+    // the bezel (r_mod=0, radii 214..240); the manual labels live at
+    // radius 188 — well inside the wedge ring, on white background. The
+    // round-75 special case is therefore reverted: all 12 labels are
+    // black, like before round 75.
     {
         constexpr float kLabelRadius = 188.0f;
         for (int i = 0; i < 12; ++i) {
@@ -986,9 +988,8 @@ void buildMainPage() {
             const int val = (i <= 6) ? (i * 30) : ((12 - i) * 30);
             char buf[8];
             snprintf(buf, sizeof(buf), "%d", val);
-            const lv_color_t c = (i == 0) ? lv_color_white()
-                                          : lv_color_black();
-            lv_obj_t* lbl = makeLabel(compass, &lv_font_montserrat_20, c, buf);
+            lv_obj_t* lbl = makeLabel(compass, &lv_font_montserrat_20,
+                                      lv_color_black(), buf);
             lv_obj_align(lbl, LV_ALIGN_CENTER, dx, dy);
         }
     }
@@ -1074,11 +1075,19 @@ void buildMainPage() {
     //
     // Geometry deltas:
     //   kConeW            50 → 25   (half-width — "50 % smaller at the centre")
-    //   kConeH           140 → 182  (+30 % longer)
-    //   kConeVisibleBase  90 → 117  (scaled with H so the invisible
-    //                                 pivot offset stays 50 px = 65 px)
+    //   kConeH           140 → 215  (round 76 +30 %; round 77 push tip
+    //                                 out to the wedge inner edge)
+    //   kConeVisibleBase  90 → 117  (round 76; unchanged in round 77 so
+    //                                 the visible cone stays the same
+    //                                 length — only the invisible pivot-
+    //                                 padding grew, translating the
+    //                                 whole cone outward without
+    //                                 rescaling it)
+    // Tip-to-pivot distance = kConeH - 1 = 214; with the dial's outer
+    // 26-px wedge band sitting flush to radius 240 (wedges span
+    // 214..240), the cone tip lands right at the wedge inner edge.
     constexpr int kConeW           = 25;
-    constexpr int kConeH           = 182;
+    constexpr int kConeH           = 215;
     constexpr int kConeVisibleBase = 117;
     const size_t cone_buf_sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(kConeW, kConeH);
     lv_color_t* cone_buf = static_cast<lv_color_t*>(
@@ -1277,13 +1286,18 @@ void buildMainPage() {
         lv_obj_align(main_pg.heading_lbl, LV_ALIGN_CENTER, 0, 0);
     }
 
-    // ----- Boat speed at the centre (round 76 — was at offset 0,145) -----
+    // ----- Boat speed (centred) and apparent wind speed (below BSPD) -----
     //
-    // User asked for BSPD "in the center of the screen" with the same
-    // subtitle/value/unit triple as DEPTH. Sits inside the new flat-aft
-    // hull at the widget centre — interior of the hull is unfilled
-    // white, so black-on-white text reads cleanly through the hull
-    // outline.
+    // Round 76 placed BSPD at the widget centre with the DEPTH-style
+    // subtitle/value/unit triple. Round 77 stacks an AWS triple
+    // immediately below it, also inside the hull. Both readouts render
+    // black-on-white through the unfilled hull interior.
+    //
+    // Vertical layout (offsets from widget centre):
+    //   BSPD:  sub y=-20,  value y=0,   unit y=18
+    //   AWS:   sub y=42,   value y=62,  unit y=80
+    // 24-px gap between BSPD's "kn" unit and AWS's "AWS" subtitle so
+    // the two stacks read as separate metrics.
     {
         lv_obj_t* bspd_sub = makeLabel(compass, &lv_font_montserrat_12,
                                        lv_palette_darken(LV_PALETTE_GREY, 3),
@@ -1296,6 +1310,18 @@ void buildMainPage() {
                                         lv_palette_darken(LV_PALETTE_GREY, 3),
                                         "kn");
         lv_obj_align(bspd_unit, LV_ALIGN_CENTER, 0, 18);
+
+        lv_obj_t* aws_sub = makeLabel(compass, &lv_font_montserrat_12,
+                                      lv_palette_darken(LV_PALETTE_GREY, 3),
+                                      "AWS");
+        lv_obj_align(aws_sub, LV_ALIGN_CENTER, 0, 42);
+        main_pg.aws_lbl = makeLabel(compass, &lv_font_montserrat_28,
+                                    lv_color_black(), "--");
+        lv_obj_align(main_pg.aws_lbl, LV_ALIGN_CENTER, 0, 62);
+        lv_obj_t* aws_unit = makeLabel(compass, &lv_font_montserrat_12,
+                                       lv_palette_darken(LV_PALETTE_GREY, 3),
+                                       "kn");
+        lv_obj_align(aws_unit, LV_ALIGN_CENTER, 0, 80);
     }
 
     // ----- Depth on the right side -----
@@ -1769,7 +1795,7 @@ void refreshMain(const Instruments& s) {
         lv_label_set_text(main_pg.heading_lbl, buf);
     }
 
-    // BSPD at the stern.
+    // BSPD at the centre (round 76).
     const double bspd = !isnan(s.stw) ? s.stw : s.sog;
     if (isnan(bspd)) {
         lv_label_set_text(main_pg.bspd_lbl, "--");
@@ -1777,6 +1803,17 @@ void refreshMain(const Instruments& s) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%.1f", bspd);
         lv_label_set_text(main_pg.bspd_lbl, buf);
+    }
+
+    // Round 77: AWS just below BSPD inside the hull.
+    if (main_pg.aws_lbl != nullptr) {
+        if (isnan(s.aws)) {
+            lv_label_set_text(main_pg.aws_lbl, "--");
+        } else {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.1f", s.aws);
+            lv_label_set_text(main_pg.aws_lbl, buf);
+        }
     }
 
     // Depth on the right side.
