@@ -238,13 +238,134 @@ struct SimulatorPage {
 };
 SimulatorPage sim_pg;
 
-// ---- Debug page ----
-struct DebugPage {
-    lv_obj_t* root;
-    lv_obj_t* header_lbl;               // "PGN LOG (N)"
-    lv_obj_t* body_lbl;                 // recent entries, newest first
+// ---- Round 78: Honeycomb PGN page (replaces the round-54 PGN log) ----
+//
+// 19 hexagons in 3 rings on a white screen, fixed slot per PGN, colour-
+// coded by category. Hexes start grey ("never seen any data"), turn
+// category-colour the first time a value arrives, and dim back to a
+// pale variant if the channel has been silent for 10× its observed
+// update interval. Each value update briefly flashes the text in the
+// saturated category tone (~400 ms — chosen to outlast one 250 ms tick
+// refresh so the highlight is reliably visible).
+//
+// Geometry: pointy-top hexes, side s = 50, half-width dx = 43.
+// Centers spaced 86 horizontally and 75 vertically. The 19 axial
+// coordinates inscribe in a circle of radius ≈ 218 inside the panel's
+// 240-radius round bezel.
+//
+// Rendering: ONE 480×480 canvas in PSRAM (~460 KB) holds all 19 hex
+// polygons as background pixels. We re-draw a hex's polygon only when
+// its colour state actually transitions (Empty ↔ Active ↔ Dim) — the
+// flash is a label-only re-colour and never touches the canvas. Three
+// LVGL labels (NAME / VALUE / FREQ) are layered above the canvas per
+// hex, total 19 × 3 = 57 labels.
+
+enum class HexCategory : uint8_t {
+    Wind = 0, Boat = 1, Gps = 2, Temp = 3
 };
-DebugPage debug_pg;
+
+enum class PgnSlot : uint8_t {
+    BSPD, DEP, HEEL, PITCH, ROT, RUD,
+    HDG, SOG, COG, LAT,
+    AWS, AWA, TWS, TWD, TWA,
+    AIR_T, ENG_T, SEA_T, OIL_T,
+    Count_
+};
+
+struct HexDef {
+    PgnSlot     slot;
+    const char* name;
+    HexCategory cat;
+    int8_t      q;     // axial coords (pointy-top)
+    int8_t      r;
+};
+
+constexpr HexDef kHexDefs[] = {
+    // Wind cluster (top of the dial)
+    {PgnSlot::TWA,   "TWA",   HexCategory::Wind,  0, -2},
+    {PgnSlot::TWS,   "TWS",   HexCategory::Wind,  1, -2},
+    {PgnSlot::TWD,   "TWD",   HexCategory::Wind,  2, -2},
+    {PgnSlot::AWS,   "AWS",   HexCategory::Wind,  0, -1},
+    {PgnSlot::AWA,   "AWA",   HexCategory::Wind,  1, -1},
+    // GPS + magnetic compass cluster (right side)
+    {PgnSlot::COG,   "COG",   HexCategory::Gps,   2, -1},
+    {PgnSlot::HDG,   "HDG",   HexCategory::Gps,   1,  0},
+    {PgnSlot::SOG,   "SOG",   HexCategory::Gps,   2,  0},
+    {PgnSlot::LAT,   "LAT",   HexCategory::Gps,   1,  1},
+    // Boat direction / depth / heel cluster (centre + bottom)
+    {PgnSlot::BSPD,  "BSPD",  HexCategory::Boat,  0,  0},
+    {PgnSlot::DEP,   "DEP",   HexCategory::Boat,  0,  1},
+    {PgnSlot::HEEL,  "HEEL",  HexCategory::Boat, -1,  1},
+    {PgnSlot::ROT,   "ROT",   HexCategory::Boat,  0,  2},
+    {PgnSlot::PITCH, "PITCH", HexCategory::Boat, -1,  2},
+    {PgnSlot::RUD,   "RUD",   HexCategory::Boat, -2,  2},
+    // Temperature cluster (left side)
+    {PgnSlot::ENG_T, "ENG-T", HexCategory::Temp, -1,  0},
+    {PgnSlot::AIR_T, "AIR-T", HexCategory::Temp, -2,  0},
+    {PgnSlot::OIL_T, "OIL-T", HexCategory::Temp, -1, -1},
+    {PgnSlot::SEA_T, "SEA-T", HexCategory::Temp, -2,  1},
+};
+constexpr int kNumHexes = sizeof(kHexDefs) / sizeof(kHexDefs[0]);
+static_assert(kNumHexes == 19, "honeycomb expects 19 hexes");
+static_assert(static_cast<int>(PgnSlot::Count_) == 19,
+              "PgnSlot::Count_ must match kNumHexes");
+
+// Per-category palette. bg_hex is the active pastel; flash_hex is the
+// saturated text colour during the post-update flash; dim_bg_hex is
+// the active pastel mixed 50/50 with white (used once the channel has
+// gone silent past its 10× threshold).
+struct HexPalette {
+    uint32_t bg_hex;
+    uint32_t flash_hex;
+    uint32_t dim_bg_hex;
+};
+constexpr HexPalette kHexPalettes[4] = {
+    /* Wind */ {0xC6E0F5, 0x0D47A1, 0xE3F0FA},
+    /* Boat */ {0xCFE8C9, 0x1B5E20, 0xE7F4E4},
+    /* Gps  */ {0xDCD0EC, 0x4A148C, 0xEEE8F6},
+    /* Temp */ {0xF5D7B9, 0xBF360C, 0xFAEBDC},
+};
+constexpr uint32_t kHexGreyBg     = 0xE0E0E0;
+constexpr uint32_t kHexBorderHex  = 0x1A1A1A;
+constexpr uint32_t kHexBlackHex   = 0x111111;
+constexpr uint32_t kHexFreqGrey   = 0x666666;
+constexpr uint32_t kHexDimText    = 0x9E9E9E;
+constexpr uint32_t kHexEmptyText  = 0xBDBDBD;
+
+constexpr uint32_t kFlashDurationMs = 400;
+
+// Drawn-state cache so we only re-blit hex pixels when the colour
+// fill actually changes.
+enum class HexDrawState : uint8_t { Empty, Active, Dim };
+
+struct HexState {
+    lv_obj_t*    name_lbl        = nullptr;
+    lv_obj_t*    value_lbl       = nullptr;
+    lv_obj_t*    freq_lbl        = nullptr;
+    bool         has_data        = false;
+    uint32_t     last_seen_ms    = 0;
+    double       ema_interval_ms = 0.0;
+    uint32_t     flash_until_ms  = 0;
+    HexDrawState drawn           = HexDrawState::Empty;
+};
+HexState g_hex_state[kNumHexes];
+
+struct HoneycombPage {
+    lv_obj_t*   root       = nullptr;
+    lv_obj_t*   canvas     = nullptr;
+    lv_color_t* canvas_buf = nullptr;
+};
+HoneycombPage hc_pg;
+
+// Pointy-top axial → pixel. q steps 86 px horizontally; r steps
+// 75 px vertically and 43 px horizontally (the half-q offset). Center
+// of the 480×480 canvas is (240, 240).
+constexpr int kHexCanvasSize = 480;
+constexpr int kHexS    = 50;
+constexpr int kHexHalf = 25;
+constexpr int kHexDx   = 43;
+inline int hexPx(int q, int r) { return 240 + q * 86 + r * 43; }
+inline int hexPy(int q, int r) { return 240 + r * 75; }
 
 // ---- Settings page (round 74) ----
 //
@@ -1516,21 +1637,182 @@ void buildSimulatorPage() {
 #endif
 }
 
-void buildDebugPage() {
+// Round 78 — draw one hex polygon (1 px black border + filled
+// interior) at (cx, cy) on the honeycomb canvas. Called once per hex
+// at build time, then again only when a hex's drawn state transitions
+// (Empty ↔ Active ↔ Dim). The flash effect never touches the canvas;
+// it's a label-recolour only.
+void drawHex(int cx, int cy, lv_color_t fill) {
+    if (!hc_pg.canvas) return;
+    // Outer (border) polygon at s = 50.
+    lv_point_t outer[6] = {
+        { static_cast<lv_coord_t>(cx),               static_cast<lv_coord_t>(cy - kHexS) },
+        { static_cast<lv_coord_t>(cx + kHexDx),      static_cast<lv_coord_t>(cy - kHexHalf) },
+        { static_cast<lv_coord_t>(cx + kHexDx),      static_cast<lv_coord_t>(cy + kHexHalf) },
+        { static_cast<lv_coord_t>(cx),               static_cast<lv_coord_t>(cy + kHexS) },
+        { static_cast<lv_coord_t>(cx - kHexDx),      static_cast<lv_coord_t>(cy + kHexHalf) },
+        { static_cast<lv_coord_t>(cx - kHexDx),      static_cast<lv_coord_t>(cy - kHexHalf) },
+    };
+    lv_draw_rect_dsc_t border_dsc;
+    lv_draw_rect_dsc_init(&border_dsc);
+    border_dsc.bg_color = lv_color_hex(kHexBorderHex);
+    border_dsc.bg_opa   = LV_OPA_COVER;
+    lv_canvas_draw_polygon(hc_pg.canvas, outer, 6, &border_dsc);
+
+    // Inner (fill) polygon at s = 48 — 1 px inset on every edge so a
+    // dark ring stays visible between adjacent same-category hexes.
+    constexpr int kFillS    = 48;
+    constexpr int kFillHalf = 24;
+    constexpr int kFillDx   = 41;
+    lv_point_t inner[6] = {
+        { static_cast<lv_coord_t>(cx),                static_cast<lv_coord_t>(cy - kFillS) },
+        { static_cast<lv_coord_t>(cx + kFillDx),      static_cast<lv_coord_t>(cy - kFillHalf) },
+        { static_cast<lv_coord_t>(cx + kFillDx),      static_cast<lv_coord_t>(cy + kFillHalf) },
+        { static_cast<lv_coord_t>(cx),                static_cast<lv_coord_t>(cy + kFillS) },
+        { static_cast<lv_coord_t>(cx - kFillDx),      static_cast<lv_coord_t>(cy + kFillHalf) },
+        { static_cast<lv_coord_t>(cx - kFillDx),      static_cast<lv_coord_t>(cy - kFillHalf) },
+    };
+    lv_draw_rect_dsc_t fill_dsc;
+    lv_draw_rect_dsc_init(&fill_dsc);
+    fill_dsc.bg_color = fill;
+    fill_dsc.bg_opa   = LV_OPA_COVER;
+    lv_canvas_draw_polygon(hc_pg.canvas, inner, 6, &fill_dsc);
+}
+
+// Pull the current value + freshness timestamp for a given PGN slot
+// out of the BoatState snapshot. Returns NAN/0 for unwired slots
+// (HEEL / PITCH / ROT / RUD / ENG_T / OIL_T) — those hexes stay grey
+// until a future round wires the corresponding fields.
+void getPgnValue(PgnSlot slot, const Instruments& s,
+                 double& v_out, uint32_t& last_ms_out) {
+    v_out       = NAN;
+    last_ms_out = 0;
+    switch (slot) {
+        case PgnSlot::BSPD:
+            v_out       = !std::isnan(s.stw) ? s.stw : s.sog;
+            last_ms_out = !std::isnan(s.stw) ? s.stw_last_ms : s.gps_last_ms;
+            break;
+        case PgnSlot::DEP:   v_out = s.depth_m;          last_ms_out = s.depth_last_ms;   break;
+        case PgnSlot::HDG:   v_out = s.heading_true_deg; last_ms_out = s.hdg_last_ms;     break;
+        case PgnSlot::SOG:   v_out = s.sog;              last_ms_out = s.gps_last_ms;     break;
+        case PgnSlot::COG:   v_out = s.cog;              last_ms_out = s.gps_last_ms;     break;
+        case PgnSlot::LAT:   v_out = s.lat;              last_ms_out = s.gps_last_ms;     break;
+        case PgnSlot::AWS:   v_out = s.aws;              last_ms_out = s.wind_last_ms;    break;
+        case PgnSlot::AWA:   v_out = s.awa;              last_ms_out = s.wind_last_ms;    break;
+        case PgnSlot::TWS:   v_out = s.tws;              last_ms_out = s.wind_last_ms;    break;
+        case PgnSlot::TWA:   v_out = s.twa;              last_ms_out = s.wind_last_ms;    break;
+        case PgnSlot::TWD:   v_out = s.twd;              last_ms_out = s.wind_last_ms;    break;
+        case PgnSlot::SEA_T: v_out = s.water_temp_c;     last_ms_out = s.depth_last_ms;   break;
+        case PgnSlot::AIR_T: v_out = s.air_temp_c;       last_ms_out = s.air_temp_last_ms;break;
+        // Reserved slots — no data hookup yet, hex stays grey.
+        case PgnSlot::HEEL:
+        case PgnSlot::PITCH:
+        case PgnSlot::ROT:
+        case PgnSlot::RUD:
+        case PgnSlot::ENG_T:
+        case PgnSlot::OIL_T:
+        default:
+            break;
+    }
+    if (std::isnan(v_out)) last_ms_out = 0;
+}
+
+// Format the value text inside a hex.
+void formatPgnValue(PgnSlot slot, double v, char* buf, size_t n) {
+    if (std::isnan(v)) {
+        snprintf(buf, n, "--");
+        return;
+    }
+    switch (slot) {
+        case PgnSlot::HDG: case PgnSlot::SOG: case PgnSlot::COG:
+        case PgnSlot::TWD:
+            snprintf(buf, n, "%03.0f\xC2\xB0", v); break;
+        case PgnSlot::AWA: case PgnSlot::TWA:
+            snprintf(buf, n, "%+.0f\xC2\xB0", v); break;
+        case PgnSlot::LAT:
+            snprintf(buf, n, "%.2f\xC2\xB0", v); break;
+        case PgnSlot::BSPD: case PgnSlot::AWS: case PgnSlot::TWS:
+        case PgnSlot::DEP:
+            snprintf(buf, n, "%.1f", v); break;
+        case PgnSlot::SEA_T: case PgnSlot::AIR_T:
+        case PgnSlot::ENG_T: case PgnSlot::OIL_T:
+            snprintf(buf, n, "%.0f\xC2\xB0", v); break;
+        case PgnSlot::HEEL: case PgnSlot::PITCH: case PgnSlot::RUD:
+            snprintf(buf, n, "%+.0f\xC2\xB0", v); break;
+        case PgnSlot::ROT:
+            snprintf(buf, n, "%+.1f\xC2\xB0/s", v); break;
+        default:
+            snprintf(buf, n, "%.1f", v); break;
+    }
+}
+
+void buildHoneycombPage() {
     lv_obj_t* scr = lv_obj_create(nullptr);
     styleScreen(scr);
-    debug_pg.root = scr;
+    // Round 78 — white background to match the main page.
+    lv_obj_set_style_bg_color(scr, lv_color_white(), LV_PART_MAIN);
+    hc_pg.root = scr;
 
-    debug_pg.header_lbl = makeLabel(scr, &lv_font_montserrat_20,
-                                    lv_color_white(), "PGN LOG (0)");
-    lv_obj_align(debug_pg.header_lbl, LV_ALIGN_TOP_MID, 0, 20);
+    // Allocate the canvas buffer in PSRAM. RGB565 (TRUE_COLOR) — alpha
+    // not needed because the canvas covers the whole screen and any
+    // pixel not painted by a hex stays as the white fill_bg below.
+    const size_t buf_sz =
+        LV_CANVAS_BUF_SIZE_TRUE_COLOR(kHexCanvasSize, kHexCanvasSize);
+    hc_pg.canvas_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!hc_pg.canvas_buf) {
+        log_e("[ui] honeycomb canvas ps_malloc failed (%u bytes)",
+              static_cast<unsigned>(buf_sz));
+        return;
+    }
+    hc_pg.canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(hc_pg.canvas, hc_pg.canvas_buf,
+                         kHexCanvasSize, kHexCanvasSize,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_align(hc_pg.canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_canvas_fill_bg(hc_pg.canvas, lv_color_white(), LV_OPA_COVER);
 
-    debug_pg.body_lbl = makeLabel(scr, &lv_font_montserrat_14,
-                                  lv_color_white(), "(waiting for traffic)");
-    lv_label_set_long_mode(debug_pg.body_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(debug_pg.body_lbl, 460);
-    lv_obj_set_style_text_line_space(debug_pg.body_lbl, 2, LV_PART_MAIN);
-    lv_obj_align(debug_pg.body_lbl, LV_ALIGN_TOP_LEFT, 10, 60);
+    // Draw all 19 hexes in the empty (grey) state and create their
+    // three labels at the right pixel positions inside the hex.
+    for (int i = 0; i < kNumHexes; ++i) {
+        const HexDef& def = kHexDefs[i];
+        const int cx = hexPx(def.q, def.r);
+        const int cy = hexPy(def.q, def.r);
+
+        drawHex(cx, cy, lv_color_hex(kHexGreyBg));
+
+        HexState& st = g_hex_state[i];
+        st.drawn = HexDrawState::Empty;
+
+        // NAME — top of hex (font 14, ~16 px tall)
+        st.name_lbl = makeLabel(scr, &lv_font_montserrat_14,
+                                lv_color_hex(kHexEmptyText), def.name);
+        lv_obj_set_width(st.name_lbl, 78);
+        lv_obj_set_style_text_align(st.name_lbl, LV_TEXT_ALIGN_CENTER,
+                                    LV_PART_MAIN);
+        lv_obj_align(st.name_lbl, LV_ALIGN_TOP_LEFT,
+                     cx - 39, cy - 33);
+
+        // VALUE — middle (font 20, ~22 px tall)
+        st.value_lbl = makeLabel(scr, &lv_font_montserrat_20,
+                                 lv_color_hex(kHexEmptyText), "--");
+        lv_obj_set_width(st.value_lbl, 84);
+        lv_obj_set_style_text_align(st.value_lbl, LV_TEXT_ALIGN_CENTER,
+                                    LV_PART_MAIN);
+        lv_obj_align(st.value_lbl, LV_ALIGN_TOP_LEFT,
+                     cx - 42, cy - 11);
+
+        // FREQ — bottom (font 14, ~16 px tall)
+        st.freq_lbl = makeLabel(scr, &lv_font_montserrat_14,
+                                lv_color_hex(kHexEmptyText), "");
+        lv_obj_set_width(st.freq_lbl, 60);
+        lv_obj_set_style_text_align(st.freq_lbl, LV_TEXT_ALIGN_CENTER,
+                                    LV_PART_MAIN);
+        lv_obj_align(st.freq_lbl, LV_ALIGN_TOP_LEFT,
+                     cx - 30, cy + 17);
+    }
+
+    if (hc_pg.canvas) lv_obj_invalidate(hc_pg.canvas);
 }
 
 // Round 74/75 — Settings page. Two adjustable values, each on its own
@@ -1887,40 +2169,130 @@ void refreshSimulator(const Instruments& s) {
     setVal(sim_pg.vmg_lbl,   s.vmg,              "%.1f kn");
 }
 
-void refreshDebug() {
-    if (!g_state) return;
-    const uint32_t total = g_state->pgnLogTotal();
-    lv_label_set_text_fmt(debug_pg.header_lbl, "PGN LOG (%lu)",
-                          static_cast<unsigned long>(total));
-
-    auto log = g_state->pgnLogSnapshot(); // newest-first
-
-    // Keep it compact: show up to 18 newest non-empty entries. At montserrat_14
-    // with ~460px width that's about as much as fits on the round display.
-    constexpr size_t kMaxShown = 18;
-    char body[1400];
-    size_t off = 0;
-    body[0] = '\0';
-
+// Round 78 — refreshHoneycomb. Walks all 19 hexes; for each, decides
+// whether to flash, transition Empty→Active or Active→Dim, and updates
+// the three labels (NAME / VALUE / FREQ). Re-blits canvas pixels only
+// for hexes whose colour state changed since the last refresh.
+void refreshHoneycomb(const Instruments& s) {
+    if (!hc_pg.canvas) return;
     const uint32_t now = millis();
-    size_t shown = 0;
-    for (const auto& e : log) {
-        if (shown >= kMaxShown) break;
-        if (e.pgn == 0) continue;
-        const uint32_t age = now - e.t_ms;
-        int n = snprintf(body + off, sizeof(body) - off,
-                         "%6lu  %4lu ms  %s\n",
-                         static_cast<unsigned long>(e.pgn),
-                         static_cast<unsigned long>(age),
-                         e.summary);
-        if (n < 0 || static_cast<size_t>(n) >= sizeof(body) - off) break;
-        off += n;
-        shown++;
+
+    char buf[24];
+    bool canvas_dirty = false;
+
+    for (int i = 0; i < kNumHexes; ++i) {
+        const HexDef& def = kHexDefs[i];
+        HexState& st = g_hex_state[i];
+
+        double v;
+        uint32_t lm;
+        getPgnValue(def.slot, s, v, lm);
+
+        // ---- detect a fresh update -----------------------------------
+        // EMA only updates for "reasonable" intervals: we skip dt
+        // > 30 s so the average isn't poisoned by page-was-hidden gaps
+        // or by a channel that dropped and resumed.
+        if (lm != 0 && lm != st.last_seen_ms) {
+            if (st.last_seen_ms != 0) {
+                const uint32_t dt = lm - st.last_seen_ms;
+                if (dt < 30000u) {
+                    if (st.ema_interval_ms == 0.0) {
+                        st.ema_interval_ms = dt;
+                    } else {
+                        st.ema_interval_ms =
+                            0.7 * st.ema_interval_ms + 0.3 * dt;
+                    }
+                }
+            }
+            st.last_seen_ms   = lm;
+            st.has_data       = true;
+            st.flash_until_ms = now + kFlashDurationMs;
+        }
+
+        // ---- decide which "drawn state" the hex should be in ---------
+        // Empty:  never received any data.
+        // Active: data is fresh (within 10× its observed interval, or
+        //         within 10 s if we don't have an observed interval yet).
+        // Dim:    has_data but channel has been silent past that
+        //         threshold — keep the colour but mute the saturation.
+        HexDrawState target;
+        if (!st.has_data) {
+            target = HexDrawState::Empty;
+        } else {
+            const uint32_t threshold_ms = (st.ema_interval_ms > 0.0)
+                ? static_cast<uint32_t>(10.0 * st.ema_interval_ms)
+                : 10000u;
+            const uint32_t age = now - st.last_seen_ms;
+            target = (age > threshold_ms)
+                ? HexDrawState::Dim
+                : HexDrawState::Active;
+        }
+
+        if (target != st.drawn) {
+            const HexPalette& pal =
+                kHexPalettes[static_cast<int>(def.cat)];
+            uint32_t fill_hex;
+            switch (target) {
+                case HexDrawState::Empty:  fill_hex = kHexGreyBg;     break;
+                case HexDrawState::Active: fill_hex = pal.bg_hex;     break;
+                case HexDrawState::Dim:    fill_hex = pal.dim_bg_hex; break;
+            }
+            drawHex(hexPx(def.q, def.r), hexPy(def.q, def.r),
+                    lv_color_hex(fill_hex));
+            st.drawn     = target;
+            canvas_dirty = true;
+        }
+
+        // ---- update labels -------------------------------------------
+        const HexPalette& pal =
+            kHexPalettes[static_cast<int>(def.cat)];
+        const bool flashing = (now < st.flash_until_ms);
+
+        lv_color_t name_c, value_c, freq_c;
+        if (target == HexDrawState::Empty) {
+            // Unpopulated: muted text, "--" for value, no Hz.
+            name_c  = lv_color_hex(kHexEmptyText);
+            value_c = lv_color_hex(kHexEmptyText);
+            freq_c  = lv_color_hex(kHexEmptyText);
+            lv_label_set_text(st.value_lbl, "--");
+            lv_label_set_text(st.freq_lbl,  "");
+        } else {
+            // Populated. Format value + Hz.
+            formatPgnValue(def.slot, v, buf, sizeof(buf));
+            lv_label_set_text(st.value_lbl, buf);
+
+            if (st.ema_interval_ms > 0.0) {
+                const double hz = 1000.0 / st.ema_interval_ms;
+                if (hz >= 10.0) {
+                    snprintf(buf, sizeof(buf), "%.0f Hz", hz);
+                } else {
+                    snprintf(buf, sizeof(buf), "%.1f Hz", hz);
+                }
+            } else {
+                buf[0] = '\0';
+            }
+            lv_label_set_text(st.freq_lbl, buf);
+
+            if (flashing) {
+                name_c  = lv_color_hex(pal.flash_hex);
+                value_c = lv_color_hex(pal.flash_hex);
+                freq_c  = lv_color_hex(pal.flash_hex);
+            } else if (target == HexDrawState::Dim) {
+                name_c  = lv_color_hex(kHexDimText);
+                value_c = lv_color_hex(kHexDimText);
+                freq_c  = lv_color_hex(kHexDimText);
+            } else {
+                name_c  = lv_color_hex(kHexBlackHex);
+                value_c = lv_color_hex(kHexBlackHex);
+                freq_c  = lv_color_hex(kHexFreqGrey);
+            }
+        }
+        lv_obj_set_style_text_color(st.name_lbl,  name_c,  LV_PART_MAIN);
+        lv_obj_set_style_text_color(st.value_lbl, value_c, LV_PART_MAIN);
+        lv_obj_set_style_text_color(st.freq_lbl,  freq_c,  LV_PART_MAIN);
     }
-    if (shown == 0) {
-        snprintf(body, sizeof(body), "(waiting for traffic)");
-    }
-    lv_label_set_text(debug_pg.body_lbl, body);
+
+    if (canvas_dirty) lv_obj_invalidate(hc_pg.canvas);
 }
 
 void refreshFromState() {
@@ -1932,7 +2304,7 @@ void refreshFromState() {
     switch (current_page) {
         case 0: refreshMain(s);            break;
         case 1: refreshOverview(s);        break;
-        case 2: refreshDebug();            break;
+        case 2: refreshHoneycomb(s);       break;  // round 78 (was refreshDebug)
         case 3: refreshSimulator(s);       break;
     }
 }
@@ -2495,12 +2867,12 @@ void begin(BoatState& state) {
     step("build pages");
     buildMainPage();
     buildOverviewPage();
-    buildDebugPage();
+    buildHoneycombPage();          // round 78 (replaces buildDebugPage)
     buildSimulatorPage();
     buildSettingsPage();
     pages[0] = main_pg.root;       // Main display (Round 54: was wind page)
     pages[1] = overview.root;      // Wind display
-    pages[2] = debug_pg.root;      // Debug page
+    pages[2] = hc_pg.root;         // Round 78: PGN honeycomb (was debug log)
     pages[3] = sim_pg.root;        // Simulator page (raw + derived values)
     pages[4] = settings_pg.root;   // Round 74: Settings (no-go-zone +/-)
 

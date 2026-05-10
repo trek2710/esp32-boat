@@ -117,6 +117,16 @@ void BoatState::setDepth(double depth_m, double water_temp_c) {
     recomputeDerived_locked();
 }
 
+// Round 78 — outdoor air temperature setter. No derived fields depend
+// on it (yet — wind-chill, density-altitude could be future), so we
+// skip recomputeDerived_locked() to avoid pointlessly re-running the
+// wind-triangle math on every air-temp update.
+void BoatState::setAirTemp(double air_temp_c) {
+    Lock l(mutex_);
+    i_.air_temp_c       = air_temp_c;
+    i_.air_temp_last_ms = millis();
+}
+
 // ---- derive ---------------------------------------------------------------
 
 void BoatState::recomputeDerived_locked() {

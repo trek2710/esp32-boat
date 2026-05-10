@@ -84,8 +84,16 @@ struct Instruments {
 
     // Depth / water (depth sounder + temperature probe).
     double   depth_m        = NAN;   // metres below transducer
-    double   water_temp_c   = NAN;   // °C
+    double   water_temp_c   = NAN;   // °C  (sea temp)
     uint32_t depth_last_ms  = 0;
+
+    // Outdoor (air) temperature. Round 78 — populated by the simulator
+    // for v1; production reads it from PGN 130316 with temp_src =
+    // OutsideTemperature (handler added in round 78). ENG_T / OIL_T
+    // are intentionally not represented here yet — their hexes on the
+    // round-78 PGN page stay grey until a real engine bridge lands.
+    double   air_temp_c       = NAN; // °C
+    uint32_t air_temp_last_ms = 0;
 
     // Magnetic compass heading. NMEA 2000 PGN 127250 publishes magnetic by
     // default; the device adds the variation to derive true heading below.
@@ -137,6 +145,7 @@ public:
     void setMagneticVariation(double variation_deg);
     void setStw(double stw);
     void setDepth(double depth_m, double water_temp_c);
+    void setAirTemp(double air_temp_c);  // round 78 — outdoor air temp
 
     // AIS target book-keeping.
     // Targets older than kAisStaleMs are dropped on each update.

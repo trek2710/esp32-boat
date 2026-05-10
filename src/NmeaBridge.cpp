@@ -158,6 +158,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
                 if (temp_src == N2kts_SeaTemperature) {
                     auto snap = s.snapshot();
                     s.setDepth(snap.depth_m, temp_k - 273.15);
+                } else if (temp_src == N2kts_OutsideTemperature) {
+                    // Round 78 — populate the air-temp hex on the PGN
+                    // page when a real outside-temp probe is on the bus.
+                    s.setAirTemp(temp_k - 273.15);
                 }
                 snprintf(summary, sizeof(summary), "Temp src=%u t=%.1fC",
                          static_cast<unsigned>(temp_src), temp_k - 273.15);
@@ -372,6 +376,19 @@ void NmeaBridge::simulateTick() {
     if (g_sim_enables.depth && (now - last_depth_pub_ms >= kDepthIntervalMs)) {
         state_.setDepth(depth, temp_c);
         last_depth_pub_ms = now;
+    }
+
+    // Round 78 — outdoor air temperature. ENG-T / OIL-T are deliberately
+    // NOT simulated (per round-78 spec: "make room for engine but don't
+    // simulate it"); their hexes on the PGN page stay grey until a real
+    // engine bridge lands. Air temp drifts slowly around 18 °C, published
+    // every 2 s to match the NMEA 2000 PGN 130316 transmission interval.
+    constexpr uint32_t kAirTempIntervalMs = 2000;
+    static uint32_t last_air_pub_ms = 0;
+    if (now - last_air_pub_ms >= kAirTempIntervalMs) {
+        const double air_temp_c = 18.0 + 2.0 * sin(t * 0.05);
+        state_.setAirTemp(air_temp_c);
+        last_air_pub_ms = now;
     }
 
     // Fire simulated PGN log entries on their per-PGN intervals so the
