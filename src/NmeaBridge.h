@@ -57,7 +57,9 @@ private:
 //                                             TWD/VMG)
 //   heading → setMagneticHeading + setMagneticVariation
 //   stw     → setStw(stw)
-//   depth   → setDepth(depth_m, water_temp_c)
+//   depth   → setDepth(depth_m) + setSeaTemp(water_temp_c)   (round 78
+//             follow-up split: depth at 1 Hz, sea temp at 0.5 Hz, both
+//             gated on this same flag)
 //
 // When a flag is false the setter is skipped AND the matching PGN log
 // entries are suppressed, so the Debug page also shows the channel going

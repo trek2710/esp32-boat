@@ -1702,7 +1702,7 @@ void getPgnValue(PgnSlot slot, const Instruments& s,
         case PgnSlot::TWS:   v_out = s.tws;              last_ms_out = s.wind_last_ms;    break;
         case PgnSlot::TWA:   v_out = s.twa;              last_ms_out = s.wind_last_ms;    break;
         case PgnSlot::TWD:   v_out = s.twd;              last_ms_out = s.wind_last_ms;    break;
-        case PgnSlot::SEA_T: v_out = s.water_temp_c;     last_ms_out = s.depth_last_ms;   break;
+        case PgnSlot::SEA_T: v_out = s.water_temp_c;     last_ms_out = s.water_temp_last_ms; break;
         case PgnSlot::AIR_T: v_out = s.air_temp_c;       last_ms_out = s.air_temp_last_ms;break;
         // Reserved slots — no data hookup yet, hex stays grey.
         case PgnSlot::HEEL:

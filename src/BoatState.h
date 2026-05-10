@@ -83,9 +83,15 @@ struct Instruments {
     uint32_t wind_last_ms   = 0;
 
     // Depth / water (depth sounder + temperature probe).
-    double   depth_m        = NAN;   // metres below transducer
-    double   water_temp_c   = NAN;   // °C  (sea temp)
-    uint32_t depth_last_ms  = 0;
+    // Round 78 follow-up: depth and sea temp now have INDEPENDENT
+    // timestamps because they ride on different NMEA 2000 PGNs at
+    // different spec cadences — PGN 128267 Water Depth at 1 Hz,
+    // PGN 130316 Temperature (Sea) at 0.5 Hz. The honeycomb PGN
+    // page reads each hex's Hz from its own *_last_ms.
+    double   depth_m            = NAN;   // metres below transducer
+    uint32_t depth_last_ms      = 0;
+    double   water_temp_c       = NAN;   // °C (sea temp, PGN 130316)
+    uint32_t water_temp_last_ms = 0;
 
     // Outdoor (air) temperature. Round 78 — populated by the simulator
     // for v1; production reads it from PGN 130316 with temp_src =
@@ -144,7 +150,11 @@ public:
     void setMagneticHeading(double heading_mag_deg);
     void setMagneticVariation(double variation_deg);
     void setStw(double stw);
-    void setDepth(double depth_m, double water_temp_c);
+    // Round 78 follow-up: depth-only setter; sea temp moved to
+    // setSeaTemp() so it can publish at the PGN 130316 2 s spec
+    // cadence independent of depth's 1 Hz.
+    void setDepth(double depth_m);
+    void setSeaTemp(double water_temp_c);
     void setAirTemp(double air_temp_c);  // round 78 — outdoor air temp
 
     // AIS target book-keeping.

@@ -107,14 +107,21 @@ void BoatState::setStw(double stw) {
     recomputeDerived_locked();
 }
 
-void BoatState::setDepth(double depth_m, double water_temp_c) {
+// Round 78 follow-up — depth is now its own setter (no sea-temp
+// piggyback). Skips recomputeDerived_locked because no derived field
+// depends on depth.
+void BoatState::setDepth(double depth_m) {
     Lock l(mutex_);
-    i_.depth_m      = depth_m;
-    i_.water_temp_c = water_temp_c;
+    i_.depth_m       = depth_m;
     i_.depth_last_ms = millis();
-    // Depth doesn't feed any derived value, but keep the call here for
-    // consistency in case future derived fields depend on it.
-    recomputeDerived_locked();
+}
+
+// Round 78 follow-up — split out from setDepth so PGN 130316 sea-temp
+// gets its own 2 s spec cadence. No derived value reads water_temp_c.
+void BoatState::setSeaTemp(double water_temp_c) {
+    Lock l(mutex_);
+    i_.water_temp_c       = water_temp_c;
+    i_.water_temp_last_ms = millis();
 }
 
 // Round 78 — outdoor air temperature setter. No derived fields depend

@@ -141,8 +141,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             unsigned char sid;
             double depth_below_transducer_m = NAN, offset_m = NAN, range_m = NAN;
             if (ParseN2kPGN128267(msg, sid, depth_below_transducer_m, offset_m, range_m)) {
-                auto snap = s.snapshot();
-                s.setDepth(depth_below_transducer_m, snap.water_temp_c);
+                // Round 78 follow-up: depth-only setter. Sea temp now
+                // comes in via PGN 130316 → setSeaTemp() below, with
+                // its own timestamp tracking for the honeycomb's Hz.
+                s.setDepth(depth_below_transducer_m);
                 snprintf(summary, sizeof(summary), "Depth %.1fm", depth_below_transducer_m);
             } else {
                 snprintf(summary, sizeof(summary), "Depth (parse failed)");
@@ -156,8 +158,10 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
             double temp_k = NAN, set_temp_k = NAN;
             if (ParseN2kPGN130316(msg, sid, temp_instance, temp_src, temp_k, set_temp_k)) {
                 if (temp_src == N2kts_SeaTemperature) {
-                    auto snap = s.snapshot();
-                    s.setDepth(snap.depth_m, temp_k - 273.15);
+                    // Round 78 follow-up: split-out sea-temp setter.
+                    // No more snapshot+setDepth dance — sea temp owns
+                    // its own field + timestamp now.
+                    s.setSeaTemp(temp_k - 273.15);
                 } else if (temp_src == N2kts_OutsideTemperature) {
                     // Round 78 — populate the air-temp hex on the PGN
                     // page when a real outside-temp probe is on the bus.
@@ -374,8 +378,20 @@ void NmeaBridge::simulateTick() {
         last_stw_pub_ms = now;
     }
     if (g_sim_enables.depth && (now - last_depth_pub_ms >= kDepthIntervalMs)) {
-        state_.setDepth(depth, temp_c);
+        state_.setDepth(depth);
         last_depth_pub_ms = now;
+    }
+
+    // Round 78 follow-up — sea temp now publishes at PGN 130316's
+    // 2 s spec cadence (was piggybacked on depth's 1 Hz). Still gated
+    // on g_sim_enables.depth: that toggle on the Sim page silences the
+    // whole "water-instruments" group (depth + sea temp).
+    constexpr uint32_t kSeaTempIntervalMs = 2000;
+    static uint32_t last_sea_temp_pub_ms = 0;
+    if (g_sim_enables.depth &&
+        (now - last_sea_temp_pub_ms >= kSeaTempIntervalMs)) {
+        state_.setSeaTemp(temp_c);
+        last_sea_temp_pub_ms = now;
     }
 
     // Round 78 — outdoor air temperature. ENG-T / OIL-T are deliberately
