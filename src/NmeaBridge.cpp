@@ -6,7 +6,7 @@
 
 #include "magnetic_variation.h"
 
-#if !SIMULATED_DATA
+#if !SIMULATED_DATA && !DATA_SOURCE_BLE
 #include <NMEA2000_CAN.h>   // pulls in the backend for the current platform
 #include <N2kMessages.h>    // Parse* helpers + msToKnots / radToDeg already defined here
 #endif
@@ -24,7 +24,7 @@ NmeaBridge::NmeaBridge(BoatState& state) : state_(state) {}
 // ============================================================================
 // Production build — real NMEA 2000 stack.
 // ============================================================================
-#if !SIMULATED_DATA
+#if !SIMULATED_DATA && !DATA_SOURCE_BLE
 
 NmeaBridge* NmeaBridge::instance_ = nullptr;
 
@@ -229,7 +229,302 @@ void NmeaBridge::handleMsg(const tN2kMsg& msg) {
     s.logPgn(static_cast<uint32_t>(msg.PGN), src, summary);
 }
 
-#endif // !SIMULATED_DATA
+#endif // !SIMULATED_DATA && !DATA_SOURCE_BLE
+
+
+// ============================================================================
+// BLE-bridged build (step 4) — NimBLE central; subscribes to esp32-boat-tx.
+// ============================================================================
+#if DATA_SOURCE_BLE
+
+#include <NimBLEDevice.h>
+#include <BoatBle.h>           // shared wire protocol (include/ on the path)
+#include <cstdint>             // INT16_MIN
+#include <cstring>             // memcpy
+
+namespace {
+
+// ---- Tunables --------------------------------------------------------------
+
+// We scan continuously when there's no link. setActiveScan() makes the
+// peripheral respond with its scan response (which carries the name) — we
+// need that to match by name. 100 ms / 100 ms = 100% duty cycle.
+constexpr uint16_t kScanIntervalMs = 100;
+constexpr uint16_t kScanWindowMs   = 100;
+
+// On disconnect, NimBLE delivers a callback first; we then restart the
+// scan from bleTick() (not from the callback — re-entering NimBLE host
+// task from a callback is dicey on 1.4.x). The flag below routes the
+// work over to the main loop.
+constexpr uint32_t kReconnectGuardMs = 250;
+
+// ---- File-scope state ------------------------------------------------------
+//
+// NimBLE's host task drives the writers (advertising, connect, notify
+// callbacks). The main loop (UI / status getters) is the reader. We keep
+// reader-visible state in plain `volatile` variables; 32-bit reads/writes
+// on the S3 are atomic, so this is safe without explicit barriers. The
+// peer-MAC string is a fixed-size buffer and a slightly racy read can at
+// worst show the previous link's address for one frame — acceptable.
+
+BoatState*        g_bleState        = nullptr;  // shortcut into bridge.state_
+NimBLEClient*     g_client          = nullptr;
+NimBLEAdvertisedDevice* g_targetDev = nullptr;  // populated by advert callback
+volatile bool     g_wantConnect     = false;    // hand-off flag
+volatile bool     g_wantReconnect   = false;    // restart scan after a drop
+uint32_t          g_reconnectAfter  = 0;        // millis() guard before reconnect
+volatile bool     g_connected       = false;
+volatile int      g_rssi            = INT16_MIN;
+volatile uint32_t g_notifyCount[NmeaBridge::BLE_CH_COUNT] = {0};
+char              g_peerMac[18]     = {0};      // "AA:BB:CC:DD:EE:FF\0"
+
+// Handles to the five NOTIFY characteristics, captured on connect.
+NimBLERemoteCharacteristic* g_charWind      = nullptr;
+NimBLERemoteCharacteristic* g_charGps       = nullptr;
+NimBLERemoteCharacteristic* g_charHeading   = nullptr;
+NimBLERemoteCharacteristic* g_charDepthTemp = nullptr;
+NimBLERemoteCharacteristic* g_charAttitude  = nullptr;
+
+// Convert raw fixed-point integers from BoatBle.h PDUs to the doubles
+// BoatState wants. Trivial scales — kept as inlines for clarity.
+inline double deg10ToDeg(int16_t v)     { return v * 0.1; }
+inline double deg10ToDegU(uint16_t v)   { return v * 0.1; }
+inline double kt100ToKt(uint16_t v)     { return v * 0.01; }
+inline double m10ToM(uint16_t v)        { return v * 0.1; }
+inline double c10ToC(int16_t v)         { return v * 0.1; }
+inline double e7ToDeg(int32_t v)        { return v * 1e-7; }
+
+// ---- Notification handlers (one per characteristic) -----------------------
+//
+// Each runs on the NimBLE host task. We decode the PDU, run the masked
+// fields through BoatState's setters (which take the mutex internally),
+// and bump the per-channel counter. If the PDU length doesn't match, we
+// drop it silently — partial frames aren't actionable here.
+
+// BoatBle.h valid_mask bits (verified against include/BoatBle.h):
+//   Wind:        bit 0 TWA, 1 TWS, 2 TWD, 3 AWA, 4 AWS
+//   Gps:         bit 0 LAT, 1 LON, 2 COG, 3 SOG
+//   Heading:     bit 0 HDG, 1 BSPD
+//   DepthTemp:   bit 0 DEP, 1 AIR-T, 2 SEA-T
+//   Attitude:    bit 0 HEEL, 1 PITCH, 2 ROT (unused on RX for v1)
+
+void onNotifyWind(NimBLERemoteCharacteristic*,
+                  uint8_t* data, size_t len, bool) {
+    if (len != sizeof(boatble::WindPdu) || !g_bleState) return;
+    boatble::WindPdu pdu;
+    memcpy(&pdu, data, sizeof(pdu));
+    const bool haveAwa = (pdu.valid_mask & (1 << 3)) != 0;
+    const bool haveAws = (pdu.valid_mask & (1 << 4)) != 0;
+    if (haveAwa && haveAws) {
+        g_bleState->setApparentWind(deg10ToDeg(pdu.awa_deg10),
+                                    kt100ToKt(pdu.aws_kt100));
+    }
+    g_notifyCount[NmeaBridge::BLE_CH_WIND]++;
+}
+
+void onNotifyGps(NimBLERemoteCharacteristic*,
+                 uint8_t* data, size_t len, bool) {
+    if (len != sizeof(boatble::GpsPdu) || !g_bleState) return;
+    boatble::GpsPdu pdu;
+    memcpy(&pdu, data, sizeof(pdu));
+    const bool haveLat = (pdu.valid_mask & (1 << 0)) != 0;
+    const bool haveLon = (pdu.valid_mask & (1 << 1)) != 0;
+    if (haveLat && haveLon) {
+        g_bleState->setGps(e7ToDeg(pdu.lat_e7), e7ToDeg(pdu.lon_e7));
+    }
+    g_notifyCount[NmeaBridge::BLE_CH_GPS]++;
+}
+
+void onNotifyHeading(NimBLERemoteCharacteristic*,
+                     uint8_t* data, size_t len, bool) {
+    if (len != sizeof(boatble::HeadingPdu) || !g_bleState) return;
+    boatble::HeadingPdu pdu;
+    memcpy(&pdu, data, sizeof(pdu));
+    if (pdu.valid_mask & (1 << 0)) {
+        g_bleState->setMagneticHeading(deg10ToDegU(pdu.hdg_deg10));
+    }
+    if (pdu.valid_mask & (1 << 1)) {
+        g_bleState->setStw(kt100ToKt(pdu.bspd_kt100));
+    }
+    g_notifyCount[NmeaBridge::BLE_CH_HEADING]++;
+}
+
+void onNotifyDepthTemp(NimBLERemoteCharacteristic*,
+                       uint8_t* data, size_t len, bool) {
+    if (len != sizeof(boatble::DepthTempPdu) || !g_bleState) return;
+    boatble::DepthTempPdu pdu;
+    memcpy(&pdu, data, sizeof(pdu));
+    if (pdu.valid_mask & (1 << 0)) g_bleState->setDepth(m10ToM(pdu.dep_m10));
+    if (pdu.valid_mask & (1 << 1)) g_bleState->setAirTemp(c10ToC(pdu.air_temp_c10));
+    if (pdu.valid_mask & (1 << 2)) g_bleState->setSeaTemp(c10ToC(pdu.sea_temp_c10));
+    g_notifyCount[NmeaBridge::BLE_CH_DEPTH_TEMP]++;
+}
+
+void onNotifyAttitude(NimBLERemoteCharacteristic*,
+                      uint8_t* data, size_t /*len*/, bool) {
+    // We don't push heel/pitch/etc. into BoatState yet — the existing UI
+    // doesn't render them. Counter increment + drop is enough to prove
+    // the channel is alive on the Communication page.
+    (void)data;
+    if (!g_bleState) return;
+    g_notifyCount[NmeaBridge::BLE_CH_ATTITUDE]++;
+}
+
+// ---- Advertising scan callback --------------------------------------------
+class AdvertCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* dev) override {
+        if (!dev->haveName() || dev->getName() != BOAT_BLE_DEVICE_NAME) return;
+        // Match — stop scanning and hand the device off to bleTick().
+        NimBLEDevice::getScan()->stop();
+        g_targetDev   = dev;
+        g_wantConnect = true;
+    }
+};
+AdvertCallbacks g_advertCb;
+
+// ---- Client connect/disconnect --------------------------------------------
+class ClientCallbacks : public NimBLEClientCallbacks {
+    void onConnect(NimBLEClient* c) override {
+        g_connected = true;
+        const auto addr = c->getPeerAddress();
+        // toString() returns "aa:bb:cc:dd:ee:ff" lowercase; we copy in
+        // upper-case for the UI to be a bit more readable.
+        std::string s = addr.toString();
+        size_t i = 0;
+        for (; i < s.size() && i < sizeof(g_peerMac) - 1; ++i) {
+            char ch = s[i];
+            if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
+            g_peerMac[i] = ch;
+        }
+        g_peerMac[i] = '\0';
+    }
+    void onDisconnect(NimBLEClient*) override {
+        g_connected      = false;
+        g_rssi           = INT16_MIN;
+        g_peerMac[0]     = '\0';
+        g_charWind = g_charGps = g_charHeading = nullptr;
+        g_charDepthTemp = g_charAttitude = nullptr;
+        if (g_bleState) g_bleState->invalidateLiveData();
+        // Hand the reconnect to bleTick() — re-entering NimBLE from this
+        // callback context is unsafe on 1.4.x.
+        g_reconnectAfter = millis() + kReconnectGuardMs;
+        g_wantReconnect  = true;
+    }
+};
+ClientCallbacks g_clientCb;
+
+// ---- One-shot connect (driven from bleTick) -------------------------------
+//
+// 1. Connect to the device captured by the advert callback.
+// 2. Walk the service, find each of the five NOTIFY chars by UUID.
+// 3. Subscribe each with its notify callback.
+// 4. If anything fails along the way, disconnect and let the disconnect
+//    callback restart the scan.
+
+bool subscribeAll() {
+    if (!g_client) return false;
+    NimBLERemoteService* svc = g_client->getService(BOAT_BLE_SERVICE_UUID);
+    if (!svc) return false;
+
+    struct Slot {
+        const char*                   uuid;
+        NimBLERemoteCharacteristic**  out;
+        void (*cb)(NimBLERemoteCharacteristic*, uint8_t*, size_t, bool);
+    } slots[] = {
+        { BOAT_BLE_WIND_UUID,        &g_charWind,      onNotifyWind        },
+        { BOAT_BLE_GPS_UUID,         &g_charGps,       onNotifyGps         },
+        { BOAT_BLE_HEADING_UUID,     &g_charHeading,   onNotifyHeading     },
+        { BOAT_BLE_DEPTH_TEMP_UUID,  &g_charDepthTemp, onNotifyDepthTemp   },
+        { BOAT_BLE_ATTITUDE_UUID,    &g_charAttitude,  onNotifyAttitude    },
+    };
+    for (auto& slot : slots) {
+        NimBLERemoteCharacteristic* ch = svc->getCharacteristic(slot.uuid);
+        if (!ch || !ch->canNotify() || !ch->subscribe(true, slot.cb)) {
+            Serial.printf("[ble] subscribe failed for %s\n", slot.uuid);
+            return false;
+        }
+        *slot.out = ch;
+    }
+    return true;
+}
+
+void startScan() {
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    scan->setAdvertisedDeviceCallbacks(&g_advertCb, false);
+    scan->setActiveScan(true);
+    scan->setInterval(kScanIntervalMs);
+    scan->setWindow(kScanWindowMs);
+    scan->start(0 /*duration: continuous*/, nullptr, false);
+}
+
+}  // namespace
+
+bool NmeaBridge::begin() {
+    Serial.println(F("[ble] NmeaBridge starting as BLE central"));
+    g_bleState = &state_;
+
+    NimBLEDevice::init("");  // we don't advertise; empty local name is fine
+    NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+
+    g_client = NimBLEDevice::createClient();
+    g_client->setClientCallbacks(&g_clientCb, false);
+
+    startScan();
+    Serial.println(F("[ble] scanning for esp32-boat-tx..."));
+    return true;
+}
+
+// Called from main loop. Drives the connect / reconnect state machine —
+// NimBLE callbacks can't safely re-enter the host task, so connect()
+// and rescan() happen here on the Arduino main task.
+void NmeaBridge::bleTick() {
+    if (g_wantConnect) {
+        g_wantConnect = false;
+        if (!g_client || !g_targetDev) return;
+        Serial.printf("[ble] connecting to %s\n",
+                      g_targetDev->getAddress().toString().c_str());
+        if (g_client->connect(g_targetDev)) {
+            if (!subscribeAll()) {
+                Serial.println(F("[ble] subscribe-all failed; disconnecting"));
+                g_client->disconnect();
+                // disconnect callback handles the rescan.
+                return;
+            }
+            // Cache RSSI once at connect time; we don't poll it because
+            // every getRssi() is a synchronous L2CAP round trip.
+            g_rssi = g_client->getRssi();
+            Serial.printf("[ble] connected (rssi=%d dBm)\n", g_rssi);
+        } else {
+            Serial.println(F("[ble] connect failed; rescanning"));
+            startScan();
+        }
+        return;
+    }
+    if (g_wantReconnect && millis() >= g_reconnectAfter) {
+        g_wantReconnect = false;
+        Serial.println(F("[ble] rescanning"));
+        startScan();
+    }
+}
+
+bool NmeaBridge::bleConnected() {
+    return g_connected;
+}
+
+const char* NmeaBridge::blePeerMac() {
+    return g_peerMac;
+}
+
+int NmeaBridge::bleRssi() {
+    return g_rssi;
+}
+
+uint32_t NmeaBridge::bleNotifyCount(BleChannel ch) {
+    if (ch >= BLE_CH_COUNT) return 0;
+    return g_notifyCount[ch];
+}
+
+#endif // DATA_SOURCE_BLE
 
 
 // ============================================================================

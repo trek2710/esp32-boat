@@ -48,6 +48,20 @@ static constexpr uint32_t LV_TICK_MS = 5;
 #define SIMULATED_DATA 0
 #endif
 
+// Step 4: when set, NmeaBridge runs as a BLE central instead of attaching
+// to NMEA 2000. It scans for "esp32-boat-tx", subscribes to the five
+// telemetry NOTIFY characteristics defined in include/BoatBle.h, and
+// pushes parsed values into BoatState. Mutually exclusive with
+// SIMULATED_DATA (the build will fail with a #error if both are set).
+// Selected via `-e waveshare_esp32s3_touch_lcd_21_ble`.
+#ifndef DATA_SOURCE_BLE
+#define DATA_SOURCE_BLE 0
+#endif
+
+#if SIMULATED_DATA && DATA_SOURCE_BLE
+#error "SIMULATED_DATA and DATA_SOURCE_BLE are mutually exclusive"
+#endif
+
 // Set to 1 and populate `secrets.h` (WiFi credentials) to enable OTA.
 #ifndef ENABLE_OTA
 #define ENABLE_OTA 0

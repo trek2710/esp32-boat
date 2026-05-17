@@ -23,12 +23,13 @@
 #
 # Roles → PIO envs:
 #   tx → [env:nmea2k_tx]                       — ESP32-S3-Touch-AMOLED-1.75-G
-#   rx → [env:waveshare_esp32s3_touch_lcd_21_sim]
+#   rx → [env:waveshare_esp32s3_touch_lcd_21_ble]
 #                                              — Waveshare 2.1" round display.
-#                                                Currently flashes the SIM
-#                                                env (the only one that builds
-#                                                today). Will switch to a real
-#                                                BLE-client env in a later step.
+#                                                Step 4 (May 12 2026) switched
+#                                                this from the sim env to the
+#                                                BLE-client env. The RX scans
+#                                                for esp32-boat-tx and feeds
+#                                                BoatState from BLE notifies.
 #
 # Storage:
 #   scripts/.devices.conf — newline-separated `role=AA:BB:CC:DD:EE:FF`
@@ -65,7 +66,11 @@ done
 
 case "$ROLE" in
     tx) ENV="nmea2k_tx" ;;
-    rx) ENV="waveshare_esp32s3_touch_lcd_21_sim" ;;
+    # Step 4 (May 12 2026): RX defaults to the BLE-client env that
+    # consumes from esp32-boat-tx. The sim env is still in platformio.ini
+    # if you ever need to bench-test the UI without a TX nearby — flash
+    # it directly with: pio run -e waveshare_esp32s3_touch_lcd_21_sim -t upload
+    rx) ENV="waveshare_esp32s3_touch_lcd_21_ble" ;;
     "")
         echo "Usage: $0 <tx|rx> [--no-monitor] [--register]" >&2
         echo "       $0 --help" >&2
@@ -169,7 +174,26 @@ pio run -e "$ENV" -t upload --upload-port "$PORT"
 
 # ---- 5. monitor ------------------------------------------------------------
 if $MONITOR; then
+    # After a hard_reset, the chip reboots and USB-CDC re-enumerates. The
+    # device file (/dev/cu.usbmodem*) is briefly gone — typically for 1-2
+    # seconds on macOS — before reappearing. pio device monitor doesn't
+    # retry on its own, so if we open it the instant the flash returns we
+    # get "No such file or directory" and the monitor session dies. Poll
+    # for the port to come back, then give it a half-second settle margin
+    # so HWCDC is fully ready to accept reads before we start.
     echo
+    echo "==> waiting for $PORT to re-enumerate ..."
+    for _ in $(seq 1 20); do
+        if [[ -e "$PORT" ]]; then
+            sleep 0.5
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ ! -e "$PORT" ]]; then
+        echo "WARNING: $PORT didn't come back within 5 s; trying anyway." >&2
+    fi
+
     echo "==> pio device monitor -e $ENV --port $PORT"
     echo "    (Ctrl-C to exit)"
     pio device monitor -e "$ENV" --port "$PORT"

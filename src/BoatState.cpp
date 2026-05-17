@@ -134,6 +134,28 @@ void BoatState::setAirTemp(double air_temp_c) {
     i_.air_temp_last_ms = millis();
 }
 
+// Step 4: invalidate everything that comes from sensors. Sets raw fields
+// to NaN and rederives, which propagates NaN through the derived chain.
+// The *_last_ms timestamps are deliberately left untouched — the UI uses
+// them to display "data is N seconds old", which is still meaningful
+// after a disconnect.
+void BoatState::invalidateLiveData() {
+    Lock l(mutex_);
+    i_.lat                     = NAN;
+    i_.lon                     = NAN;
+    i_.sog                     = NAN;
+    i_.cog                     = NAN;
+    i_.awa                     = NAN;
+    i_.aws                     = NAN;
+    i_.heading_mag_deg         = NAN;
+    i_.magnetic_variation_deg  = NAN;
+    i_.stw                     = NAN;
+    i_.depth_m                 = NAN;
+    i_.water_temp_c            = NAN;
+    i_.air_temp_c              = NAN;
+    recomputeDerived_locked();
+}
+
 // ---- derive ---------------------------------------------------------------
 
 void BoatState::recomputeDerived_locked() {

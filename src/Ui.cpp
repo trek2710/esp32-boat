@@ -92,11 +92,25 @@ lv_color_t*        buf2 = nullptr;
 
 BoatState* g_state = nullptr;
 
+#if DATA_SOURCE_BLE
+// Step 4: optional pointer to the BLE bridge. Populated by ui::setBleBridge()
+// after ui::begin() returns. The Communication page reads link state, peer
+// MAC, RSSI, and per-channel notify counters off this.
+NmeaBridge* g_bridge_ptr = nullptr;
+#endif
+
 // --- Page state -------------------------------------------------------------
 
 // Round 74: bumped 4 → 5 to add the Settings page (page 4) where the
 // no-go-zone half-angle is adjusted via -/+ buttons.
+// Step 4 (May 12 2026): bumped to 6 in BLE builds to add the Communication
+// page (page 5) — shows link state, peer MAC, RSSI, and per-channel notify
+// counters when running as a BLE central.
+#if DATA_SOURCE_BLE
+constexpr int kNumPages = 6;
+#else
 constexpr int kNumPages = 5;
+#endif
 
 // ---- Overview page (round 42 — second B&G reference, black dial) ----
 //
@@ -388,7 +402,7 @@ SettingsPage settings_pg;
 void applyNogoSectors();
 void refreshSettingsLabels();
 
-lv_obj_t* pages[kNumPages] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+lv_obj_t* pages[kNumPages] = {};   // zero-fill — size tracks kNumPages
 int       current_page = 0;
 
 // Round 74/75 — Main-page no-go-zone geometry, persisted to NVS.
@@ -1955,6 +1969,120 @@ void buildSettingsPage() {
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 
+#if DATA_SOURCE_BLE
+// --- Communication page (step 4) -------------------------------------------
+//
+// Mirrors the TX's Comm page. Read-only, refreshed at the same cadence as
+// the other pages. Layout matches the surrounding pages' visual conventions:
+// title at top, value rows stacked below, light typography.
+
+struct CommPage {
+    lv_obj_t* root        = nullptr;
+    lv_obj_t* link_lbl    = nullptr;   // "Connected" / "Scanning..."
+    lv_obj_t* peer_lbl    = nullptr;   // MAC address or "—"
+    lv_obj_t* rssi_lbl    = nullptr;   // "-42 dBm" or "—"
+    lv_obj_t* wind_lbl    = nullptr;
+    lv_obj_t* gps_lbl     = nullptr;
+    lv_obj_t* hdg_lbl     = nullptr;
+    lv_obj_t* depth_lbl   = nullptr;
+    lv_obj_t* att_lbl     = nullptr;
+};
+CommPage comm_pg;
+
+void buildCommPage() {
+    comm_pg.root = lv_obj_create(nullptr);
+    lv_obj_t* scr = comm_pg.root;
+    lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Title.
+    lv_obj_t* title = lv_label_create(scr);
+    lv_label_set_text(title, "Communication");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(title,
+        lv_palette_lighten(LV_PALETTE_BLUE, 2), LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
+
+    // Helper: build one row at (y), value label is what we'll write to.
+    auto makeRow = [&](const char* caption, int y) {
+        lv_obj_t* lab = lv_label_create(scr);
+        lv_label_set_text(lab, caption);
+        lv_obj_set_style_text_font(lab, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_text_color(lab,
+            lv_palette_lighten(LV_PALETTE_GREY, 1), LV_PART_MAIN);
+        lv_obj_align(lab, LV_ALIGN_TOP_LEFT, 100, y);
+
+        lv_obj_t* val = lv_label_create(scr);
+        lv_label_set_text(val, "—");
+        lv_obj_set_style_text_font(val, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_text_color(val, lv_color_white(), LV_PART_MAIN);
+        lv_obj_align(val, LV_ALIGN_TOP_LEFT, 240, y);
+        return val;
+    };
+
+    comm_pg.link_lbl  = makeRow("Link:",     115);
+    comm_pg.peer_lbl  = makeRow("Peer:",     145);
+    comm_pg.rssi_lbl  = makeRow("RSSI:",     175);
+
+    // Small separator gap, then per-channel counters.
+    lv_obj_t* sec = lv_label_create(scr);
+    lv_label_set_text(sec, "Notifies received");
+    lv_obj_set_style_text_font(sec, &lv_font_montserrat_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(sec,
+        lv_palette_lighten(LV_PALETTE_GREY, 2), LV_PART_MAIN);
+    lv_obj_align(sec, LV_ALIGN_TOP_LEFT, 100, 215);
+
+    comm_pg.wind_lbl  = makeRow("Wind:",     240);
+    comm_pg.gps_lbl   = makeRow("GPS:",      270);
+    comm_pg.hdg_lbl   = makeRow("Heading:",  300);
+    comm_pg.depth_lbl = makeRow("Depth/T:",  330);
+    comm_pg.att_lbl   = makeRow("Attitude:", 360);
+}
+
+void refreshComm() {
+    if (!comm_pg.root || !g_bridge_ptr) return;
+    char buf[32];
+
+    if (g_bridge_ptr->bleConnected()) {
+        lv_label_set_text(comm_pg.link_lbl, "Connected");
+        lv_obj_set_style_text_color(comm_pg.link_lbl,
+            lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
+
+        lv_label_set_text(comm_pg.peer_lbl, g_bridge_ptr->blePeerMac());
+
+        const int rssi = g_bridge_ptr->bleRssi();
+        if (rssi == INT16_MIN) {
+            lv_label_set_text(comm_pg.rssi_lbl, "—");
+        } else {
+            snprintf(buf, sizeof(buf), "%d dBm", rssi);
+            lv_label_set_text(comm_pg.rssi_lbl, buf);
+        }
+    } else {
+        lv_label_set_text(comm_pg.link_lbl, "Scanning…");
+        lv_obj_set_style_text_color(comm_pg.link_lbl,
+            lv_palette_lighten(LV_PALETTE_GREY, 1), LV_PART_MAIN);
+        lv_label_set_text(comm_pg.peer_lbl, "—");
+        lv_label_set_text(comm_pg.rssi_lbl, "—");
+    }
+
+    auto setCount = [&](lv_obj_t* lab, uint32_t n) {
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)n);
+        lv_label_set_text(lab, buf);
+    };
+    setCount(comm_pg.wind_lbl,
+             g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_WIND));
+    setCount(comm_pg.gps_lbl,
+             g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_GPS));
+    setCount(comm_pg.hdg_lbl,
+             g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_HEADING));
+    setCount(comm_pg.depth_lbl,
+             g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_DEPTH_TEMP));
+    setCount(comm_pg.att_lbl,
+             g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_ATTITUDE));
+}
+#endif  // DATA_SOURCE_BLE
+
 // --- Page navigation -------------------------------------------------------
 //
 // Round 39: tap-based instead of swipe-based. See the comment block by
@@ -2306,6 +2434,12 @@ void refreshFromState() {
         case 1: refreshOverview(s);        break;
         case 2: refreshHoneycomb(s);       break;  // round 78 (was refreshDebug)
         case 3: refreshSimulator(s);       break;
+#if DATA_SOURCE_BLE
+        // case 4 is Settings — no per-tick refresh needed (its labels
+        // change only on user input). case 5 is the BLE Communication
+        // page, only present in DATA_SOURCE_BLE builds.
+        case 5: refreshComm();             break;
+#endif
     }
 }
 
@@ -2868,6 +3002,9 @@ void begin(BoatState& state) {
     buildMainPage();
     buildOverviewPage();
     buildHoneycombPage();          // round 78 (replaces buildDebugPage)
+#if DATA_SOURCE_BLE
+    buildCommPage();               // step 4 — BLE link status page
+#endif
     buildSimulatorPage();
     buildSettingsPage();
     pages[0] = main_pg.root;       // Main display (Round 54: was wind page)
@@ -2875,6 +3012,9 @@ void begin(BoatState& state) {
     pages[2] = hc_pg.root;         // Round 78: PGN honeycomb (was debug log)
     pages[3] = sim_pg.root;        // Simulator page (raw + derived values)
     pages[4] = settings_pg.root;   // Round 74: Settings (no-go-zone +/-)
+#if DATA_SOURCE_BLE
+    pages[5] = comm_pg.root;       // Step 4: BLE link status
+#endif
 
     lv_scr_load(pages[0]);
     // Round 39: no LV_EVENT_GESTURE handler — tap detection lives in
@@ -2923,6 +3063,12 @@ uint32_t tick() {
 
     return lv_timer_handler();
 }
+
+#if DATA_SOURCE_BLE
+void setBleBridge(NmeaBridge& bridge) {
+    g_bridge_ptr = &bridge;
+}
+#endif
 
 }  // namespace ui
 

@@ -157,6 +157,13 @@ public:
     void setSeaTemp(double water_temp_c);
     void setAirTemp(double air_temp_c);  // round 78 — outdoor air temp
 
+    // Step 4: blanks all live-input fields back to NaN and rederives. The
+    // UI renders NaN as "—", so calling this on a BLE disconnect makes
+    // every gauge show "no data" instead of stale numbers from the last
+    // received packet. AIS targets are NOT touched (they have their own
+    // age-out logic) and neither is the PGN log.
+    void invalidateLiveData();
+
     // AIS target book-keeping.
     // Targets older than kAisStaleMs are dropped on each update.
     void upsertAisTarget(const AisTarget& t);

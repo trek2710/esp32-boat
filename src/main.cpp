@@ -89,6 +89,13 @@ void setup() {
         log_w("[WARN] NMEA 2000 bridge failed to start - continuing with no bus.");
     }
 
+#if DATA_SOURCE_BLE && !DISPLAY_SAFE_MODE
+    // Hand the bridge to the UI now that both are initialised. Done after
+    // begin() rather than inside it so the existing ui::begin signature
+    // stays unchanged for non-BLE builds.
+    ui::setBleBridge(g_bridge);
+#endif
+
 #if !DISPLAY_SAFE_MODE
     xTaskCreatePinnedToCore(lvglTickTask, "lvgl-tick", 2048, nullptr, 1, nullptr, 1);
 #endif
@@ -99,6 +106,11 @@ void setup() {
 void loop() {
 #if SIMULATED_DATA
     g_bridge.simulateTick();
+#endif
+#if DATA_SOURCE_BLE
+    // Drives the connect / reconnect state machine that NimBLE callbacks
+    // hand off to us (they can't re-enter the host task safely on 1.4.x).
+    g_bridge.bleTick();
 #endif
 
 #if DISPLAY_SAFE_MODE

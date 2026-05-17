@@ -12,6 +12,13 @@
 #pragma once
 
 #include "BoatState.h"
+#include "config.h"
+
+#if DATA_SOURCE_BLE
+// Forward decl so callers don't need to drag NmeaBridge.h into headers that
+// only forward the type.
+class NmeaBridge;
+#endif
 
 namespace ui {
 
@@ -24,5 +31,12 @@ void begin(BoatState& state);
 // every loop() iteration). Returns the number of ms until the next LVGL timer
 // wants to run, so the caller can delay appropriately.
 uint32_t tick();
+
+#if DATA_SOURCE_BLE
+// Step 4: register the BLE bridge so the Communication page can read link
+// state / RSSI / per-channel counters. Call once, after ui::begin(). Held
+// as a non-owning pointer; lifetime must outlive the UI loop.
+void setBleBridge(NmeaBridge& bridge);
+#endif
 
 }  // namespace ui

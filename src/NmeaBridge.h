@@ -1,19 +1,32 @@
-// NmeaBridge — bridges the ttlappalainen NMEA 2000 library to BoatState.
+// NmeaBridge — bridges a data source to BoatState.
 //
-// In production builds it owns a tNMEA2000 instance, registers PGN handlers,
-// and runs ParseMessages() on its own FreeRTOS task.
+// Three mutually-exclusive backends, selected at compile time:
 //
-// In SIMULATED_DATA builds, the NMEA 2000 stack is not compiled in at all —
-// begin() becomes a no-op that returns true, and simulateTick() is the only
-// thing that ever touches BoatState. This keeps the sim firmware buildable on
-// ESP32-S3 boards even when the CAN backend library isn't S3-compatible yet.
+//   * Production NMEA 2000 stack (default; SIMULATED_DATA=0, DATA_SOURCE_BLE=0)
+//     Owns a tNMEA2000 instance, registers PGN handlers, and runs
+//     ParseMessages() on its own FreeRTOS task pinned to core 0.
+//
+//   * SIMULATED_DATA=1 — no NMEA 2000 stack at all. begin() is a no-op;
+//     simulateTick() (called from the main loop) feeds fake values into
+//     BoatState. Useful before the transceiver is wired up, and keeps the
+//     sim firmware buildable on ESP32-S3 even when the CAN backend isn't
+//     S3-compatible.
+//
+//   * DATA_SOURCE_BLE=1 (step 4) — NmeaBridge becomes a NimBLE central:
+//     it scans for "esp32-boat-tx", subscribes to the five telemetry
+//     NOTIFY characteristics from include/BoatBle.h, parses each PDU,
+//     and pushes values into BoatState through the same setters. On
+//     disconnect it calls state_.invalidateLiveData() so the UI shows
+//     "—" instead of stale numbers.
 
 #pragma once
+
+#include <cstdint>
 
 #include "BoatState.h"
 #include "config.h"
 
-#if !SIMULATED_DATA
+#if !SIMULATED_DATA && !DATA_SOURCE_BLE
 class tN2kMsg;
 class tNMEA2000;
 #endif
@@ -23,8 +36,8 @@ public:
     // BoatState lifetime must outlive the bridge.
     explicit NmeaBridge(BoatState& state);
 
-    // Initialise NMEA2000 stack + spawn the parse task pinned to core 0.
-    // In SIMULATED_DATA mode this is a no-op that returns true.
+    // Bring up the configured backend. NMEA2000 mode opens the bus +
+    // spawns a parse task; sim mode is a no-op; BLE mode starts a scan.
     bool begin();
 
 #if SIMULATED_DATA
@@ -33,10 +46,36 @@ public:
     void simulateTick();
 #endif
 
+#if DATA_SOURCE_BLE
+    // Channels for bleNotifyCount(). Order matches the order the
+    // BoatBle.h characteristics are subscribed to.
+    enum BleChannel : uint8_t {
+        BLE_CH_WIND        = 0,
+        BLE_CH_GPS         = 1,
+        BLE_CH_HEADING     = 2,
+        BLE_CH_DEPTH_TEMP  = 3,
+        BLE_CH_ATTITUDE    = 4,
+        BLE_CH_COUNT       = 5,
+    };
+
+    // Status query API for the Communication page. Thread-safe by being
+    // word-atomic reads of file-scope volatile state — see NmeaBridge.cpp
+    // for the writer side (NimBLE host task) and reader side (UI / main).
+    bool         bleConnected();        // true while a peripheral is linked
+    const char*  blePeerMac();          // "" when disconnected
+    int          bleRssi();             // INT16_MIN when no link / unknown
+    uint32_t     bleNotifyCount(BleChannel ch);
+
+    // Called from the main loop — drives scan→connect→subscribe and the
+    // post-disconnect rescan, which can't run safely from inside NimBLE
+    // host-task callbacks on the 1.4.x line.
+    void bleTick();
+#endif
+
 private:
     BoatState&  state_;
 
-#if !SIMULATED_DATA
+#if !SIMULATED_DATA && !DATA_SOURCE_BLE
     tNMEA2000*  n2k_ = nullptr;
 
     static void taskTrampoline(void* arg);

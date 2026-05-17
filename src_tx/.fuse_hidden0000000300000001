@@ -1,0 +1,202 @@
+// src_tx/main.cpp — ESP32-S3-Touch-AMOLED-1.75-G transmitter, step 1b.
+//
+// What changed from 1a:
+//   - Added an I²C probe that hunts for the AXP2101 PMIC (slave addr 0x34)
+//     across the most likely SDA/SCL pin pairs for this board. The Waveshare
+//     1.75-G doesn't publish a clean pin map; the 2.06 sister board uses
+//     GPIO15/14, so we try that first and fall back through other common
+//     ESP32-S3 I²C pairs. Once the chip ACKs, we know the I²C bus pins for
+//     *everything* on this board (QMI8658 IMU, PCF85063 RTC, CST9217 touch,
+//     TCA9554 GPIO expander all share the same bus).
+//   - Once found, we print the AXP2101's reported state: chip model, VBUS
+//     presence (USB plugged in?), battery voltage, battery %, charging
+//     status. This is real telemetry, not just placeholder logging — if
+//     a number is wildly wrong it points at a wiring or driver issue.
+//   - We deliberately do NOT toggle any power rails. AXP2101 has multiple
+//     LDO/DCDC outputs and we don't yet know which feeds the AMOLED panel,
+//     the GPS module, etc. Touching the wrong rail could damage the panel
+//     or brown out the chip. Rail enable comes in 1c when we have the
+//     panel datasheet + Waveshare BSP open side-by-side.
+//   - Loop now prints battery voltage every 5 seconds instead of bare
+//     uptime — more useful, and easy to sanity-check by plugging/unplugging
+//     USB while watching the monitor.
+//
+// What you should see after `./scripts/flash.sh tx`:
+//   1. Chip info banner (same as 1a, plus PSRAM number this time since we
+//      catch it before the host monitor opens — auto-reset patch in env).
+//   2. "Scanning I²C..." block listing each pin pair tried; one of them
+//      ACKs at 0x34 with "AXP2101 found".
+//   3. Full I²C device scan on the winning pin pair (so we see the IMU,
+//      RTC, touch, and GPIO expander too — confirms bus is healthy).
+//   4. AXP2101 status dump: chip model, VBUS present, battery voltage, etc.
+//   5. Heartbeat every 5 s: "[TX] uptime=<ms>  vbat=<mV>  vbus=<bool>".
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <XPowersLib.h>
+
+// AXP2101 PMU lives at 7-bit I²C address 0x34. XPowersLib defines
+// AXP2101_SLAVE_ADDRESS for the same value but we hard-code it for the raw
+// probe (which runs before the driver is initialised).
+static constexpr uint8_t kAxp2101Addr = 0x34;
+
+// Candidate (SDA, SCL) pin pairs to probe, in order of likelihood. First hit
+// wins — once AXP2101 ACKs we stop and use that pair for the rest of the
+// firmware. The label is purely for the log so future-me knows which guess
+// landed.
+struct PinPair {
+    int sda;
+    int scl;
+    const char *label;
+};
+static const PinPair kCandidates[] = {
+    {15, 14, "AMOLED-2.06 reference (most likely)"},
+    {8,  9,  "Arduino ESP32-S3 default"},
+    {11, 10, "common Waveshare LCD boards"},
+    {47, 48, "some S3 dev kits"},
+    {1,  2,  "broken-out left-side header"},
+    {5,  4,  "older S3 reference designs"},
+};
+
+XPowersAXP2101 PMU;
+
+// Try `Wire.begin(sda, scl)` and ping kAxp2101Addr. Returns true on ACK.
+// We re-init Wire each attempt since pin assignments don't stick across
+// `Wire.begin()` calls without an end() in between.
+static bool probePinPair(int sda, int scl) {
+    Wire.end();  // safe even if not previously begun
+    if (!Wire.begin(sda, scl, 100000)) {
+        Serial.printf("    Wire.begin(SDA=%d, SCL=%d) failed (driver error)\n", sda, scl);
+        return false;
+    }
+    Wire.beginTransmission(kAxp2101Addr);
+    uint8_t err = Wire.endTransmission();
+    return (err == 0);
+}
+
+// Once we've locked in the I²C pins, sweep the full 7-bit address range
+// (skipping the reserved bands) and report every responder. Each chip on
+// this board has a well-known address, so this output doubles as a "is the
+// hardware healthy" check.
+static void scanFullBus() {
+    Serial.println("  Full I²C device scan on the winning pin pair:");
+    int found = 0;
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            const char *known = "?";
+            switch (addr) {
+                case 0x18: known = "ES8311 audio codec"; break;
+                case 0x20: known = "TCA9554 GPIO expander"; break;
+                case 0x34: known = "AXP2101 PMIC"; break;
+                case 0x40: known = "ES7210 mic ADC"; break;
+                case 0x51: known = "PCF85063 RTC"; break;
+                case 0x5a: known = "CST9217 touch"; break;
+                case 0x6a: known = "QMI8658 IMU"; break;
+                case 0x6b: known = "QMI8658 IMU (alt addr)"; break;
+            }
+            Serial.printf("    0x%02x  %s\n", addr, known);
+            found++;
+        }
+    }
+    Serial.printf("  %d device(s) responded.\n", found);
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Native USB-CDC on the ESP32-S3 has no concept of "is the host ready
+    // yet" at the hardware level — the chip starts spewing bytes the moment
+    // Serial.begin() is called, but macOS doesn't finish enumerating the
+    // CDC device for 1–4 seconds after a reset. Everything printed in that
+    // window goes into a small CDC FIFO and gets dropped when the FIFO
+    // drains without a reader. End result: tio reconnects after the boot
+    // banner has already been "transmitted" and lost.
+    //
+    // HWCDC's `operator bool()` reports true once the host opens the port
+    // (DTR asserted on the USB-CDC line state). Block on it with a 3-second
+    // timeout so a headless boot — no host attached — eventually proceeds
+    // anyway. The extra 100 ms grace gives the just-opened CDC FIFO time
+    // to be ready for our first writes.
+    unsigned long start = millis();
+    while (!Serial && (millis() - start) < 3000) {
+        delay(10);
+    }
+    delay(100);
+
+    Serial.println();
+    Serial.println("================================================");
+    Serial.println("  esp32-boat TX — step 1b (AXP2101 probe)");
+    Serial.println("================================================");
+    Serial.printf("  Built: %s %s\r\n", __DATE__, __TIME__);
+    Serial.printf("  Chip:  ESP32-S3, %d MHz\r\n", ESP.getCpuFreqMHz());
+    Serial.printf("  Flash: %d MB\r\n", ESP.getFlashChipSize() / (1024 * 1024));
+    Serial.printf("  PSRAM: %d KB free of %d KB total\r\n",
+                  ESP.getFreePsram() / 1024, ESP.getPsramSize() / 1024);
+    Serial.println("================================================");
+    Serial.println();
+
+    // ---- 1. find the I²C bus pins ------------------------------------------
+    Serial.println("Scanning candidate I²C pin pairs for AXP2101 @ 0x34:");
+    int sda = -1, scl = -1;
+    for (const auto &p : kCandidates) {
+        Serial.printf("  SDA=GPIO%-2d SCL=GPIO%-2d  (%s) ... ",
+                      p.sda, p.scl, p.label);
+        if (probePinPair(p.sda, p.scl)) {
+            Serial.println("ACK -> AXP2101 found.");
+            sda = p.sda;
+            scl = p.scl;
+            break;
+        } else {
+            Serial.println("no ACK");
+        }
+    }
+    if (sda < 0) {
+        Serial.println();
+        Serial.println("ERROR: AXP2101 not found on any candidate pin pair.");
+        Serial.println("  - Verify the board is on (PWR LED lit).");
+        Serial.println("  - Check schematic for the actual SDA/SCL GPIOs and");
+        Serial.println("    add them to kCandidates[] in src_tx/main.cpp.");
+        Serial.println("  - Heartbeat will still run so we know the chip is alive.");
+        return;
+    }
+    Serial.printf("\nLocked in I²C pins: SDA=GPIO%d, SCL=GPIO%d\n\n", sda, scl);
+
+    // ---- 2. enumerate everything else on the bus ---------------------------
+    scanFullBus();
+    Serial.println();
+
+    // ---- 3. bring up the AXP2101 driver ------------------------------------
+    Serial.println("Initialising XPowersLib (AXP2101)...");
+    if (!PMU.begin(Wire, kAxp2101Addr, sda, scl)) {
+        Serial.println("ERROR: PMU.begin() returned false.");
+        Serial.println("  Probe ACKed at 0x34 but XPowersLib couldn't init.");
+        Serial.println("  Likely a library/version mismatch; try a clean build.");
+        return;
+    }
+    Serial.printf("  Chip model: %d (10 = AXP2101)\n", PMU.getChipModel());
+    Serial.printf("  VBUS present:    %s\n", PMU.isVbusIn() ? "yes" : "no");
+    Serial.printf("  Battery present: %s\n", PMU.isBatteryConnect() ? "yes" : "no");
+    Serial.printf("  Battery voltage: %u mV\n", PMU.getBattVoltage());
+    Serial.printf("  Battery %%:       %d %%\n", PMU.getBatteryPercent());
+    Serial.printf("  Charging:        %s\n", PMU.isCharging() ? "yes" : "no");
+    // (isChargeDone() existed in older XPowersLib but was renamed/removed in
+    // 0.2.9. Charging state alone is enough for v1; we can add a precise
+    // "charge complete" indicator later if it actually matters.)
+    Serial.println();
+    Serial.println("Step 1b done. Heartbeat below now reports vbat too.");
+    Serial.println("================================================");
+    Serial.println();
+}
+
+void loop() {
+    // Print a heartbeat every 5 s with live battery telemetry. Watching this
+    // while plugging/unplugging USB is a fast sanity check that the PMU
+    // driver actually sees power-rail changes (vbus toggle, vbat sag, etc.).
+    Serial.printf("[TX] uptime=%lu ms  vbat=%u mV  vbus=%s  charging=%s\n",
+                  millis(),
+                  PMU.getBattVoltage(),
+                  PMU.isVbusIn() ? "yes" : "no",
+                  PMU.isCharging() ? "yes" : "no");
+    delay(5000);
+}
