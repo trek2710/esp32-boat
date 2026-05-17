@@ -558,6 +558,20 @@ static void initPages() {
 // not thread-safe across the main task and the NimBLE host task).
 static void updatePages(uint32_t now, uint32_t connectedCount, uint32_t ratePerSec) {
     char buf[80];
+
+    // AMOLED ghost-pixel workaround. Most rows below set their text via
+    // lv_label_set_text(), which is smart enough to skip the invalidation
+    // when the new string equals the old one. Static rows (VBUS: connected,
+    // Battery once it settles, etc.) therefore go several seconds without
+    // a re-flush — and on this AMOLED the unchanged pixels visibly drift
+    // (sub-pixel ageing / RGB-PenTile-ish layout artifacts) into what the
+    // eye reads as "italic". First attempt was a 2 s cadence; user
+    // confirmed the drift re-emerges before then. Invalidating on every
+    // UI tick (500 ms) keeps every label crisp. Cost: one full QSPI
+    // flush per tick (~50 ms of the panel's bus time, well inside the
+    // 20 fps headroom for a status UI).
+    lv_obj_invalidate(pageRoots[currentPage]);
+
     switch (currentPage) {
         case TXP_PRIMARY: {
             snprintf(buf, sizeof(buf), "BLE: %s",
