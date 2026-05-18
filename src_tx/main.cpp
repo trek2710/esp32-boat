@@ -906,12 +906,18 @@ static SwipeDir pollTouch(uint32_t now) {
 // explicitly during init for a clean power-up state.
 
 static constexpr uint8_t kLc76gCmdAddr    = 0x50;
-// Step 8c experiment: try reading from 0x50 (same as the command address)
-// instead of 0x54. The boot scan only saw 0x50 ACKing — 0x54 and 0x58
-// never appeared — so the working protocol on this board may multiplex
-// commands and responses on a single address. If this works we keep it;
-// if it doesn't we'll see i2cRead -1 same as before and revisit.
-static constexpr uint8_t kLc76gReadAddr   = 0x50;
+// Step 8d: back to 0x54 for reads. The earlier "use 0x50 because 0x54
+// never appears in the boot scan" experiment was based on a wrong
+// inference — per Quectel forum thread #27337 (Hagi, Jul 2024) +
+// confirmation by Quectel staff (george.gao, Aug 2024), 0x54 and 0x58
+// are response-only addresses that ACK only mid-transaction when the
+// chip is actively serving a previous command from 0x50. A bare-bus
+// I²C scan (single-byte probe) will never see them light up, which
+// is exactly what we observed, but they're still the correct read
+// targets. gpsUnstick() below also targets 0x54/0x58 deliberately
+// for the same reason — issuing a read on those addresses outside a
+// command context completes whatever transaction left the chip stuck.
+static constexpr uint8_t kLc76gReadAddr   = 0x54;
 static constexpr uint8_t kLc76gResetExio  = 7;
 
 // LC76G UART path. The chip's TXD1 goes to GPIO17 via R15 (NC/0R jumper)
@@ -1047,20 +1053,22 @@ static void gpsFeedByte(uint8_t b, uint32_t now) {
 // we see enough samples of the new 0x50-read experiment.
 static int gpsDbgPollsLeft = 5;
 
-// Step 8 conclusion: the AMOLED-1.75-G's LC76G doesn't expose a working
-// I²C streaming path without the Quectel application note we couldn't
-// obtain. Reads from 0x50 return four zero bytes once then NACK; reads
-// from 0x54 / 0x58 never ACK. Both the address-pair protocol (#10731 on
-// espressif/arduino-esp32) and a single-address 0x50 read were tried.
-//
-// Initialising gpsI2cFails to kGpsI2cMaxFails effectively disables the
-// I²C poll at boot — every gpsPoll() short-circuits at the first check
-// and no Wire calls fire, so the log stays clean. The UART drain in
-// loop() still runs and will pick up NMEA the moment R15 / R16 jumpers
-// are soldered. To re-enable I²C polling for a future experiment, zero
-// gpsI2cFails (e.g. via `gpsI2cFails = 0;` at the bottom of initGps).
+// Step 8d follow-up: I²C path disabled again — this time with the right
+// reasoning. The 2026-05-16 retry attempted what the Quectel forum
+// #27337 thread suggested (read responses from 0x54 instead of 0x50,
+// rely on gpsUnstick() to flush stuck state). Result was clean writes
+// to 0x50 followed by hard NACK on every read from 0x54 — same pattern
+// as before, but now interpretable: the boot I²C scan lists 0x50 as the
+// AT24Cxx EEPROM, 0x51 as the PCF85063 RTC, etc., and the LC76G never
+// appears. The "successful write to 0x50" the earlier session saw was
+// the EEPROM, not the GPS chip; the LC76G simply isn't wired to this
+// I²C bus on the AMOLED-1.75-G hardware. UART on GPIO17/18 (gated by
+// the unpopulated R15/R16 0R jumpers) is the only physical path.
+// gpsUartDrain() in loop() will pick up real NMEA the instant those
+// jumpers are soldered; until then GPS stays in "no signal (sim)"
+// state.
 static constexpr int kGpsI2cMaxFails = 30;
-static int gpsI2cFails = kGpsI2cMaxFails;   // start "given up"
+static int gpsI2cFails = kGpsI2cMaxFails;   // I²C path disabled
 
 // Forward decl — defined further down with initGps(), but referenced by
 // gpsPoll() on every error path for recovery.
@@ -1459,7 +1467,7 @@ void setup() {
 
     Serial.println();
     Serial.println("================================================");
-    Serial.println("  esp32-boat TX — step 9 (UI polish + tap diag)");
+    Serial.println("  esp32-boat TX — step 8d (LC76G I²C confirmed dead, UART-only)");
     Serial.println("================================================");
     Serial.printf("  Built: %s %s\r\n", __DATE__, __TIME__);
     Serial.printf("  Chip:  ESP32-S3, %d MHz\r\n", ESP.getCpuFreqMHz());
