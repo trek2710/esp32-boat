@@ -21,10 +21,16 @@ import CoreLocation
 import Network
 
 final class LocationPublisher: NSObject {
-    /// Read-only — last fix we sent, for the Diagnostics tab.
+    /// Read-only — last fix we got (always present once permission
+    /// granted, regardless of whether we publish to the bus).
     private(set) var lastFix: CLLocation? = nil
     private(set) var isAuthorized: Bool = false
     private(set) var didSendCount: Int = 0
+
+    /// Public toggle — when false, CoreLocation still tracks the iPhone's
+    /// position (so the Boat tab can cross-check against the bus GPS)
+    /// but we don't send PGN 129025 onto the wire. Default false.
+    var publishToBus: Bool = false
 
     private let manager = CLLocationManager()
     private var connection: NWConnection?
@@ -81,6 +87,7 @@ final class LocationPublisher: NSObject {
     }
 
     private func publish(_ loc: CLLocation) {
+        guard publishToBus else { return }
         guard let c = connection, isReady else { return }
         // Match src/NmeaBridge.cpp::publishPosition wire shape exactly.
         // Lat / lon in degrees; six decimal places (~10 cm resolution).

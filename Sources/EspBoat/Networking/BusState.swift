@@ -32,16 +32,26 @@ final class BusState: ObservableObject {
     private var staleTimer: AnyCancellable?
 
     // Round 85 v1.6 step 4: iOS-side real GPS publisher (PGN 129025).
-    // Optional — won't fire anything until the user grants Location
-    // permission. Status surfaced in the Diagnostics tab.
+    // Optional — CoreLocation runs whenever permission is granted (so
+    // the Boat tab can cross-check), but the publish onto the bus is
+    // gated on `publishIosGps`, default off, stored in UserDefaults so
+    // it survives app relaunches.
     private(set) lazy var location: LocationPublisher = {
-        LocationPublisher { [weak self] in
-            // Triggers a republish so SwiftUI sees the published count
-            // / authorization changes without setting up a separate
-            // ObservableObject chain.
+        let p = LocationPublisher { [weak self] in
             self?.objectWillChange.send()
         }
+        p.publishToBus = UserDefaults.standard.bool(forKey: BusState.kPublishGpsKey)
+        return p
     }()
+
+    @Published var publishIosGps: Bool =
+        UserDefaults.standard.bool(forKey: BusState.kPublishGpsKey) {
+        didSet {
+            UserDefaults.standard.set(publishIosGps, forKey: BusState.kPublishGpsKey)
+            location.publishToBus = publishIosGps
+        }
+    }
+    private static let kPublishGpsKey = "publishIosGps"
     /// How long since a channel's last-seen before we NaN-clear it. Match
     /// the firmware-side 3 s window used by BoatState::invalidateLiveData
     /// and the TX-side per-channel staleness check.

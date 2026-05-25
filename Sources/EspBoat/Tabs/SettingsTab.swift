@@ -67,6 +67,14 @@ struct SettingsTab: View {
                 }
             }
 
+            Section("iPhone (this device only)") {
+                Toggle("Share iPhone GPS with boat",
+                       isOn: $bus.publishIosGps)
+                Text("When on, your iPhone publishes its position onto the bus as a real GPS source. When off, the position is still tracked locally for cross-check on the Boat tab but is not sent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("About") {
                 LabeledContent("AP version", value: "\(bus.snapshot.settingsV)")
                 LabeledContent("AP host",    value: Bus.apHost)
