@@ -14,10 +14,11 @@ staleness sweep, derived TWA/TWS/VMG, iPhone GPS publisher (opt-in,
 default off), Position cross-check with bold-orange warning at > 30 m
 delta vs bus GPS, SOG/COG derived locally from GPS position deltas.
 
-**Pending (v1.6 step 5–6):** PGN 129026 wire-up across all peers
-(would surface SOG/COG via the bus rather than local derivation),
-AIS map view (own ship + targets + 5-minute forward-projection
-arrows), Diagnostics tab polish (PGN-rate honeycomb, raw-log drawer).
+**Pending (v1.6 step 6):** AIS map view (own ship + targets +
+5-minute forward-projection arrows), Diagnostics tab polish
+(PGN-rate honeycomb, raw-log drawer). Map inputs are all on the
+bus already — a 129026 wire-up was declined in favour of local
+SOG/COG derivation (see ROADMAP v1.6 step 5).
 
 ## Role on the bus
 
@@ -33,7 +34,7 @@ protocol shape to the three ESP peers (`lcd-gps`, `lcd-2.1`,
 | Transport | WiFi STA, joins `_wifi_nmea2k` with WPA2-PSK |
 | Heartbeat | PGN 65500, 5-second cadence, same JSON shape |
 | Reads | Every instrument PGN — full mirror of `BoatState` |
-| Writes | Settings via HTTP POST to AP (ADR-0013); no PGN publishes from iOS in v1 |
+| Writes | Settings via HTTP POST to AP (ADR-0013); optional PGN 129025 GPS publish (opt-in, default off) |
 
 Because the priority is 80 and iOS can't act as a softAP, iOS never
 runs the AP role. The role-election protocol (ADR-0009) handles this
@@ -165,8 +166,9 @@ just lights up when the SSID is right.
 
 ## Things explicitly out of scope (v1)
 
-- iOS publishing instrument PGNs back to the bus (e.g. phone GPS as a
-  GPS source). Reserved for v2.
+- iOS publishing instrument PGNs back to the bus, beyond the opt-in
+  phone-GPS source (PGN 129025) shipped in step 4. Any further
+  iOS-sourced PGNs (e.g. phone heading/IMU) stay reserved for v2.
 - iOS as the AP. Can't happen on iOS — no softAP API.
 - Push notifications (AIS proximity alert, no-go-zone alarm, low
   battery). v2+.

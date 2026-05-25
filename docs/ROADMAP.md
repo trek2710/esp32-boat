@@ -157,11 +157,18 @@ becomes the canonical settings UI.** Design in
       stored in UserDefaults). Plus: Boat-tab Position cell with
       cross-check of bus-published GPS against iPhone GPS — bold
       orange when delta > 30 m.
-- [ ] **Step 5** — PGN 129026 (COG/SOG) wire-up across all three
-      peers + iOS publisher. Prereq for the map.
+- [x] **Step 5** — Own-ship SOG/COG available everywhere via local
+      derivation from successive PGN 129025 fixes (firmware `BoatState`
+      round 56; iOS `PgnDispatch.handleGps`). Per-target SOG/COG
+      already rides PGN 129039 from the converter. A 129026 wire-up
+      across peers was **declined**: it would contradict the round-56
+      "derive, don't trust a sensor-supplied COG/SOG" rule (RX already
+      ignores 129026) and add nothing the map needs.
 - [ ] **Step 6** — AIS map view: SwiftUI Canvas with own ship +
-      AIS targets + 5-minute forward-projection arrows. Diagnostics
-      tab polish (PGN-rate honeycomb, raw-log drawer).
+      AIS targets + 5-minute forward-projection arrows. **Unblocked**
+      — all inputs (own-ship position/heading/SOG/COG, per-target
+      position/SOG/COG) are on the bus today. Plus Diagnostics tab
+      polish (PGN-rate honeycomb, raw-log drawer).
 
 ## v1.7 — future polish (not yet planned)
 
