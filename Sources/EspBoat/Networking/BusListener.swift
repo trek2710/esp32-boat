@@ -30,6 +30,12 @@ final class BusListener {
         stop()
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
+        // Round 85 v1.6 step 3 fix: pin to WiFi only. With cellular on
+        // (required by free Apple ID for per-launch cert verification),
+        // iOS otherwise silently routes our 192.168.4.x traffic over
+        // cellular because _wifi_nmea2k has no internet. This tells
+        // Network.framework to refuse cellular for THIS connection only.
+        params.prohibitedInterfaceTypes = [.cellular]
         let port = NWEndpoint.Port(rawValue: Bus.busPort)!
         let l = try NWListener(using: params, on: port)
         l.stateUpdateHandler = { state in

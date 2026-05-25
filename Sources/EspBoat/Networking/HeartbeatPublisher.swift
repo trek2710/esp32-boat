@@ -23,7 +23,12 @@ final class HeartbeatPublisher {
         stop()
         let host = NWEndpoint.Host(Bus.apHost)
         let port = NWEndpoint.Port(rawValue: Bus.busPort)!
-        let c = NWConnection(host: host, port: port, using: .udp)
+        // Same WiFi-pin as BusListener — see comment there. Cellular has
+        // no route to 192.168.4.1; without this iOS may pick cellular
+        // and our heartbeats vanish.
+        let params: NWParameters = .udp
+        params.prohibitedInterfaceTypes = [.cellular]
+        let c = NWConnection(host: host, port: port, using: params)
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             // Log every transition so we can see in Xcode console

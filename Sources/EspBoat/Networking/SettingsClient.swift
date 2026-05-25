@@ -13,9 +13,21 @@ import Foundation
 
 struct SettingsClient {
     let baseURL: URL
+    private let session: URLSession
 
     init(host: String = Bus.apHost, port: UInt16 = Bus.httpPort) {
         self.baseURL = URL(string: "http://\(host):\(port)")!
+        // Round 85 v1.6 step 3 fix: refuse cellular. _wifi_nmea2k has
+        // no internet, so iOS otherwise routes 192.168.4.1 over cell
+        // (where it's unroutable) → timeouts. The system shared session
+        // can't be configured per-app this way, hence a dedicated one.
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.allowsCellularAccess = false
+        cfg.allowsExpensiveNetworkAccess = true   // _wifi_nmea2k can be flagged expensive
+        cfg.allowsConstrainedNetworkAccess = true
+        cfg.timeoutIntervalForRequest = 4.0
+        cfg.timeoutIntervalForResource = 8.0
+        self.session = URLSession(configuration: cfg)
     }
 
     /// Returns the AP's current snapshot. Throws on transport or decode error.
@@ -23,7 +35,7 @@ struct SettingsClient {
         var req = URLRequest(url: baseURL.appendingPathComponent("settings"))
         req.httpMethod = "GET"
         req.timeoutInterval = 4.0
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         try Self.ensureOK(response)
         return try JSONDecoder().decode(SettingsSnapshot.self, from: data)
     }
@@ -38,7 +50,7 @@ struct SettingsClient {
         req.timeoutInterval = 4.0
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(changes)
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         try Self.ensureOK(response)
         return try JSONDecoder().decode(SettingsSnapshot.self, from: data)
     }
