@@ -113,7 +113,7 @@ NmeaBridge* g_bridge_ptr = nullptr;
 // buildSettingsPage / refreshOverview / refreshSimulator are orphaned but
 // kept in place pending a separate cleanup commit.
 #if DATA_SOURCE_WIFI
-constexpr int kNumPages = 4;
+constexpr int kNumPages = 5;   // Main / AIS / Radar / PGN / Comm
 #elif DATA_SOURCE_BLE
 constexpr int kNumPages = 6;
 #else
@@ -2208,12 +2208,208 @@ void refreshAisPage() {
     if (n == 0) lv_obj_clear_flag(ais_pg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
     else        lv_obj_add_flag  (ais_pg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
 }
-// TODO(round-85, step 5 polish): full canvas-based compass overlay with
-// AIS targets drawn at their bearing/range positions. Deferred to a
-// follow-up round because (a) no own-GPS hardware on the LCD-2.1 to test
-// against beyond the simulator and (b) the most user-meaningful piece
-// (knowing how far / what bearing each target is) is already covered by
-// the populated RNG/BRG columns above.
+// --- Radar page — north-up PPI plot of AIS targets ------------------------
+//
+// The canvas twin of the iOS AisMapView: own ship at the centre of a
+// round green scope, AIS targets placed at their range/bearing, each
+// with a 5-minute COG projection stick. No map tiles (the LCDs have no
+// internet) — just the vector plot, hence "radar". North-up: the scope
+// never rotates, the own-ship icon rotates to heading.
+//
+// Two fixed scales instead of a pinch gesture: the outer ring is the
+// ais.range_nm filter cap; a screen tap toggles to a quarter of that for
+// a zoomed-in view. Page nav is swipe-only (chip gesture codes), so a
+// plain tap is free to drive the zoom toggle via an LVGL CLICKED event.
+
+constexpr int kRadarCanvas = 480;
+constexpr int kRadarCx     = 240;
+constexpr int kRadarCy     = 240;
+constexpr int kRadarR      = 210;   // outer ring radius, inside the bezel
+
+struct RadarPage {
+    lv_obj_t*   root       = nullptr;
+    lv_obj_t*   canvas     = nullptr;
+    lv_color_t* canvas_buf = nullptr;
+    lv_obj_t*   range_lbl  = nullptr;
+};
+RadarPage radar_pg;
+static bool g_radar_zoom = false;
+
+static void radarZoomCb(lv_event_t* /*e*/) { g_radar_zoom = !g_radar_zoom; }
+
+// Filled triangle, north-up, rotated to a compass heading. Same local
+// frame as the iOS vesselPath: x = right, y = forward.
+static void radarVessel(lv_obj_t* cv, int cx, int cy, double heading_deg,
+                        double len, lv_color_t color) {
+    const double t  = heading_deg * 0.017453292519943295;
+    const double cs = std::cos(t), sn = std::sin(t);
+    auto map = [&](double lx, double ly) -> lv_point_t {
+        return lv_point_t{
+            (lv_coord_t)std::lround(cx + lx * cs + ly * sn),
+            (lv_coord_t)std::lround(cy + lx * sn - ly * cs) };
+    };
+    lv_point_t tri[3] = { map(0, len),
+                          map(-len * 0.6, -len * 0.6),
+                          map( len * 0.6, -len * 0.6) };
+    lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
+    dsc.bg_color = color; dsc.bg_opa = LV_OPA_COVER;
+    lv_canvas_draw_polygon(cv, tri, 3, &dsc);
+}
+
+static void radarRing(lv_obj_t* cv, int r, lv_color_t color, int w) {
+    lv_draw_arc_dsc_t dsc; lv_draw_arc_dsc_init(&dsc);
+    dsc.color = color; dsc.width = w; dsc.opa = LV_OPA_COVER;
+    lv_canvas_draw_arc(cv, kRadarCx, kRadarCy, r, 0, 360, &dsc);
+}
+
+static void radarLine(lv_obj_t* cv, int x1, int y1, int x2, int y2,
+                      lv_color_t color, int w) {
+    lv_point_t pts[2] = { {(lv_coord_t)x1, (lv_coord_t)y1},
+                          {(lv_coord_t)x2, (lv_coord_t)y2} };
+    lv_draw_line_dsc_t dsc; lv_draw_line_dsc_init(&dsc);
+    dsc.color = color; dsc.width = w; dsc.opa = LV_OPA_COVER;
+    lv_canvas_draw_line(cv, pts, 2, &dsc);
+}
+
+static void radarText(lv_obj_t* cv, int x, int y, const char* s,
+                      lv_color_t color, const lv_font_t* font) {
+    lv_draw_label_dsc_t dsc; lv_draw_label_dsc_init(&dsc);
+    dsc.color = color; dsc.font = font;
+    lv_canvas_draw_text(cv, x, y, 120, &dsc, s);
+}
+
+void buildRadarPage() {
+    radar_pg.root = lv_obj_create(nullptr);
+    lv_obj_t* scr = radar_pg.root;
+    lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    const size_t buf_sz =
+        LV_CANVAS_BUF_SIZE_TRUE_COLOR(kRadarCanvas, kRadarCanvas);
+    radar_pg.canvas_buf = static_cast<lv_color_t*>(
+        heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!radar_pg.canvas_buf) {
+        log_e("[ui] radar canvas ps_malloc failed (%u bytes)",
+              static_cast<unsigned>(buf_sz));
+        return;
+    }
+    radar_pg.canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(radar_pg.canvas, radar_pg.canvas_buf,
+                         kRadarCanvas, kRadarCanvas, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_align(radar_pg.canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_canvas_fill_bg(radar_pg.canvas, lv_color_black(), LV_OPA_COVER);
+
+    // Tap toggles the zoom scale; page nav stays on the swipe gesture.
+    lv_obj_add_flag(radar_pg.canvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(radar_pg.canvas, radarZoomCb, LV_EVENT_CLICKED, nullptr);
+
+    radar_pg.range_lbl = lv_label_create(scr);
+    lv_obj_set_style_text_font(radar_pg.range_lbl,
+                               &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(radar_pg.range_lbl,
+                                lv_color_white(), LV_PART_MAIN);
+    lv_label_set_text(radar_pg.range_lbl, "");
+    lv_obj_align(radar_pg.range_lbl, LV_ALIGN_BOTTOM_MID, 0, -34);
+}
+
+void refreshRadarPage() {
+    if (!radar_pg.root || !radar_pg.canvas || !g_state) return;
+    // Full-canvas repaint is cheap but not free; throttle to ~4 Hz. AIS
+    // replays at 0.2 Hz and own-GPS blip motion is slow, so this is smooth.
+    static uint32_t last_draw = 0;
+    const uint32_t now = millis();
+    if (now - last_draw < 250) return;
+    last_draw = now;
+
+    lv_obj_t* cv = radar_pg.canvas;
+    lv_canvas_fill_bg(cv, lv_color_black(), LV_OPA_COVER);
+
+    const Instruments s = g_state->snapshot();
+    const bool ownGps = !std::isnan(s.lat) && !std::isnan(s.lon)
+                        && s.gps_last_ms != 0;
+
+    double range_full = 12.0;
+#if DATA_SOURCE_WIFI
+    if (g_bridge_ptr) range_full = g_bridge_ptr->currentSettings().ais_range_nm;
+#endif
+    if (range_full < 1.0) range_full = 1.0;
+    double range_nm = g_radar_zoom ? range_full / 4.0 : range_full;
+    if (range_nm < 1.0) range_nm = 1.0;
+    const double scale = (double)kRadarR / range_nm;   // px per NM
+
+    const lv_color_t ring_col = lv_color_hex(0x1B5E20);  // dim radar green
+    const lv_color_t blip_col = lv_color_hex(0x69F0AE);  // bright contact
+    const lv_color_t dim_col  = lv_color_hex(0x33691E);  // stale contact
+    const lv_color_t own_col  = lv_color_hex(0x00E5FF);  // own ship, cyan
+    const lv_color_t txt_col  = lv_color_hex(0x9E9E9E);
+
+    for (int k = 1; k <= 3; ++k) radarRing(cv, kRadarR * k / 3, ring_col, 2);
+    radarLine(cv, kRadarCx, kRadarCy - kRadarR,
+              kRadarCx, kRadarCy - kRadarR + 16, ring_col, 2);
+    radarText(cv, kRadarCx - 5, kRadarCy - kRadarR + 16, "N",
+              txt_col, &lv_font_montserrat_14);
+
+    if (!ownGps) {
+        radarText(cv, kRadarCx - 56, kRadarCy - 10, "NO GPS FIX",
+                  txt_col, &lv_font_montserrat_16);
+        lv_label_set_text(radar_pg.range_lbl, "--");
+        return;
+    }
+
+    constexpr double kD2R = 0.017453292519943295;
+    constexpr double kProjHr = 300.0 / 3600.0;   // 5 min, in hours → NM at kn
+
+    std::array<AisTarget, 32> targets = g_state->aisSnapshot();
+    for (auto& t : targets) {
+        if (t.mmsi == 0 || std::isnan(t.lat) || std::isnan(t.lon)) continue;
+        double rng, brg;
+        rangeAndBearing(s.lat, s.lon, t.lat, t.lon, &rng, &brg);
+        if (rng > range_nm) continue;          // outside the current scale
+        const double br = brg * kD2R;
+        const int x = kRadarCx + (int)std::lround(rng * scale * std::sin(br));
+        const int y = kRadarCy - (int)std::lround(rng * scale * std::cos(br));
+        const bool stale = (now - t.last_seen_ms) > 60000;
+        const lv_color_t c = stale ? dim_col : blip_col;
+
+        if (!std::isnan(t.sog) && !std::isnan(t.cog) && t.sog > 0.1) {
+            const double pe = t.sog * kProjHr * std::sin(t.cog * kD2R);
+            const double pn = t.sog * kProjHr * std::cos(t.cog * kD2R);
+            radarLine(cv, x, y,
+                      x + (int)std::lround(pe * scale),
+                      y - (int)std::lround(pn * scale), c, 2);
+        }
+        if (!std::isnan(t.cog)) {
+            radarVessel(cv, x, y, t.cog, 7, c);
+        } else {
+            lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
+            d.bg_color = c; d.bg_opa = LV_OPA_COVER; d.radius = LV_RADIUS_CIRCLE;
+            lv_canvas_draw_rect(cv, x - 4, y - 4, 8, 8, &d);
+        }
+        char lbl[12];
+        if (t.name[0]) snprintf(lbl, sizeof(lbl), "%.8s", t.name);
+        else           snprintf(lbl, sizeof(lbl), "%u",
+                                (unsigned)(t.mmsi % 10000));
+        radarText(cv, x + 8, y - 6, lbl, txt_col, &lv_font_montserrat_12);
+    }
+
+    // Own ship at the centre + its own projection stick.
+    const double own_hdg = !std::isnan(s.heading_mag_deg) ? s.heading_mag_deg
+                         : (!std::isnan(s.cog) ? s.cog : 0.0);
+    if (!std::isnan(s.sog) && !std::isnan(s.cog) && s.sog > 0.1) {
+        const double pe = s.sog * kProjHr * std::sin(s.cog * kD2R);
+        const double pn = s.sog * kProjHr * std::cos(s.cog * kD2R);
+        radarLine(cv, kRadarCx, kRadarCy,
+                  kRadarCx + (int)std::lround(pe * scale),
+                  kRadarCy - (int)std::lround(pn * scale), own_col, 2);
+    }
+    radarVessel(cv, kRadarCx, kRadarCy, own_hdg, 11, own_col);
+
+    char rb[40];
+    snprintf(rb, sizeof(rb), "%.1f NM  %s",
+             range_nm, g_radar_zoom ? "(zoom)" : "(tap to zoom)");
+    lv_label_set_text(radar_pg.range_lbl, rb);
+}
 #endif  // DATA_SOURCE_WIFI
 
 #if DATA_SOURCE_WIFI
@@ -2871,11 +3067,12 @@ void refreshFromState() {
     // will refresh next time they're shown.
     switch (current_page) {
 #if DATA_SOURCE_WIFI
-        // Round 85 (v1.5b step 4): Main / AIS / PGN / Comm.
+        // Round 85 (v1.5b step 4) + radar: Main / AIS / Radar / PGN / Comm.
         case 0: refreshMain(s);            break;
         case 1: refreshAisPage();          break;
-        case 2: refreshHoneycomb(s);       break;
-        case 3: refreshComm();             break;
+        case 2: refreshRadarPage();        break;
+        case 3: refreshHoneycomb(s);       break;
+        case 4: refreshComm();             break;
 #else
         case 0: refreshMain(s);            break;
         case 1: refreshOverview(s);        break;
@@ -3454,6 +3651,7 @@ void begin(BoatState& state) {
 #endif
 #if DATA_SOURCE_WIFI
     buildAisPage();                // round 85 v1.5b step 4
+    buildRadarPage();              // AIS radar PPI plot (companion to iOS map)
 #endif
 #if !DATA_SOURCE_WIFI
     // Round 85: WiFi build drops these three pages. BLE + sim builds keep
@@ -3464,11 +3662,12 @@ void begin(BoatState& state) {
 #endif
 
 #if DATA_SOURCE_WIFI
-    // Round 85 (v1.5b step 4): Main / AIS / PGN / Comm.
+    // Round 85 (v1.5b step 4) + radar: Main / AIS / Radar / PGN / Comm.
     pages[0] = main_pg.root;
     pages[1] = ais_pg.root;
-    pages[2] = hc_pg.root;
-    pages[3] = comm_pg.root;
+    pages[2] = radar_pg.root;
+    pages[3] = hc_pg.root;
+    pages[4] = comm_pg.root;
 #else
     pages[0] = main_pg.root;       // Main display
     pages[1] = overview.root;      // Wind display

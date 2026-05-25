@@ -39,6 +39,7 @@ struct Settings {
     bool sim_depth     = true;
     bool sim_sea_temp  = true;
     bool sim_air_temp  = true;
+    bool sim_ais       = true;            // converter's fake-AIS target sim
 
     // Navigation parameters.
     uint8_t  nav_no_go_deg = 35;          // Main page no-go-zone half-angle
@@ -80,6 +81,7 @@ public:
         data_.sim_depth           = p.getBool("sd",   data_.sim_depth);
         data_.sim_sea_temp        = p.getBool("sst",  data_.sim_sea_temp);
         data_.sim_air_temp        = p.getBool("sat",  data_.sim_air_temp);
+        data_.sim_ais             = p.getBool("sia",  data_.sim_ais);
         data_.nav_no_go_deg       = p.getUChar("ng",  data_.nav_no_go_deg);
         data_.ais_range_nm        = p.getUChar("ar",  data_.ais_range_nm);
         data_.ais_hide_anchored   = p.getBool("ah",   data_.ais_hide_anchored);
@@ -102,6 +104,7 @@ public:
         p.putBool  ("sd",  data_.sim_depth);
         p.putBool  ("sst", data_.sim_sea_temp);
         p.putBool  ("sat", data_.sim_air_temp);
+        p.putBool  ("sia", data_.sim_ais);
         p.putUChar ("ng",  data_.nav_no_go_deg);
         p.putUChar ("ar",  data_.ais_range_nm);
         p.putBool  ("ah",  data_.ais_hide_anchored);
@@ -122,6 +125,7 @@ public:
             "\"settings\":{"
             "\"sim.wind\":%s,\"sim.gps\":%s,\"sim.heading\":%s,"
             "\"sim.depth\":%s,\"sim.sea_temp\":%s,\"sim.air_temp\":%s,"
+            "\"sim.ais\":%s,"
             "\"nav.no_go_deg\":%u,"
             "\"ais.range_nm\":%u,\"ais.hide_anchored\":%s,\"ais.stale_s\":%u,"
             "\"ui.brightness\":%u,\"ui.idle_dim_after_s\":%u"
@@ -133,6 +137,7 @@ public:
             data_.sim_depth    ? "true" : "false",
             data_.sim_sea_temp ? "true" : "false",
             data_.sim_air_temp ? "true" : "false",
+            data_.sim_ais      ? "true" : "false",
             (unsigned)data_.nav_no_go_deg,
             (unsigned)data_.ais_range_nm,
             data_.ais_hide_anchored ? "true" : "false",
@@ -154,6 +159,7 @@ public:
         changes += applyBool  (body, "sim.depth",         &data_.sim_depth);
         changes += applyBool  (body, "sim.sea_temp",      &data_.sim_sea_temp);
         changes += applyBool  (body, "sim.air_temp",      &data_.sim_air_temp);
+        changes += applyBool  (body, "sim.ais",           &data_.sim_ais);
         changes += applyU8    (body, "nav.no_go_deg",     &data_.nav_no_go_deg);
         changes += applyU8    (body, "ais.range_nm",      &data_.ais_range_nm);
         changes += applyBool  (body, "ais.hide_anchored", &data_.ais_hide_anchored);

@@ -100,46 +100,78 @@ void setup() {
 
 // ---- Fake-AIS simulator (bench-only, until a Daisy is wired) ---------------
 //
-// Three pretend boats drifting in slow circles off Aarhus. Updates the
-// AisTargetStore every 6 s (close to a real Class B position-report
-// cadence). The WiFi replay loop below converts these into PGNs.
+// Six pretend recreational craft on Furesøen, the lake next to Virum —
+// a few km WNW of where the iPhone's real GPS reports, so they show up
+// near own-ship on the AIS map. Each moving boat dead-reckons along its
+// COG at its SOG every tick, looping back to its start once it has run
+// ~2 km, so the map's 5-minute projection arrows track real motion.
+// One boat sits at anchor (NavStatus 1) to exercise ais.hide_anchored.
+// Gated on the sim.ais setting (ADR-0013); the WiFi replay loop below
+// turns these into PGNs.
 
 static void simAisTick(uint32_t now) {
+    if (!WifiPublisher::currentSettings().sim_ais) return;
+
     static uint32_t last_tick = 0;
-    if (now - last_tick < 6000) return;
+    constexpr double kTickS = 6.0;
+    if (now - last_tick < (uint32_t)(kTickS * 1000)) return;
     last_tick = now;
 
     struct FakeAis {
         uint32_t mmsi;
         const char* name;
         uint8_t  ship_type;   // AIS message-24B typeOfShip code
-        uint8_t  nav_status;  // 0 = under way using engine, 15 = not defined
+        uint8_t  nav_status;  // 0 = under way, 1 = at anchor
         double   base_lat;
         double   base_lon;
         double   speed_kn;
-        double   bearing_deg;
+        double   course_deg;  // COG; also the dead-reckoning heading
     };
     static const FakeAis fakes[] = {
-        { 244010001, "LADY ROSE",   60, 0,  56.150, 10.220, 6.5,  45 }, // PAX
-        { 244010002, "SEA WOLF",    70, 0,  56.165, 10.215, 8.2,  92 }, // CRG
-        { 244010003, "EVA",         80, 15, 56.140, 10.245, 0.3,   0 }, // TNK, drifting
+        { 219015432, "FREJA",        36, 0,  55.795, 12.430, 4.2, 315 }, // sail
+        { 219008765, "SOLVEJ",       36, 0,  55.802, 12.420, 3.6, 200 }, // sail
+        { 219021110, "FREDERIKSDAL", 60, 0,  55.788, 12.440, 6.5, 290 }, // tour boat
+        { 219004488, "LAURA",        37, 0,  55.808, 12.410, 5.0, 130 }, // pleasure
+        { 219033221, "BIRKEROED",    37, 0,  55.800, 12.405, 3.0,  45 }, // pleasure
+        { 220117654, "VIKING",       36, 1,  55.792, 12.435, 0.0,   0 }, // sail, anchored
     };
-    static double phase = 0.0;
-    phase += 0.10;
+    constexpr size_t kNumFakes = sizeof(fakes) / sizeof(fakes[0]);
+    static double cur_lat[kNumFakes];
+    static double cur_lon[kNumFakes];
+    static bool   inited = false;
+    if (!inited) {
+        for (size_t i = 0; i < kNumFakes; ++i) {
+            cur_lat[i] = fakes[i].base_lat;
+            cur_lon[i] = fakes[i].base_lon;
+        }
+        inited = true;
+    }
+
     auto& store = decoder.store();
-    for (auto& f : fakes) {
-        // Circle ~0.001° radius around the base point.
-        const double dlat = sin(phase + f.mmsi * 0.001) * 0.0010;
-        const double dlon = cos(phase + f.mmsi * 0.001) * 0.0010;
-        store.recordLatLon(f.mmsi, f.base_lat + dlat, f.base_lon + dlon);
+    for (size_t i = 0; i < kNumFakes; ++i) {
+        const FakeAis& f = fakes[i];
+        if (f.speed_kn > 0.05) {
+            const double dist_m = f.speed_kn * 0.514444 * kTickS;
+            const double cog_r  = f.course_deg * M_PI / 180.0;
+            cur_lat[i] += dist_m * cos(cog_r) / 111320.0;
+            cur_lon[i] += dist_m * sin(cog_r)
+                        / (111320.0 * cos(cur_lat[i] * M_PI / 180.0));
+            // Loop back to the start once it has wandered ~0.02° (~2 km)
+            // so the fleet stays on the lake near own-ship.
+            const double dlat = cur_lat[i] - f.base_lat;
+            const double dlon = cur_lon[i] - f.base_lon;
+            if (dlat * dlat + dlon * dlon > 0.0004) {
+                cur_lat[i] = f.base_lat;
+                cur_lon[i] = f.base_lon;
+            }
+        }
+        store.recordLatLon(f.mmsi, cur_lat[i], cur_lon[i]);
         store.recordPosition(f.mmsi, 'B',
                              (float)f.speed_kn,
-                             (float)f.bearing_deg);
+                             (float)f.course_deg);
         store.recordName(f.mmsi, 'B', f.name);
         store.recordType(f.mmsi, 'B', f.ship_type);
-        if (f.nav_status != 15) {
-            store.recordNavStatus(f.mmsi, f.nav_status);
-        }
+        store.recordNavStatus(f.mmsi, f.nav_status);
     }
 }
 
