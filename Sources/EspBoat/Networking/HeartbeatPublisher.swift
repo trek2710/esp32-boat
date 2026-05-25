@@ -26,14 +26,24 @@ final class HeartbeatPublisher {
         let c = NWConnection(host: host, port: port, using: .udp)
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
+            // Log every transition so we can see in Xcode console
+            // whether the connection ever reaches .ready, or sits in
+            // .waiting (route problems) / .failed (permission denied).
+            switch state {
+            case .setup:        print("[hb] state: setup")
+            case .preparing:    print("[hb] state: preparing")
+            case .ready:        print("[hb] state: ready ✓")
+            case .waiting(let e): print("[hb] state: waiting — \(e)")
+            case .failed(let e):  print("[hb] state: failed — \(e)")
+            case .cancelled:    print("[hb] state: cancelled")
+            @unknown default:   print("[hb] state: unknown")
+            }
             switch state {
             case .ready:
                 self.isReady = true
                 // Fire one immediately on first ready so the AP learns
                 // our IP without waiting for the next 5 s tick.
                 self.sendOne()
-            case .failed, .cancelled:
-                self.isReady = false
             default:
                 self.isReady = false
             }
