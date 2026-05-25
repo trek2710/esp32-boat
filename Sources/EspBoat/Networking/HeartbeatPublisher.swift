@@ -17,22 +17,33 @@ final class HeartbeatPublisher {
     private var timer: DispatchSourceTimer?
     private let bootMs: UInt64 = UInt64(ProcessInfo.processInfo.systemUptime * 1000)
     private let queue = DispatchQueue(label: "HeartbeatPublisher.udp")
+    private var isReady = false
 
     func start() {
         stop()
         let host = NWEndpoint.Host(Bus.apHost)
         let port = NWEndpoint.Port(rawValue: Bus.busPort)!
         let c = NWConnection(host: host, port: port, using: .udp)
-        c.stateUpdateHandler = { state in
-            // No-op; UDP connections are stateless from our POV, but the
-            // handler is required for the NWConnection to schedule work.
-            _ = state
+        c.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.isReady = true
+                // Fire one immediately on first ready so the AP learns
+                // our IP without waiting for the next 5 s tick.
+                self.sendOne()
+            case .failed, .cancelled:
+                self.isReady = false
+            default:
+                self.isReady = false
+            }
         }
         c.start(queue: queue)
         connection = c
 
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 0.5, repeating: Bus.heartbeatPeriod)
+        t.schedule(deadline: .now() + Bus.heartbeatPeriod,
+                   repeating: Bus.heartbeatPeriod)
         t.setEventHandler { [weak self] in self?.sendOne() }
         t.resume()
         timer = t
@@ -41,10 +52,14 @@ final class HeartbeatPublisher {
     func stop() {
         timer?.cancel(); timer = nil
         connection?.cancel(); connection = nil
+        isReady = false
     }
 
     private func sendOne() {
-        guard let c = connection else { return }
+        // Skip silently when the connection hasn't reached .ready yet
+        // (e.g. WiFi associating, DHCP pending). The next 5-s tick will
+        // try again; iOS retries connection setup on its own schedule.
+        guard let c = connection, isReady else { return }
         let nowMs = UInt64(ProcessInfo.processInfo.systemUptime * 1000) - bootMs
         // Match RoleNegotiator::buildHeartbeatJson's shape exactly so
         // the firmware's findInt/findString parser accepts it. No
