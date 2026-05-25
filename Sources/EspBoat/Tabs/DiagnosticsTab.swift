@@ -27,6 +27,21 @@ struct DiagnosticsTab: View {
                 LabeledContent("Version", value: "\(bus.snapshot.settingsV)")
             }
 
+            Section("iPhone GPS (publish)") {
+                LabeledContent("Status", value: gpsStatusText)
+                    .foregroundStyle(gpsStatusColor)
+                if let fix = bus.location.lastFix {
+                    LabeledContent("Position",
+                                   value: String(format: "%.5f, %.5f",
+                                                 fix.coordinate.latitude,
+                                                 fix.coordinate.longitude))
+                    let ageS = Int(-fix.timestamp.timeIntervalSinceNow)
+                    LabeledContent("Last fix", value: "\(ageS) s ago")
+                }
+                LabeledContent("Published",
+                               value: "\(bus.location.didSendCount)")
+            }
+
             Section("Peers") {
                 if bus.peerNames.isEmpty {
                     Text("none yet (UDP listener arrives in next iteration)")
@@ -38,5 +53,16 @@ struct DiagnosticsTab: View {
             }
         }
         .navigationTitle("Diagnostics")
+    }
+
+    private var gpsStatusText: String {
+        if !bus.location.isAuthorized { return "permission needed" }
+        if bus.location.lastFix == nil { return "waiting for fix…" }
+        return "publishing"
+    }
+    private var gpsStatusColor: Color {
+        if !bus.location.isAuthorized { return .orange }
+        if bus.location.lastFix == nil { return .secondary }
+        return .green
     }
 }

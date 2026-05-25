@@ -30,6 +30,18 @@ final class BusState: ObservableObject {
     private let heartbeat = HeartbeatPublisher()
     private var listener: BusListener?
     private var staleTimer: AnyCancellable?
+
+    // Round 85 v1.6 step 4: iOS-side real GPS publisher (PGN 129025).
+    // Optional — won't fire anything until the user grants Location
+    // permission. Status surfaced in the Diagnostics tab.
+    private(set) lazy var location: LocationPublisher = {
+        LocationPublisher { [weak self] in
+            // Triggers a republish so SwiftUI sees the published count
+            // / authorization changes without setting up a separate
+            // ObservableObject chain.
+            self?.objectWillChange.send()
+        }
+    }()
     /// How long since a channel's last-seen before we NaN-clear it. Match
     /// the firmware-side 3 s window used by BoatState::invalidateLiveData
     /// and the TX-side per-channel staleness check.
@@ -49,6 +61,7 @@ final class BusState: ObservableObject {
             self.lastError = "listener: \(error.localizedDescription)"
         }
         heartbeat.start()
+        location.start()
         isOnline = true
         // Periodic stale sweep — blanks instrument fields whose source
         // channel has stopped publishing for > kStaleAfter.
@@ -61,6 +74,7 @@ final class BusState: ObservableObject {
     func stop() {
         listener?.stop(); listener = nil
         heartbeat.stop()
+        location.stop()
         staleTimer?.cancel(); staleTimer = nil
         isOnline = false
     }
