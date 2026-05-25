@@ -1,16 +1,13 @@
-// Networking/BusState.swift — the long-lived observable the SwiftUI
-// views read from. Owns the UDP receive listener, the heartbeat
-// publisher (PGN 65500 every 5 s while in foreground), and the
-// settings-snapshot mirror. Bumped to @MainActor so observers don't
-// need to bounce dispatch to update labels.
+// Networking/BusState.swift — long-lived observable owning the UDP
+// receive listener (BusListener), the 5-second heartbeat publisher
+// (HeartbeatPublisher), and the settings-snapshot mirror.
 //
-// v1 placeholders: UDP wire-up is stubbed until the JSON dispatcher
-// lands (next iteration). HTTP settings already work — try the
-// Settings tab against http://192.168.4.1/settings on a paired AP.
+// Lifecycle: start() on app foreground, stop() on background. Heartbeats
+// must fire continuously so the AP's g_peers fanout table keeps our IP
+// fresh (entries expire after 30 s on the firmware side).
 
 import Foundation
 import Combine
-import Network
 
 @MainActor
 final class BusState: ObservableObject {
@@ -22,30 +19,57 @@ final class BusState: ObservableObject {
     @Published var isOnline: Bool = false
     @Published var lastError: String? = nil
 
-    // Last-known AP peer name + RSSI + peer table snapshot — populated
-    // by the heartbeat parser. Empty until first heartbeat.
-    @Published var apPeer: String = ""
+    // Last-known peer table from heartbeats (excludes us).
     @Published var peerNames: [String] = []
+    @Published var apPeer: String = ""
+
+    // Last successful packet timestamp — used by Diagnostics + Boat.
+    @Published var lastPacketAt: Date? = nil
 
     private let settingsClient = SettingsClient()
-    private var heartbeatTimer: AnyCancellable?
+    private let heartbeat = HeartbeatPublisher()
+    private var listener: BusListener?
 
-    // MARK: lifecycle
+    // MARK: - lifecycle
     func start() {
-        Task { await refreshSettings() }
-        startHeartbeat()
-        // TODO(v1.6 step 2): bring up UDP receive socket on Bus.busPort
-        // and wire incoming heartbeats + data PGNs into this state.
+        // Receive listener first so we don't miss the first fan-out
+        // burst after the AP learns our IP from our heartbeat.
+        do {
+            let l = BusListener { [weak self] pgn, raw in
+                self?.onPacket(pgn: pgn, raw: raw)
+            }
+            try l.start()
+            listener = l
+        } catch {
+            self.lastError = "listener: \(error.localizedDescription)"
+        }
+        heartbeat.start()
         isOnline = true
+        Task { await refreshSettings() }
     }
 
     func stop() {
-        heartbeatTimer?.cancel()
-        heartbeatTimer = nil
+        listener?.stop(); listener = nil
+        heartbeat.stop()
         isOnline = false
     }
 
-    // MARK: settings
+    // MARK: - packet dispatch
+    private func onPacket(pgn: Int, raw: String) {
+        let _ = PgnDispatch.handle(
+            pgn: pgn, json: raw,
+            instruments: &instruments,
+            targets: &targets,
+            peers: &peerNames,
+            settings: &snapshot)
+        // Always touch lastPacketAt so the Boat/Diagnostics tabs can
+        // show a heartbeat-alive indicator.
+        lastPacketAt = Date()
+        // Any successful receive clears stale transport errors.
+        if lastError != nil { lastError = nil }
+    }
+
+    // MARK: - HTTP settings
     func refreshSettings() async {
         do {
             let s = try await settingsClient.fetch()
@@ -56,9 +80,6 @@ final class BusState: ObservableObject {
         }
     }
 
-    /// Patch one key. The UI calls this from a Toggle / Stepper /
-    /// Slider on commit; optimistic update happens after the AP echoes
-    /// back so we converge on the authoritative version number.
     func apply<E: Encodable>(_ key: String, _ value: E) async {
         do {
             let s = try await settingsClient.apply([key: AnyEncodable(value)])
@@ -67,21 +88,5 @@ final class BusState: ObservableObject {
         } catch {
             self.lastError = error.localizedDescription
         }
-    }
-
-    // MARK: heartbeat — placeholder
-    // The full heartbeat publisher uses NWConnection with .udp on
-    // Bus.apHost / Bus.busPort, and writes the same JSON shape
-    // RoleNegotiator::buildHeartbeatJson emits on the firmware side.
-    // For v1 step 2 we'll fill this in; for now the timer just fires
-    // so the cadence wiring is in place.
-    private func startHeartbeat() {
-        heartbeatTimer = Timer.publish(every: Bus.heartbeatPeriod,
-                                       on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                // self?.sendHeartbeat()    — wired in next iteration
-                _ = self
-            }
     }
 }
