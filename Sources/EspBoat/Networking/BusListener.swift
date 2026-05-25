@@ -81,6 +81,14 @@ final class BusListener {
                 }
                 if let s = String(data: data, encoding: .utf8),
                    let pgn = Self.parsePgn(s) {
+                    // Log every AIS PGN we receive so we can confirm
+                    // the receive path, regardless of whether dispatch
+                    // succeeds downstream.
+                    if pgn == 129038 || pgn == 129039 || pgn == 129040
+                       || pgn == 129809 || pgn == 129810 {
+                        print("[bl] AIS pgn=\(pgn): "
+                              + s.prefix(160))
+                    }
                     let handler = self.onPacket
                     Task { @MainActor in handler(pgn, s) }
                 }

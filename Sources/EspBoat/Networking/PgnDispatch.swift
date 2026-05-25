@@ -135,7 +135,10 @@ enum PgnDispatch {
     // MARK: - AIS
     private static func handleAisPosition(pgn: Int, json: String,
                                           targets: inout [AisTarget]) -> Bool {
-        guard let mmsi = jsonInt(json, key: "userId"), mmsi > 0 else { return false }
+        guard let mmsi = jsonInt(json, key: "userId"), mmsi > 0 else {
+            print("[disp] AIS pos pgn=\(pgn): userId parse failed")
+            return false
+        }
         var t = lookupOrCreate(UInt32(mmsi), in: &targets)
         if let lat = jsonDouble(json, key: "latitude")  { t.lat = lat }
         if let lon = jsonDouble(json, key: "longitude") { t.lon = lon }
@@ -144,6 +147,7 @@ enum PgnDispatch {
         if pgn == 129040, let n = jsonString(json, key: "name") { t.name = n }
         t.lastSeen = Date()
         store(t, into: &targets)
+        print("[disp] AIS pos mmsi=\(mmsi) → targets.count=\(targets.count)")
         return true
     }
 
