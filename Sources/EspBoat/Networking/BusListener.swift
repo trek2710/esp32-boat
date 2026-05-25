@@ -15,11 +15,12 @@ import Network
 // actor-free and Task-bounce to MainActor only at the final
 // `onPacket` callback.
 final class BusListener {
-    typealias PacketHandler = @MainActor (Int, String) -> Void
+    typealias PacketHandler = @MainActor @Sendable (Int, String) -> Void
 
     private var listener: NWListener?
     private let onPacket: PacketHandler
     private let queue = DispatchQueue(label: "BusListener.udp")
+    private var totalReceived: Int = 0
 
     init(onPacket: @escaping PacketHandler) {
         self.onPacket = onPacket
@@ -31,7 +32,17 @@ final class BusListener {
         params.allowLocalEndpointReuse = true
         let port = NWEndpoint.Port(rawValue: Bus.busPort)!
         let l = try NWListener(using: params, on: port)
+        l.stateUpdateHandler = { state in
+            switch state {
+            case .ready:           print("[bl] listener ready on :60001 ✓")
+            case .failed(let e):   print("[bl] listener failed: \(e)")
+            case .waiting(let e):  print("[bl] listener waiting: \(e)")
+            case .cancelled:       print("[bl] listener cancelled")
+            default:               break
+            }
+        }
         l.newConnectionHandler = { [weak self] conn in
+            print("[bl] new inbound flow from \(conn.endpoint)")
             self?.handle(conn)
         }
         l.start(queue: queue)
@@ -61,13 +72,21 @@ final class BusListener {
     private func receive(_ conn: NWConnection) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
-            if let data, !data.isEmpty,
-               let s = String(data: data, encoding: .utf8),
-               let pgn = Self.parsePgn(s) {
-                let handler = self.onPacket
-                Task { @MainActor in handler(pgn, s) }
+            if let data, !data.isEmpty {
+                self.totalReceived += 1
+                if self.totalReceived <= 3,
+                   let s = String(data: data, encoding: .utf8) {
+                    print("[bl] rx #\(self.totalReceived) (\(data.count) B): "
+                          + s.prefix(120))
+                }
+                if let s = String(data: data, encoding: .utf8),
+                   let pgn = Self.parsePgn(s) {
+                    let handler = self.onPacket
+                    Task { @MainActor in handler(pgn, s) }
+                }
             }
             if error != nil {
+                print("[bl] conn rx error: \(error!)")
                 conn.cancel()
                 return
             }
