@@ -62,11 +62,44 @@ final class BusState: ObservableObject {
             targets: &targets,
             peers: &peerNames,
             settings: &snapshot)
+        // Round 85 v1.6 step 3: mirror BoatState::recomputeDerived_locked()
+        // — TWA / TWS / VMG are derived locally, not on the wire.
+        recomputeDerived()
         // Always touch lastPacketAt so the Boat/Diagnostics tabs can
         // show a heartbeat-alive indicator.
         lastPacketAt = Date()
         // Any successful receive clears stale transport errors.
         if lastError != nil { lastError = nil }
+    }
+
+    /// Compute TWA / TWS / VMG from the current AWA / AWS / STW. If any
+    /// input is NaN the derived fields go NaN, matching BoatState's
+    /// behaviour: "true wind needs apparent wind and boat speed."
+    private func recomputeDerived() {
+        let awa = instruments.awa
+        let aws = instruments.aws
+        let bsp = instruments.stw
+        guard !awa.isNaN, !aws.isNaN, !bsp.isNaN else {
+            instruments.twa = .nan
+            instruments.tws = .nan
+            instruments.twd = .nan
+            instruments.vmg = .nan
+            return
+        }
+        let awaR = awa * .pi / 180.0
+        // Boat-frame triangle: true_wind = apparent_wind - boat_velocity.
+        // Boat heads down +x at BSP knots; AWA is measured from bow,
+        // positive starboard. Same convention as BoatState.cpp.
+        let twx = aws * cos(awaR) - bsp
+        let twy = aws * sin(awaR)
+        let twaR = atan2(twy, twx)
+        instruments.twa = twaR * 180.0 / .pi
+        instruments.tws = sqrt(twx * twx + twy * twy)
+        // VMG = boat speed component along the true-wind axis.
+        instruments.vmg = bsp * cos(twaR)
+        // TWD = TWA + heading (true). HDG is magnetic; we don't have
+        // variation applied yet on iOS so leave TWD NaN for now.
+        instruments.twd = .nan
     }
 
     // MARK: - HTTP settings
