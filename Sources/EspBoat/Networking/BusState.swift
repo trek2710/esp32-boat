@@ -121,6 +121,9 @@ final class BusState: ObservableObject {
         if stale(instruments.gpsLastSeen) {
             if !instruments.lat.isNaN { instruments.lat = .nan; changed = true }
             if !instruments.lon.isNaN { instruments.lon = .nan; changed = true }
+            // SOG/COG are derived off the GPS channel — blank them too.
+            if !instruments.sog.isNaN { instruments.sog = .nan; changed = true }
+            if !instruments.cog.isNaN { instruments.cog = .nan; changed = true }
             instruments.gpsLastSeen = nil
         }
         if stale(instruments.seaTempLastSeen) {

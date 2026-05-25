@@ -91,6 +91,32 @@ enum PgnDispatch {
                                   instruments: inout Instruments) -> Bool {
         guard let lat = jsonDouble(json, key: "latitude"),
               let lon = jsonDouble(json, key: "longitude") else { return false }
+        // Derive own-ship SOG/COG from the position differential between
+        // consecutive fixes, mirroring BoatState::setGps (round 56): we
+        // never trust a sensor-supplied PGN 129026 — course/speed fall
+        // out of position deltas. Equirectangular plate-carrée; the
+        // previous fix is still in `instruments` until we overwrite it.
+        if !instruments.lat.isNaN, !instruments.lon.isNaN,
+           let prev = instruments.gpsLastSeen {
+            let dt = Date().timeIntervalSince(prev)
+            if dt > 0.05, dt < 30.0 {
+                let earthR = 6_371_008.8
+                let degToRad = Double.pi / 180.0
+                let midLat = (instruments.lat + lat) * 0.5 * degToRad
+                let dx = (lon - instruments.lon) * degToRad * earthR * cos(midLat)
+                let dy = (lat - instruments.lat) * degToRad * earthR
+                let dist = (dx * dx + dy * dy).squareRoot()
+                instruments.sog = (dist / dt) * (3600.0 / 1852.0)  // m/s → kn
+                // Suppress a meaningless COG when essentially stationary —
+                // metre-scale GPS jitter would otherwise spin it wildly.
+                if dist > 0.5 {
+                    var brg = atan2(dx, dy) * 180.0 / .pi
+                    while brg < 0.0 { brg += 360.0 }
+                    while brg >= 360.0 { brg -= 360.0 }
+                    instruments.cog = brg
+                }
+            }
+        }
         instruments.lat = lat
         instruments.lon = lon
         instruments.gpsLastSeen = Date()
