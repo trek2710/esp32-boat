@@ -8,12 +8,18 @@
 import Foundation
 import Network
 
-@MainActor
+// NOT @MainActor — NWListener / NWConnection callbacks fire from
+// network framework's own dispatch queues. Swift 6's actor-isolation
+// checker rejects calls back into MainActor-isolated state from those
+// callbacks unless we explicitly bounce. We keep the listener itself
+// actor-free and Task-bounce to MainActor only at the final
+// `onPacket` callback.
 final class BusListener {
-    typealias PacketHandler = (Int, String) -> Void  // (pgn, raw JSON)
+    typealias PacketHandler = @MainActor (Int, String) -> Void
 
     private var listener: NWListener?
     private let onPacket: PacketHandler
+    private let queue = DispatchQueue(label: "BusListener.udp")
 
     init(onPacket: @escaping PacketHandler) {
         self.onPacket = onPacket
@@ -28,7 +34,7 @@ final class BusListener {
         l.newConnectionHandler = { [weak self] conn in
             self?.handle(conn)
         }
-        l.start(queue: .main)
+        l.start(queue: queue)
         listener = l
     }
 
@@ -48,19 +54,18 @@ final class BusListener {
                 break
             }
         }
-        conn.start(queue: .main)
+        conn.start(queue: queue)
         receive(conn)
     }
 
     private func receive(_ conn: NWConnection) {
         conn.receiveMessage { [weak self] data, _, _, error in
-            if let data = data, !data.isEmpty,
-               let s = String(data: data, encoding: .utf8) {
-                // Single-pass extract of the "pgn" field. Cheap because
-                // the field is always near the front of the document.
-                if let pgn = Self.parsePgn(s) {
-                    self?.onPacket(pgn, s)
-                }
+            guard let self else { return }
+            if let data, !data.isEmpty,
+               let s = String(data: data, encoding: .utf8),
+               let pgn = Self.parsePgn(s) {
+                let handler = self.onPacket
+                Task { @MainActor in handler(pgn, s) }
             }
             if error != nil {
                 conn.cancel()
@@ -68,7 +73,7 @@ final class BusListener {
             }
             // NWConnection.receiveMessage is one-shot — re-arm for the
             // next datagram.
-            self?.receive(conn)
+            self.receive(conn)
         }
     }
 

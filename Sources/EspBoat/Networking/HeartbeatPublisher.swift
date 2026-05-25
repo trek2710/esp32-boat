@@ -8,11 +8,15 @@
 import Foundation
 import Network
 
-@MainActor
+// NOT @MainActor — DispatchSource timers and NWConnection callbacks
+// fire from non-main queues. See BusListener.swift for the same
+// reasoning. This class doesn't touch UI state directly, so a non-
+// isolated home is fine.
 final class HeartbeatPublisher {
     private var connection: NWConnection?
     private var timer: DispatchSourceTimer?
     private let bootMs: UInt64 = UInt64(ProcessInfo.processInfo.systemUptime * 1000)
+    private let queue = DispatchQueue(label: "HeartbeatPublisher.udp")
 
     func start() {
         stop()
@@ -24,10 +28,10 @@ final class HeartbeatPublisher {
             // handler is required for the NWConnection to schedule work.
             _ = state
         }
-        c.start(queue: .main)
+        c.start(queue: queue)
         connection = c
 
-        let t = DispatchSource.makeTimerSource(queue: .main)
+        let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.5, repeating: Bus.heartbeatPeriod)
         t.setEventHandler { [weak self] in self?.sendOne() }
         t.resume()
