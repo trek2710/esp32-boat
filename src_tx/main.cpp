@@ -70,9 +70,22 @@
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
 #include <math.h>
+#if !TRANSPORT_WIFI
 #include <NimBLEDevice.h>
+#endif
 #include <TouchDrv.hpp>
 #include <BoatBle.h>
+#if TRANSPORT_WIFI
+#include "WifiPublisher.h"
+#include <wifi_credentials.h>
+
+// Round 85 (v1.5b step 7 fix): TX gets a local BoatState mirror so its
+// Main + AIS pages render real values from the bus instead of placeholders.
+#if TRANSPORT_WIFI
+#include "BoatState.h"
+static BoatState g_boatState;
+#endif
+#endif
 
 // AXP2101 lives at 7-bit I²C address 0x34. XPowersLib defines its own
 // constant for the same value but we hard-code it for the standalone bus
@@ -115,14 +128,15 @@ XPowersAXP2101 PMU;
 // over the reset window.
 static volatile uint32_t bleNotifyTotal = 0;
 
-// Per-characteristic notify counters, for the Communication page. Updated
-// inside each publishX() — gives us a "this channel is alive" view that's
-// independent of subscription state.
-static volatile uint32_t notifyCountWind      = 0;
-static volatile uint32_t notifyCountGps       = 0;
-static volatile uint32_t notifyCountHeading   = 0;
-static volatile uint32_t notifyCountDepthTemp = 0;
-static volatile uint32_t notifyCountAttitude  = 0;
+// Per-channel packet counters. Pre-round-80 these were bumped in each
+// publishX() (TX was the publisher). Post-WiFi, TX is the STA consumer,
+// so they're bumped in src_tx/WifiPublisher.cpp's dispatchData() instead.
+// Non-static (extern-visible) so dispatchData can write them.
+volatile uint32_t notifyCountWind      = 0;
+volatile uint32_t notifyCountGps       = 0;
+volatile uint32_t notifyCountHeading   = 0;
+volatile uint32_t notifyCountDepthTemp = 0;
+volatile uint32_t notifyCountAttitude  = 0;
 
 // Sim channel enable mask. All channels enabled by default. Step 6 will
 // expose this to the RX via the command characteristic; for now the Sim
@@ -339,57 +353,65 @@ static bool initLvgl() {
 // the visible page has its LV_OBJ_FLAG_HIDDEN cleared; the others are
 // hidden but kept in memory so we don't pay a build cost on each switch.
 
+// Round 85 (v1.5b step 7): page set converges with RX — Main / AIS /
+// PGN / Comm. Settings (no-go-zone +/-) moves to iOS via ADR-0013; the
+// Sim page disappears (sim toggles also live on iOS). Main and AIS are
+// placeholders here because TX has no local BoatState to render — it's
+// the publisher side of the bus. Wiring TX-as-consumer (incoming PGN
+// dispatch into a local BoatState) is a separate work item; until it
+// lands, the LCD-2.1 (RX) remains the canonical instrument display and
+// TX shows mainly diagnostics.
 enum TxPage : uint8_t {
-    TXP_PRIMARY    = 0,
-    TXP_SIMULATOR  = 1,
-    TXP_PGN        = 2,
-    TXP_SETTINGS   = 3,
-    TXP_COMM       = 4,
-    TXP_COUNT      = 5,
+    TXP_MAIN  = 0,
+    TXP_AIS   = 1,
+    TXP_PGN   = 2,
+    TXP_COMM  = 3,
+    TXP_COUNT = 4,
 };
 static const char *kPageTitles[TXP_COUNT] = {
-    "Primary",
-    "Simulator",
+    "Main",
+    "AIS",
     "PGN",
-    "Settings",
     "Communication",
 };
-static TxPage     currentPage  = TXP_PRIMARY;
+static TxPage     currentPage  = TXP_MAIN;
 static lv_obj_t  *pageRoots[TXP_COUNT] = {};
 
-// Dynamic labels we update each tick. Grouped per page so updaters can
-// access them by member name rather than juggling unnamed indices.
-static struct {
-    lv_obj_t *ble_state;
-    lv_obj_t *rate;
-    lv_obj_t *gps;        // step 8 — "GPS: N sats / fix-type"
-    lv_obj_t *vbus;
-    lv_obj_t *battery;
-    lv_obj_t *uptime;
-} primaryPg;
-
-// Step 9: each sim row is a tappable pill — root container with a label
-// inside. The bg colour reflects whether the channel is currently
-// enabled in simChannelMask (category pastel when on, dim grey when off).
-// y_top / y_bot let pollTouch tap-hit-test back to a row index.
-struct SimRow {
-    lv_obj_t *root  = nullptr;
-    lv_obj_t *lbl   = nullptr;
-    int16_t   y_top = 0;
-    int16_t   y_bot = 0;
+// Round 85 (v1.5b step 7 fix): Main and AIS render real BoatState values.
+// Main is a text grid (TWA/TWS/AWA/AWS/BSP/HDG/DPT/HEEL); AIS mirrors RX's
+// list (NAME/TYPE/SOG/RNG/BRG). No compass graphic on TX yet — that's a
+// separate polish round (the LVGL needle/cone code is RX-only for now).
+struct LabelPair {
+    lv_obj_t *caption = nullptr;
+    lv_obj_t *value   = nullptr;
 };
-static SimRow simPg[6];
+static struct {
+    LabelPair twa, tws, awa, aws;
+    LabelPair bsp, hdg, dpt, heel;
+} mainPg;
+
+static constexpr int kAisRows = 8;
+static struct {
+    lv_obj_t *count_lbl   = nullptr;
+    lv_obj_t *empty_lbl   = nullptr;
+    lv_obj_t *row_lbl[kAisRows] = {};
+} aisPg;
 
 static struct {
     lv_obj_t *rows[5];  // one per published PGN
 } pgnPg;
 
+// Round-85 two-column Comm page — Network (left) absorbs the role / IP /
+// peer info from the old Primary/Comm split; Hardware (right) absorbs
+// GPS / battery / uptime that used to live on Primary.
 static struct {
-    lv_obj_t *role;
-    lv_obj_t *name;
-    lv_obj_t *service;
-    lv_obj_t *clients;
-    lv_obj_t *total;
+    lv_obj_t *net_wifi;
+    lv_obj_t *net_ip;
+    lv_obj_t *net_rssi;
+    lv_obj_t *net_peers;
+    lv_obj_t *hw_gps;
+    lv_obj_t *hw_power;
+    lv_obj_t *hw_uptime;
 } commPg;
 
 // Build a full-screen page with a title label. Returns the page root; the
@@ -445,112 +467,123 @@ static void showPage(TxPage p) {
 static void initPages() {
     Serial.println("Building status pages...");
 
-    // --- Primary --------------------------------------------------------
-    pageRoots[TXP_PRIMARY] = makePage(kPageTitles[TXP_PRIMARY]);
+    // --- Main — 4×2 grid of text-only boat values ----------------------
+    pageRoots[TXP_MAIN] = makePage(kPageTitles[TXP_MAIN]);
     {
-        lv_obj_t *p = pageRoots[TXP_PRIMARY];
-        // 40 px row pitch for the 24 pt font (rows are ~30 px tall, so this
-        // leaves a clean 10 px gap). Slightly wider gaps separate the
-        // BLE/GPS group from the power group from uptime.
-        primaryPg.ble_state = makeRow(p,  90);
-        primaryPg.rate      = makeRow(p, 130);
-        primaryPg.gps       = makeRow(p, 170);
-        primaryPg.vbus      = makeRow(p, 220);
-        primaryPg.battery   = makeRow(p, 260);
-        primaryPg.uptime    = makeRow(p, 315);
+        lv_obj_t *p = pageRoots[TXP_MAIN];
+        // Two columns at x≈40 and x≈250; four rows of (caption / value)
+        // pairs. Caption above value, small grey / large white, matching
+        // the Comm-page style.
+        auto makeCell = [&](int x, int y, LabelPair *out, const char *cap) {
+            lv_obj_t *c = lv_label_create(p);
+            lv_label_set_text(c, cap);
+            lv_obj_set_style_text_color(c,
+                lv_color_make(0x9e, 0x9e, 0x9e), LV_PART_MAIN);
+            lv_obj_set_style_text_font(c, &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_align(c, LV_ALIGN_TOP_LEFT, x, y);
+
+            lv_obj_t *v = lv_label_create(p);
+            lv_label_set_text(v, "—");
+            lv_obj_set_style_text_color(v, lv_color_white(), LV_PART_MAIN);
+            lv_obj_set_style_text_font(v, &lv_font_montserrat_28, LV_PART_MAIN);
+            lv_obj_align(v, LV_ALIGN_TOP_LEFT, x, y + 18);
+            out->caption = c;
+            out->value   = v;
+        };
+        constexpr int kColL = 40, kColR = 250;
+        constexpr int kRowY0 = 100, kPitch = 75;
+        makeCell(kColL, kRowY0 + 0 * kPitch, &mainPg.twa,  "TWA");
+        makeCell(kColR, kRowY0 + 0 * kPitch, &mainPg.tws,  "TWS");
+        makeCell(kColL, kRowY0 + 1 * kPitch, &mainPg.awa,  "AWA");
+        makeCell(kColR, kRowY0 + 1 * kPitch, &mainPg.aws,  "AWS");
+        makeCell(kColL, kRowY0 + 2 * kPitch, &mainPg.bsp,  "BSP");
+        makeCell(kColR, kRowY0 + 2 * kPitch, &mainPg.hdg,  "HDG");
+        makeCell(kColL, kRowY0 + 3 * kPitch, &mainPg.dpt,  "DPT");
+        makeCell(kColR, kRowY0 + 3 * kPitch, &mainPg.heel, "VMG");
     }
 
-    // --- Simulator ------------------------------------------------------
-    pageRoots[TXP_SIMULATOR] = makePage(kPageTitles[TXP_SIMULATOR]);
+    // --- AIS — same list as RX (NAME / TYPE / SOG / RNG / BRG) ----------
+    pageRoots[TXP_AIS] = makePage(kPageTitles[TXP_AIS]);
     {
-        lv_obj_t *p = pageRoots[TXP_SIMULATOR];
-        // Six pill-shaped tappable rows. The exact pixel geometry has to
-        // sit inside the round 466 px viewport — start at y=85 and step
-        // 44 px so the last row ends at y=85+5*44+38=343, well clear of
-        // the 466 px bottom and the round bezel cropping.
-        const int16_t btn_w  = 280;
-        const int16_t btn_h  = 38;
-        const int16_t btn_x  = (kLcdW - btn_w) / 2;
-        const int16_t pitch  = 44;
-        const int16_t y0     = 85;
-        for (int i = 0; i < 6; i++) {
-            const int16_t y = y0 + i * pitch;
-            lv_obj_t *btn = lv_obj_create(p);
-            lv_obj_set_size(btn, btn_w, btn_h);
-            lv_obj_set_pos(btn, btn_x, y);
-            lv_obj_set_style_radius(btn, 19, LV_PART_MAIN);
-            lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
-            lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
-            lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-            // Mark the button as non-clickable from LVGL's POV — taps are
-            // routed through our pollTouch hit-test, not the LVGL indev
-            // tree (which we don't register).
-            lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t *p = pageRoots[TXP_AIS];
+        aisPg.count_lbl = lv_label_create(p);
+        lv_label_set_text(aisPg.count_lbl, "0 in range");
+        lv_obj_set_style_text_color(aisPg.count_lbl,
+            lv_color_make(0x9e, 0x9e, 0x9e), LV_PART_MAIN);
+        lv_obj_set_style_text_font(aisPg.count_lbl,
+            &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_align(aisPg.count_lbl, LV_ALIGN_TOP_MID, 0, 88);
 
-            lv_obj_t *lbl = lv_label_create(btn);
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, LV_PART_MAIN);
-            lv_label_set_text(lbl, kSimChannels[i].name);
-            lv_obj_center(lbl);
+        lv_obj_t *hdr = lv_label_create(p);
+        lv_label_set_text(hdr, "NAME       TYPE SOG  RNG BRG");
+        lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_style_text_color(hdr,
+            lv_color_make(0xbd, 0xbd, 0xbd), LV_PART_MAIN);
+        lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 55, 118);
 
-            simPg[i].root  = btn;
-            simPg[i].lbl   = lbl;
-            simPg[i].y_top = y;
-            simPg[i].y_bot = y + btn_h;
+        for (int i = 0; i < kAisRows; i++) {
+            aisPg.row_lbl[i] = lv_label_create(p);
+            lv_obj_set_style_text_font(aisPg.row_lbl[i],
+                &lv_font_montserrat_14, LV_PART_MAIN);
+            lv_obj_set_style_text_color(aisPg.row_lbl[i],
+                lv_color_white(), LV_PART_MAIN);
+            lv_label_set_text(aisPg.row_lbl[i], "");
+            lv_obj_align(aisPg.row_lbl[i], LV_ALIGN_TOP_LEFT,
+                         40, 140 + i * 24);
+            lv_obj_add_flag(aisPg.row_lbl[i], LV_OBJ_FLAG_HIDDEN);
         }
+
+        aisPg.empty_lbl = lv_label_create(p);
+        lv_label_set_text(aisPg.empty_lbl, "No targets in range");
+        lv_obj_set_style_text_font(aisPg.empty_lbl,
+            &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_text_color(aisPg.empty_lbl,
+            lv_color_make(0x9e, 0x9e, 0x9e), LV_PART_MAIN);
+        lv_obj_align(aisPg.empty_lbl, LV_ALIGN_CENTER, 0, 0);
     }
 
     // --- PGN ------------------------------------------------------------
     pageRoots[TXP_PGN] = makePage(kPageTitles[TXP_PGN]);
     {
         lv_obj_t *p = pageRoots[TXP_PGN];
-        // Five rows at 45 px pitch — wider than the Sim pitch because the
-        // PGN labels (rate + name) are longer strings and benefit from
-        // extra breathing room.
         for (int i = 0; i < 5; i++) {
             pgnPg.rows[i] = makeRow(p, 100 + i * 45);
-            // Tint by category — pastel text on black for the
-            // "honeycomb feel" without the actual hex canvas.
             const auto &pal = kHexPalettes[kPgnChannels[i].cat];
             lv_obj_set_style_text_color(pgnPg.rows[i],
                 lv_color_hex(pal.bg_hex), LV_PART_MAIN);
         }
     }
 
-    // --- Settings (placeholder) ----------------------------------------
-    pageRoots[TXP_SETTINGS] = makePage(kPageTitles[TXP_SETTINGS]);
-    {
-        lv_obj_t *p = pageRoots[TXP_SETTINGS];
-        lv_obj_t *l = makeRow(p, 200);
-        lv_label_set_text(l, "(no settings yet)");
-        lv_obj_set_style_text_color(l, lv_color_make(0x9e, 0x9e, 0x9e),
-                                    LV_PART_MAIN);
-    }
-
-    // --- Communication --------------------------------------------------
+    // --- Communication — two columns (Network left, Hardware right) ----
     pageRoots[TXP_COMM] = makePage(kPageTitles[TXP_COMM]);
     {
         lv_obj_t *p = pageRoots[TXP_COMM];
-        // 42 px pitch for the role/name/service block (24 pt font);
-        // wider 55 px gap before the live-updating clients/total
-        // counters so the eye groups them apart.
-        commPg.role    = makeRow(p,  90);
-        commPg.name    = makeRow(p, 132);
-        commPg.service = makeRow(p, 174);
-        commPg.clients = makeRow(p, 230);
-        commPg.total   = makeRow(p, 272);
+        // The 466-px round screen comfortably fits two text columns at
+        // x=40 and x=240; the round bezel crops the corners but the
+        // visible strip at y=110–340 is full-width.
+        constexpr int kColLeftX  =  40;
+        constexpr int kColRightX = 250;
+        constexpr int kRowY0     = 110;
+        constexpr int kRowPitch  =  50;
+        auto makeCell = [&](int x, int y) {
+            lv_obj_t *l = lv_label_create(p);
+            lv_obj_set_style_text_color(l, lv_color_white(), LV_PART_MAIN);
+            lv_obj_set_style_text_font(l, &lv_font_montserrat_20, LV_PART_MAIN);
+            lv_label_set_text(l, "—");
+            lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
+            return l;
+        };
+        commPg.net_wifi   = makeCell(kColLeftX,  kRowY0 + 0 * kRowPitch);
+        commPg.net_ip     = makeCell(kColLeftX,  kRowY0 + 1 * kRowPitch);
+        commPg.net_rssi   = makeCell(kColLeftX,  kRowY0 + 2 * kRowPitch);
+        commPg.net_peers  = makeCell(kColLeftX,  kRowY0 + 3 * kRowPitch);
+        commPg.hw_gps     = makeCell(kColRightX, kRowY0 + 0 * kRowPitch);
+        commPg.hw_power   = makeCell(kColRightX, kRowY0 + 1 * kRowPitch);
+        commPg.hw_uptime  = makeCell(kColRightX, kRowY0 + 2 * kRowPitch);
     }
 
-    // Static content that never changes once boot is done.
-    lv_label_set_text(commPg.role, "Role: Transmitter");
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Name: %s", BOAT_BLE_DEVICE_NAME);
-    lv_label_set_text(commPg.name, buf);
-    snprintf(buf, sizeof(buf), "Service: ...%s",
-             BOAT_BLE_SERVICE_UUID + 32);  // last 4 chars: "9f01"
-    lv_label_set_text(commPg.service, buf);
-
-    showPage(TXP_PRIMARY);
-    Serial.println("  Pages built; showing Primary.");
+    showPage(TXP_MAIN);
+    Serial.println("  Pages built; showing Main.");
 }
 
 // Refresh the currently-visible page from the live state globals. Called
@@ -573,82 +606,95 @@ static void updatePages(uint32_t now, uint32_t connectedCount, uint32_t ratePerS
     lv_obj_invalidate(pageRoots[currentPage]);
 
     switch (currentPage) {
-        case TXP_PRIMARY: {
-            snprintf(buf, sizeof(buf), "BLE: %s",
-                     connectedCount > 0 ? "client connected" : "advertising");
-            lv_label_set_text(primaryPg.ble_state, buf);
-
-            snprintf(buf, sizeof(buf), "rate: %u msg/s", (unsigned)ratePerSec);
-            lv_label_set_text(primaryPg.rate, buf);
-
-            // Step 8 — GPS state. Shows sats + fix-quality; "(sim)" suffix
-            // when the BLE GPS values are still falling back to the fake
-            // Aarhus coordinates, so the user knows where lat/lon comes from.
-            const char *fixName = "no fix";
-            switch (gps.fixQuality) {
-                case 1: fixName = "GPS";     break;
-                case 2: fixName = "DGPS";    break;
-                case 4: fixName = "RTK fix"; break;
-                case 5: fixName = "RTK flt"; break;
-                case 6: fixName = "deadrec"; break;
-                default: break;
-            }
-            if (gpsHasFreshFix(now)) {
-                snprintf(buf, sizeof(buf), "GPS: %u sats / %s",
-                         (unsigned)gps.numSats, fixName);
-            } else if (gps.numSats > 0) {
-                snprintf(buf, sizeof(buf), "GPS: %u sats / %s (sim)",
-                         (unsigned)gps.numSats, fixName);
-            } else {
-                snprintf(buf, sizeof(buf), "GPS: no signal (sim)");
-            }
-            lv_label_set_text(primaryPg.gps, buf);
-
-            snprintf(buf, sizeof(buf), "VBUS: %s",
-                     PMU.isVbusIn() ? "connected" : "—");
-            lv_label_set_text(primaryPg.vbus, buf);
-
-            uint16_t v = PMU.getBattVoltage();
-            if (PMU.isBatteryConnect() && v > 0) {
-                snprintf(buf, sizeof(buf), "Battery: %u mV (%d%%)",
-                         (unsigned)v, PMU.getBatteryPercent());
-            } else {
-                snprintf(buf, sizeof(buf), "Battery: not present");
-            }
-            lv_label_set_text(primaryPg.battery, buf);
-
-            uint32_t sec = now / 1000;
-            snprintf(buf, sizeof(buf), "up: %02u:%02u:%02u",
-                     (unsigned)(sec / 3600),
-                     (unsigned)((sec / 60) % 60),
-                     (unsigned)(sec % 60));
-            lv_label_set_text(primaryPg.uptime, buf);
+        case TXP_MAIN: {
+#if TRANSPORT_WIFI
+            const Instruments s = g_boatState.snapshot();
+            // Round 85 v1.6 step 3: per-channel staleness. When iOS
+            // toggles sim.X off, the AP stops publishing that PGN. TX
+            // has no local source so its BoatState.X_last_ms freezes.
+            // Show "—" once the corresponding timestamp is older than
+            // 3 s; same window as g_state->invalidateLiveData() uses
+            // on the all-or-nothing path.
+            constexpr uint32_t kStaleMs = 3000;
+            auto fresh = [&](uint32_t last_ms) {
+                return last_ms != 0 && (now - last_ms) < kStaleMs;
+            };
+            auto set = [&](LabelPair &lp, const char *fmt, double v,
+                           bool channel_fresh) {
+                if (std::isnan(v) || !channel_fresh) {
+                    lv_label_set_text(lp.value, "—"); return;
+                }
+                snprintf(buf, sizeof(buf), fmt, v);
+                lv_label_set_text(lp.value, buf);
+            };
+            const bool wind_fresh = fresh(s.wind_last_ms);
+            const bool stw_fresh  = fresh(s.stw_last_ms);
+            const bool hdg_fresh  = fresh(s.hdg_last_ms);
+            const bool dep_fresh  = fresh(s.depth_last_ms);
+            // TWA / TWS / VMG depend on wind AND stw freshness.
+            const bool tw_fresh   = wind_fresh && stw_fresh;
+            set(mainPg.twa,  "%+5.0f°", s.twa,                tw_fresh);
+            set(mainPg.tws,  "%4.1f kt", s.tws,               tw_fresh);
+            set(mainPg.awa,  "%+5.0f°", s.awa,                wind_fresh);
+            set(mainPg.aws,  "%4.1f kt", s.aws,               wind_fresh);
+            set(mainPg.bsp,  "%4.1f kt", s.stw,               stw_fresh);
+            set(mainPg.hdg,  "%5.0f°",   s.heading_mag_deg,   hdg_fresh);
+            set(mainPg.dpt,  "%4.1f m",  s.depth_m,           dep_fresh);
+            set(mainPg.heel, "%+4.1f kt", s.vmg,              tw_fresh);
+#endif
             break;
         }
 
-        case TXP_SIMULATOR: {
-            // One pill per channel. Background uses the category pastel
-            // when the bit is set in simChannelMask; otherwise a dim
-            // grey. Text uses the corresponding flash colour on top of
-            // the pastel for high contrast, and a lighter grey on the
-            // dim background.
-            for (int i = 0; i < 6; i++) {
-                const bool on  = (simChannelMask & kSimChannels[i].bit) != 0;
-                const auto &pal = kHexPalettes[kSimChannels[i].cat];
-                lv_obj_set_style_bg_opa(simPg[i].root,
-                    LV_OPA_COVER, LV_PART_MAIN);
-                if (on) {
-                    lv_obj_set_style_bg_color(simPg[i].root,
-                        lv_color_hex(pal.bg_hex), LV_PART_MAIN);
-                    lv_obj_set_style_text_color(simPg[i].lbl,
-                        lv_color_hex(pal.flash_hex), LV_PART_MAIN);
-                } else {
-                    lv_obj_set_style_bg_color(simPg[i].root,
-                        lv_color_make(0x21, 0x21, 0x21), LV_PART_MAIN);
-                    lv_obj_set_style_text_color(simPg[i].lbl,
-                        lv_color_make(0x75, 0x75, 0x75), LV_PART_MAIN);
+        case TXP_AIS: {
+#if TRANSPORT_WIFI
+            std::array<AisTarget, 32> targets = g_boatState.aisSnapshot();
+            int idx[32];
+            int n = 0;
+            for (int i = 0; i < (int)targets.size(); i++) {
+                if (targets[i].mmsi != 0) idx[n++] = i;
+            }
+            // Sort by last_seen desc (we don't compute range here without
+            // own GPS — keep it simple on TX for now).
+            for (int a = 0; a < n - 1; a++) {
+                for (int b = a + 1; b < n; b++) {
+                    if (targets[idx[b]].last_seen_ms > targets[idx[a]].last_seen_ms) {
+                        int t = idx[a]; idx[a] = idx[b]; idx[b] = t;
+                    }
                 }
             }
+            snprintf(buf, sizeof(buf), "%d in range", n);
+            lv_label_set_text(aisPg.count_lbl, buf);
+            const int rows = (n < kAisRows) ? n : kAisRows;
+            for (int r = 0; r < kAisRows; r++) {
+                if (r >= rows) {
+                    lv_obj_add_flag(aisPg.row_lbl[r], LV_OBJ_FLAG_HIDDEN);
+                    continue;
+                }
+                const AisTarget &t = targets[idx[r]];
+                char name[12];
+                if (t.name[0] != 0) snprintf(name, sizeof(name), "%-10.10s", t.name);
+                else                snprintf(name, sizeof(name), "%-10u", (unsigned)t.mmsi);
+                const char *type = "—";
+                if (t.ship_type != 0) {
+                    if (t.ship_type == 36)            type = "SAIL";
+                    else if (t.ship_type == 37)        type = "PLS";
+                    else if (t.ship_type >= 30 && t.ship_type <= 39) type = "FSH";
+                    else if (t.ship_type >= 60 && t.ship_type <= 69) type = "PAX";
+                    else if (t.ship_type >= 70 && t.ship_type <= 79) type = "CRG";
+                    else if (t.ship_type >= 80 && t.ship_type <= 89) type = "TNK";
+                    else type = "OTH";
+                }
+                char sog[8];
+                if (std::isnan(t.sog)) snprintf(sog, sizeof(sog), "  —");
+                else                   snprintf(sog, sizeof(sog), "%4.1f", t.sog);
+                snprintf(buf, sizeof(buf), "%s %-4s %s   —  —",
+                         name, type, sog);
+                lv_label_set_text(aisPg.row_lbl[r], buf);
+                lv_obj_clear_flag(aisPg.row_lbl[r], LV_OBJ_FLAG_HIDDEN);
+            }
+            if (n == 0) lv_obj_clear_flag(aisPg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
+            else        lv_obj_add_flag  (aisPg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
+#endif
             break;
         }
 
@@ -676,17 +722,81 @@ static void updatePages(uint32_t now, uint32_t connectedCount, uint32_t ratePerS
             break;
         }
 
-        case TXP_SETTINGS:
-            // Static placeholder — nothing to refresh.
-            break;
-
         case TXP_COMM: {
-            snprintf(buf, sizeof(buf), "Clients: %u", (unsigned)connectedCount);
-            lv_label_set_text(commPg.clients, buf);
+#if TRANSPORT_WIFI
+            // --- Network column ---
+            const char* role = WifiPublisher::roleName();
+            if (strcmp(role, "AP") == 0) {
+                snprintf(buf, sizeof(buf), "AP (%u sta)",
+                         (unsigned)WifiPublisher::stationCount());
+            } else if (strcmp(role, "STA") == 0) {
+                const char* ap = WifiPublisher::currentApPeer();
+                snprintf(buf, sizeof(buf), "STA  ap=%s",
+                         (ap && *ap) ? ap : "—");
+            } else {
+                snprintf(buf, sizeof(buf), "Electing…");
+            }
+            lv_label_set_text(commPg.net_wifi, buf);
 
-            snprintf(buf, sizeof(buf), "Notifies: %lu",
-                     (unsigned long)bleNotifyTotal);
-            lv_label_set_text(commPg.total, buf);
+            snprintf(buf, sizeof(buf), "IP %s", WifiPublisher::apIp());
+            lv_label_set_text(commPg.net_ip, buf);
+
+            // RSSI/channel: WifiPublisher doesn't expose these yet on the
+            // TX env (NmeaBridge does on RX). For now show rate-as-proxy
+            // and leave RSSI for a follow-up getter.
+            snprintf(buf, sizeof(buf), "rate %u/s", (unsigned)ratePerSec);
+            lv_label_set_text(commPg.net_rssi, buf);
+
+            snprintf(buf, sizeof(buf), "peers %d", WifiPublisher::peerCount());
+            lv_label_set_text(commPg.net_peers, buf);
+#else
+            snprintf(buf, sizeof(buf), "BLE %s",
+                     connectedCount > 0 ? "connected" : "advertising");
+            lv_label_set_text(commPg.net_wifi, buf);
+            snprintf(buf, sizeof(buf), "clients %u", (unsigned)connectedCount);
+            lv_label_set_text(commPg.net_ip, buf);
+            snprintf(buf, sizeof(buf), "notify %lu", (unsigned long)bleNotifyTotal);
+            lv_label_set_text(commPg.net_rssi, buf);
+            lv_label_set_text(commPg.net_peers, "");
+#endif
+
+            // --- Hardware column ---
+            const char *fixName = "no fix";
+            switch (gps.fixQuality) {
+                case 1: fixName = "GPS";     break;
+                case 2: fixName = "DGPS";    break;
+                case 4: fixName = "RTK fix"; break;
+                case 5: fixName = "RTK flt"; break;
+                case 6: fixName = "dead-rec"; break;
+                default: break;
+            }
+            if (gpsHasFreshFix(now)) {
+                snprintf(buf, sizeof(buf), "GPS %u sat %s",
+                         (unsigned)gps.numSats, fixName);
+            } else if (gps.numSats > 0) {
+                snprintf(buf, sizeof(buf), "GPS %u sat (sim)",
+                         (unsigned)gps.numSats);
+            } else {
+                snprintf(buf, sizeof(buf), "GPS no signal");
+            }
+            lv_label_set_text(commPg.hw_gps, buf);
+
+            uint16_t v = PMU.getBattVoltage();
+            const bool vbus = PMU.isVbusIn();
+            if (PMU.isBatteryConnect() && v > 0) {
+                snprintf(buf, sizeof(buf), "%u mV  %s",
+                         (unsigned)v, vbus ? "USB" : "batt");
+            } else {
+                snprintf(buf, sizeof(buf), "%s", vbus ? "USB power" : "no batt");
+            }
+            lv_label_set_text(commPg.hw_power, buf);
+
+            uint32_t sec = now / 1000;
+            snprintf(buf, sizeof(buf), "up %02u:%02u:%02u",
+                     (unsigned)(sec / 3600),
+                     (unsigned)((sec / 60) % 60),
+                     (unsigned)(sec % 60));
+            lv_label_set_text(commPg.hw_uptime, buf);
             break;
         }
 
@@ -1231,6 +1341,7 @@ static bool initGps() {
 // halfway through a callback would crash. The library never garbage-
 // collects them; we never destroy them either.
 
+#if !TRANSPORT_WIFI
 static NimBLEServer         *bleServer        = nullptr;
 static NimBLEService        *bleService       = nullptr;
 static NimBLECharacteristic *charWind         = nullptr;
@@ -1239,6 +1350,7 @@ static NimBLECharacteristic *charHeading      = nullptr;
 static NimBLECharacteristic *charDepthTemp    = nullptr;
 static NimBLECharacteristic *charAttitude     = nullptr;
 static NimBLECharacteristic *charCommand      = nullptr;
+#endif
 
 // Stats reset each serial-heartbeat tick so we can see real publish rates.
 // (bleNotifyTotal, the per-char notifyCount* counters, and simChannelMask
@@ -1246,6 +1358,7 @@ static NimBLECharacteristic *charCommand      = nullptr;
 //  multi-page UI in updatePages() which sits above this section.)
 static volatile uint32_t bleNotifyCount = 0;
 
+#if !TRANSPORT_WIFI
 // Server callbacks: we use them for two things — visibility ("[BLE] central
 // connected", logged with the peer's MAC so future debugging is easier),
 // and to restart advertising as soon as a central disconnects so the next
@@ -1278,7 +1391,9 @@ class CommandCallbacks : public NimBLECharacteristicCallbacks {
         Serial.println();
     }
 };
+#endif  // !TRANSPORT_WIFI
 
+#if !TRANSPORT_WIFI
 static bool initBle() {
     Serial.println("Initialising BLE peripheral (NimBLE)...");
     NimBLEDevice::init(BOAT_BLE_DEVICE_NAME);
@@ -1321,6 +1436,7 @@ static bool initBle() {
     Serial.printf("  Service UUID: %s\r\n", BOAT_BLE_SERVICE_UUID);
     return true;
 }
+#endif  // !TRANSPORT_WIFI
 
 // ---- Simulator ------------------------------------------------------------
 //
@@ -1346,6 +1462,17 @@ static inline void countNotify(volatile uint32_t &perChar) {
     perChar++;
 }
 
+// Transport-agnostic peer-count for the UI / heartbeat / Communication page.
+// Returns the number of BLE centrals connected (BLE build) or the number of
+// WiFi stations associated to the softAP (WiFi build).
+static inline uint32_t connectedPeerCount() {
+#if TRANSPORT_WIFI
+    return WifiPublisher::stationCount();
+#else
+    return bleServer ? bleServer->getConnectedCount() : 0;
+#endif
+}
+
 static void publishWind(uint32_t t) {
     if (!(simChannelMask & boatble::SIM_CH_WIND)) return;
     boatble::WindPdu pdu = {};
@@ -1355,8 +1482,12 @@ static void publishWind(uint32_t t) {
     pdu.twd_deg10  = wrap_deg10((float)(t / 100));                     // full rotation / 360 s
     pdu.awa_deg10  = (int16_t)(sinf(t / 12000.0f) *  900);             // ±90°
     pdu.aws_kt100  = (uint16_t)(1200 + cosf(t /  9000.0f) * 400);      // 8-16 kt
+#if TRANSPORT_WIFI
+    WifiPublisher::publishWind(pdu, t);
+#else
     charWind->setValue((uint8_t *)&pdu, sizeof(pdu));
     charWind->notify();
+#endif
     countNotify(notifyCountWind);
 }
 
@@ -1376,8 +1507,12 @@ static void publishGps(uint32_t t) {
     }
     pdu.cog_deg10  = wrap_deg10((float)(t / 200));                      // full rotation / 720 s
     pdu.sog_kt100  = (uint16_t)(600 + sinf(t / 15000.0f) * 300);        // 3-9 kt
+#if TRANSPORT_WIFI
+    WifiPublisher::publishGps(pdu, t);
+#else
     charGps->setValue((uint8_t *)&pdu, sizeof(pdu));
     charGps->notify();
+#endif
     countNotify(notifyCountGps);
 }
 
@@ -1387,8 +1522,12 @@ static void publishHeading(uint32_t t) {
     pdu.valid_mask = 0x03;   // HDG + BSPD
     pdu.hdg_deg10  = wrap_deg10((float)((t / 250) + 1800));             // offset from COG
     pdu.bspd_kt100 = (uint16_t)(500 + sinf(t / 12000.0f) * 200);        // 3-7 kt
+#if TRANSPORT_WIFI
+    WifiPublisher::publishHeading(pdu, t);
+#else
     charHeading->setValue((uint8_t *)&pdu, sizeof(pdu));
     charHeading->notify();
+#endif
     countNotify(notifyCountHeading);
 }
 
@@ -1410,8 +1549,12 @@ static void publishDepthTemp(uint32_t t) {
         pdu.air_temp_c10 = (int16_t)(180 + sinf(t / 50000.0f) * 30);    // 15-21 °C
         pdu.valid_mask  |= (1 << 1);                                     // AIR-T
     }
+#if TRANSPORT_WIFI
+    WifiPublisher::publishDepthTemp(pdu, t);
+#else
     charDepthTemp->setValue((uint8_t *)&pdu, sizeof(pdu));
     charDepthTemp->notify();
+#endif
     countNotify(notifyCountDepthTemp);
 }
 
@@ -1421,8 +1564,12 @@ static void publishAttitude(uint32_t t) {
     pdu.valid_mask  = 0x01;   // HEEL only; PITCH/ROT/RUD/ENG-T/OIL-T masked invalid
     pdu.heel_deg10  = (int16_t)(sinf(t / 5000.0f) * 100);               // ±10°
     // pitch / rot / rud / eng_temp / oil_temp left at 0 — invalid_mask = 0
+#if TRANSPORT_WIFI
+    WifiPublisher::publishAttitude(pdu, t);
+#else
     charAttitude->setValue((uint8_t *)&pdu, sizeof(pdu));
     charAttitude->notify();
+#endif
     countNotify(notifyCountAttitude);
 }
 
@@ -1521,8 +1668,13 @@ void setup() {
     initGps();   // soft-fail OK; publishGps() falls back to sim if no fix
     Serial.println();
 
-    // ---- 7. bring up BLE peripheral + simulator ---------------------------
+    // ---- 7. bring up transport + simulator -------------------------------
+#if TRANSPORT_WIFI
+    WifiPublisher::begin();
+    WifiPublisher::setDataConsumer(&g_boatState);  // round 85 fix
+#else
     initBle();
+#endif
     Serial.println();
 
     Serial.println("Step 8 done. Swipe left/right to change page:");
@@ -1568,11 +1720,28 @@ void loop() {
     // BLE publish gates. notify() is cheap when no central is subscribed,
     // so we publish unconditionally — much simpler than tracking
     // per-characteristic subscribe state and the wire cost is zero.
+    // Round 83b: simulator moved to RX (the AP) so multicast flows AP→STA,
+    // the working direction on ESP32. TX (now STA) is no longer the data
+    // source on the bench. The publishX() functions below stay defined
+    // (BLE env still uses them) but aren't called under TRANSPORT_WIFI.
+#if !TRANSPORT_WIFI
     if (now - windPubMs      >= kFastPubPeriodMs) { windPubMs      = now; publishWind(now); }
     if (now - gpsPubMs       >= kFastPubPeriodMs) { gpsPubMs       = now; publishGps(now); }
     if (now - hdgPubMs       >= kFastPubPeriodMs) { hdgPubMs       = now; publishHeading(now); }
     if (now - depthTempPubMs >= kSlowPubPeriodMs) { depthTempPubMs = now; publishDepthTemp(now); }
     if (now - attitudePubMs  >= kFastPubPeriodMs) { attitudePubMs  = now; publishAttitude(now); }
+#else
+    (void)windPubMs; (void)gpsPubMs; (void)hdgPubMs;
+    (void)depthTempPubMs; (void)attitudePubMs;
+#endif
+
+#if TRANSPORT_WIFI
+    // 30 s republish heartbeat per ADR-0006. Currently a no-op in practice
+    // because publishX above runs at <=1 s cadence, but the spec requires
+    // it and it'll matter once the RX→TX command channel lands and lets
+    // individual channels go silent.
+    WifiPublisher::tick(now);
+#endif
 
     // UI refresh — compute notify rate over the elapsed window, then
     // hand the current snapshot to updatePages(). Cached so the Primary
@@ -1584,7 +1753,7 @@ void loop() {
         bleNotifyLast     = bleNotifyTotal;
         bleNotifyLastT    = now;
         uiUpdateMs        = now;
-        uint32_t connected = bleServer ? bleServer->getConnectedCount() : 0;
+        uint32_t connected = connectedPeerCount();
         updatePages(now, connected, cachedRatePerSec);
     }
 
@@ -1614,20 +1783,40 @@ void loop() {
         showPage(target);
         // Force an immediate UI refresh so the new page isn't blank
         // for up to kUiUpdatePeriodMs.
-        uint32_t connected = bleServer ? bleServer->getConnectedCount() : 0;
+        uint32_t connected = connectedPeerCount();
         updatePages(now, connected, cachedRatePerSec);
         Serial.printf("[UI] swipe-%s -> %s\r\n",
                       swipe == SWIPE_LEFT ? "left" : "right",
                       kPageTitles[currentPage]);
     }
 
-    // Serial heartbeat. Reports power state from the AXP2101 plus BLE
-    // state (central count + notifies emitted since the last heartbeat).
+    // Serial heartbeat. Reports power state from the AXP2101 plus
+    // transport state since the last tick.
     if (now - hbLastMs >= kHeartbeatPeriodMs) {
+        const uint32_t connected = connectedPeerCount();
+        hbLastMs = now;
+#if TRANSPORT_WIFI
+        // Real packet counts (not publishX calls). pkts_sent counts every
+        // successful sendto(); pkts_fail counts ssize_t<0 returns.
+        const uint32_t pktsSent = WifiPublisher::packetsInWindow();
+        const uint32_t pktsFail = WifiPublisher::packetsFailedInWindow();
+        const uint32_t pktsTotal = WifiPublisher::packetsSent();
+        const uint32_t pktsRx   = WifiPublisher::packetsRxTotal();
+        WifiPublisher::resetWindow();
+        Serial.printf("[TX] uptime=%lu ms  vbat=%u mV  role=%s  ap=%s  "
+                      "peers=%d  pkts_sent=%lu  pkts_rx=%lu  page=%s\r\n",
+                      now,
+                      PMU.getBattVoltage(),
+                      WifiPublisher::roleName(),
+                      WifiPublisher::currentApPeer(),
+                      WifiPublisher::peerCount(),
+                      (unsigned long)pktsSent,
+                      (unsigned long)pktsRx,
+                      kPageTitles[currentPage]);
+        (void)pktsFail; (void)pktsTotal; (void)connected;
+#else
         const uint32_t notifies = bleNotifyCount;
         bleNotifyCount = 0;
-        const uint32_t connected = bleServer ? bleServer->getConnectedCount() : 0;
-        hbLastMs = now;
         Serial.printf("[TX] uptime=%lu ms  vbat=%u mV  vbus=%s  charging=%s "
                       "ble=%u central(s)  notifies=%lu in %lu ms  page=%s\r\n",
                       now,
@@ -1638,6 +1827,7 @@ void loop() {
                       (unsigned long)notifies,
                       (unsigned long)kHeartbeatPeriodMs,
                       kPageTitles[currentPage]);
+#endif
         // Step 8 — GPS diagnostic. Two byte counters so we can see which
         // physical path (I²C or UART) is actually feeding the parser on
         // this board variant. linesParsed climbs only when a complete

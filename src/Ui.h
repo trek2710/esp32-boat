@@ -14,7 +14,7 @@
 #include "BoatState.h"
 #include "config.h"
 
-#if DATA_SOURCE_BLE
+#if DATA_SOURCE_BLE || DATA_SOURCE_WIFI
 // Forward decl so callers don't need to drag NmeaBridge.h into headers that
 // only forward the type.
 class NmeaBridge;
@@ -32,10 +32,12 @@ void begin(BoatState& state);
 // wants to run, so the caller can delay appropriately.
 uint32_t tick();
 
-#if DATA_SOURCE_BLE
-// Step 4: register the BLE bridge so the Communication page can read link
+#if DATA_SOURCE_BLE || DATA_SOURCE_WIFI
+// Register the transport bridge so the Communication page can read link
 // state / RSSI / per-channel counters. Call once, after ui::begin(). Held
-// as a non-owning pointer; lifetime must outlive the UI loop.
+// as a non-owning pointer; lifetime must outlive the UI loop. Function
+// name kept for surgical-diff reasons; the bridge is BLE-central (step 4)
+// or WiFi-multicast (round 81) depending on which DATA_SOURCE_* is set.
 void setBleBridge(NmeaBridge& bridge);
 #endif
 

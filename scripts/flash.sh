@@ -13,8 +13,11 @@
 # script aborts before any bytes hit flash.
 #
 # Usage:
-#   ./scripts/flash.sh tx                  Flash + monitor the transmitter
-#   ./scripts/flash.sh rx                  Flash + monitor the receiver
+#   ./scripts/flash.sh tx                  Flash + monitor the transmitter (BLE)
+#   ./scripts/flash.sh rx                  Flash + monitor the receiver (BLE)
+#   ./scripts/flash.sh tx_wifi             Flash + monitor TX with WiFi softAP
+#   ./scripts/flash.sh rx_wifi             Flash + monitor RX with WiFi station
+#   ./scripts/flash.sh converter           Flash + monitor the AIS converter (C6)
 #   ./scripts/flash.sh tx --no-monitor     Flash only, skip monitor
 #   ./scripts/flash.sh tx --register       Register the connected board's
 #                                          MAC as the transmitter (use when
@@ -22,14 +25,31 @@
 #                                          or when overwriting an old MAC)
 #
 # Roles → PIO envs:
-#   tx → [env:nmea2k_tx]                       — ESP32-S3-Touch-AMOLED-1.75-G
-#   rx → [env:waveshare_esp32s3_touch_lcd_21_ble]
-#                                              — Waveshare 2.1" round display.
-#                                                Step 4 (May 12 2026) switched
-#                                                this from the sim env to the
-#                                                BLE-client env. The RX scans
-#                                                for esp32-boat-tx and feeds
-#                                                BoatState from BLE notifies.
+#   tx        → [env:nmea2k_tx]                       — ESP32-S3-Touch-AMOLED-1.75-G,
+#                                                       BLE peripheral build
+#   tx_wifi   → [env:nmea2k_tx_wifi]                  — same board; brings up softAP
+#                                                       _wifi_nmea2k and publishes
+#                                                       to the virtual N2K bus
+#                                                       multicast group (round 81)
+#   rx        → [env:waveshare_esp32s3_touch_lcd_21_ble]
+#                                                     — Waveshare 2.1" round display
+#                                                       in BLE-central mode (step 4)
+#   rx_wifi   → [env:waveshare_esp32s3_touch_lcd_21_wifi]
+#                                                     — same board; joins
+#                                                       _wifi_nmea2k as a station
+#                                                       and subscribes to multicast
+#                                                       (round 81)
+#   converter → [env:nmea_converter]                  — Waveshare ESP32-C6-LCD-1.47,
+#                                                       reads AIS sentences from a
+#                                                       Daisy 2+ on UART1, emits
+#                                                       PGNs on TWAI (round 82
+#                                                       migrated from the
+#                                                       standalone NMEA-converter
+#                                                       project)
+#
+# tx_wifi and tx share the same physical board, so MAC registration is keyed
+# on the board (tx/rx/converter), not the firmware variant. Flashing tx_wifi
+# against a board registered as tx succeeds without re-registration.
 #
 # Storage:
 #   scripts/.devices.conf — newline-separated `role=AA:BB:CC:DD:EE:FF`
@@ -64,20 +84,28 @@ for arg in "$@"; do
     esac
 done
 
+# BOARD is the physical-board key for MAC registration (tx/rx/converter). ENV
+# is the PlatformIO env to actually compile + flash. CHIP is the esptool
+# `--chip` arg — tx/rx are ESP32-S3, converter is ESP32-C6. Round 81 added
+# the _wifi variants for tx/rx (same boards, different firmware, shared
+# BOARD key); round 82 added the converter.
 case "$ROLE" in
-    tx) ENV="nmea2k_tx" ;;
+    tx)        BOARD="tx";        ENV="nmea2k_tx";                          CHIP="esp32s3" ;;
+    tx_wifi)   BOARD="tx";        ENV="nmea2k_tx_wifi";                     CHIP="esp32s3" ;;
     # Step 4 (May 12 2026): RX defaults to the BLE-client env that
     # consumes from esp32-boat-tx. The sim env is still in platformio.ini
     # if you ever need to bench-test the UI without a TX nearby — flash
     # it directly with: pio run -e waveshare_esp32s3_touch_lcd_21_sim -t upload
-    rx) ENV="waveshare_esp32s3_touch_lcd_21_ble" ;;
+    rx)        BOARD="rx";        ENV="waveshare_esp32s3_touch_lcd_21_ble"; CHIP="esp32s3" ;;
+    rx_wifi)   BOARD="rx";        ENV="waveshare_esp32s3_touch_lcd_21_wifi";CHIP="esp32s3" ;;
+    converter) BOARD="converter"; ENV="nmea_converter";                     CHIP="esp32c6" ;;
     "")
-        echo "Usage: $0 <tx|rx> [--no-monitor] [--register]" >&2
+        echo "Usage: $0 <tx|rx|tx_wifi|rx_wifi|converter> [--no-monitor] [--register]" >&2
         echo "       $0 --help" >&2
         exit 1
         ;;
     *)
-        echo "Unknown role: $ROLE (must be 'tx' or 'rx')" >&2
+        echo "Unknown role: $ROLE (must be 'tx', 'rx', 'tx_wifi', 'rx_wifi', or 'converter')" >&2
         exit 1
         ;;
 esac
@@ -116,8 +144,10 @@ else
 fi
 
 # `read-mac` prints "MAC: aa:bb:cc:dd:ee:ff" on a line of its own. Newer
-# esptool also dumps base-MAC for ESP32-S3; we grab the first MAC: line.
-MAC="$("$ESPTOOL" --chip esp32s3 --port "$PORT" read-mac 2>&1 \
+# esptool also dumps base-MAC for ESP32-S3 / C6; we grab the first MAC:
+# line. The --chip arg is set per role above so the C6 converter doesn't
+# fail an S3-chip check.
+MAC="$("$ESPTOOL" --chip "$CHIP" --port "$PORT" read-mac 2>&1 \
        | awk '/^MAC:/ { print $2; exit }' || true)"
 if [[ -z "$MAC" ]]; then
     echo "ERROR: Could not read MAC from $PORT." >&2
@@ -130,40 +160,42 @@ if [[ -z "$MAC" ]]; then
 fi
 echo "==> Chip MAC: $MAC"
 
-# ---- 3. compare MAC against the registered one for this role ---------------
+# ---- 3. compare MAC against the registered one for this board -------------
+# MAC keys are per-board (tx/rx), not per-firmware-variant — flashing
+# tx_wifi against a board already registered as tx is correct and expected.
 mkdir -p "$(dirname "$DEVICES")"
 touch "$DEVICES"
-REGISTERED="$(grep -E "^${ROLE}=" "$DEVICES" 2>/dev/null \
+REGISTERED="$(grep -E "^${BOARD}=" "$DEVICES" 2>/dev/null \
               | head -n1 | cut -d= -f2- || true)"
 
 if $REGISTER; then
-    # Explicit register: overwrite whatever's there for this role.
-    grep -vE "^${ROLE}=" "$DEVICES" > "$DEVICES.tmp" 2>/dev/null || true
-    echo "${ROLE}=${MAC}" >> "$DEVICES.tmp"
+    # Explicit register: overwrite whatever's there for this board.
+    grep -vE "^${BOARD}=" "$DEVICES" > "$DEVICES.tmp" 2>/dev/null || true
+    echo "${BOARD}=${MAC}" >> "$DEVICES.tmp"
     mv "$DEVICES.tmp" "$DEVICES"
-    echo "==> Registered $MAC as $ROLE in $DEVICES"
+    echo "==> Registered $MAC as $BOARD in $DEVICES"
 elif [[ -z "$REGISTERED" ]]; then
     echo
-    echo "No '$ROLE' device registered yet."
-    echo "Register the connected board ($MAC) as $ROLE? [y/N]"
+    echo "No '$BOARD' device registered yet."
+    echo "Register the connected board ($MAC) as $BOARD? [y/N]"
     read -r reply
     if [[ ! "$reply" =~ ^[Yy]$ ]]; then
         echo "Aborted. Re-run with --register to skip this prompt." >&2
         exit 1
     fi
-    echo "${ROLE}=${MAC}" >> "$DEVICES"
-    echo "==> Registered $MAC as $ROLE in $DEVICES"
+    echo "${BOARD}=${MAC}" >> "$DEVICES"
+    echo "==> Registered $MAC as $BOARD in $DEVICES"
 elif [[ "$REGISTERED" != "$MAC" ]]; then
     echo
-    echo "ABORT: connected MAC ($MAC) is not the registered $ROLE board." >&2
-    echo "       Registered $ROLE MAC: $REGISTERED" >&2
+    echo "ABORT: connected MAC ($MAC) is not the registered $BOARD board." >&2
+    echo "       Registered $BOARD MAC: $REGISTERED" >&2
     echo
     echo "Either:" >&2
-    echo "  - Wrong board plugged in. Disconnect and connect the $ROLE." >&2
+    echo "  - Wrong board plugged in. Disconnect and connect the $BOARD." >&2
     echo "  - Swapping in a replacement: re-run with --register to overwrite." >&2
     exit 1
 else
-    echo "==> Verified: $MAC is the registered $ROLE device."
+    echo "==> Verified: $MAC is the registered $BOARD device (flashing $ROLE)."
 fi
 
 # ---- 4. build + flash ------------------------------------------------------

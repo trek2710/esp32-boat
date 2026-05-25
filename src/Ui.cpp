@@ -92,7 +92,7 @@ lv_color_t*        buf2 = nullptr;
 
 BoatState* g_state = nullptr;
 
-#if DATA_SOURCE_BLE
+#if DATA_SOURCE_BLE || DATA_SOURCE_WIFI
 // Step 4: optional pointer to the BLE bridge. Populated by ui::setBleBridge()
 // after ui::begin() returns. The Communication page reads link state, peer
 // MAC, RSSI, and per-channel notify counters off this.
@@ -106,7 +106,15 @@ NmeaBridge* g_bridge_ptr = nullptr;
 // Step 4 (May 12 2026): bumped to 6 in BLE builds to add the Communication
 // page (page 5) — shows link state, peer MAC, RSSI, and per-channel notify
 // counters when running as a BLE central.
-#if DATA_SOURCE_BLE
+// Round 85 (v1.5b step 3): WiFi build drops Wind / Sim / Settings pages
+// (Settings moves to iOS per ADR-0013, the others were debug-only). Step 4
+// (this commit) adds AIS at index 1. Swipe order: Main / AIS / PGN / Comm.
+// The function bodies for buildOverviewPage / buildSimulatorPage /
+// buildSettingsPage / refreshOverview / refreshSimulator are orphaned but
+// kept in place pending a separate cleanup commit.
+#if DATA_SOURCE_WIFI
+constexpr int kNumPages = 4;
+#elif DATA_SOURCE_BLE
 constexpr int kNumPages = 6;
 #else
 constexpr int kNumPages = 5;
@@ -1208,9 +1216,16 @@ void buildMainPage() {
     // struct field is still `twd_arrow` for diff-minimisation; the
     // declaration comment was updated to flag the new role.
     //
+    // Round 85 (v1.5b step 1): flipped so the THICK end is outward and
+    // the apex points inward toward the dial centre. Reads as "wind
+    // arrives from the rim direction and hits the boat at the centre."
+    // Achieved by swapping y=0 ↔ y=kConeVisibleBase in both triangles;
+    // the canvas, the pivot, and the visible length are unchanged so
+    // the outer edge still sits flush against the wedge inner edge.
+    //
     // Geometry deltas:
     //   kConeW            50 → 25   (half-width — "50 % smaller at the centre")
-    //   kConeH           140 → 215  (round 76 +30 %; round 77 push tip
+    //   kConeH           140 → 215  (round 76 +30 %; round 77 push base
     //                                 out to the wedge inner edge)
     //   kConeVisibleBase  90 → 117  (round 76; unchanged in round 77 so
     //                                 the visible cone stays the same
@@ -1218,9 +1233,9 @@ void buildMainPage() {
     //                                 padding grew, translating the
     //                                 whole cone outward without
     //                                 rescaling it)
-    // Tip-to-pivot distance = kConeH - 1 = 214; with the dial's outer
+    // Base-to-pivot distance = kConeH - 1 = 214; with the dial's outer
     // 26-px wedge band sitting flush to radius 240 (wedges span
-    // 214..240), the cone tip lands right at the wedge inner edge.
+    // 214..240), the cone's wide base lands right at the wedge inner edge.
     constexpr int kConeW           = 25;
     constexpr int kConeH           = 215;
     constexpr int kConeVisibleBase = 117;
@@ -1243,10 +1258,12 @@ void buildMainPage() {
         // Round 76: tighter inset margins (was -5 / -8 with kConeW=50;
         // at kConeW=25 we reduce to -2 / -3 so the inner triangle still
         // has visible border on each side).
+        // Round 85: base at y=0 (outer rim end), apex at y=kConeVisibleBase
+        // (inner / centre-pointing end).
         const lv_point_t outer_tri[3] = {
-            {kConeW / 2,                  0},
-            {kConeW - 2, kConeVisibleBase   },
-            {         2, kConeVisibleBase   },
+            {kConeW / 2,  kConeVisibleBase},
+            {kConeW - 2,                  0},
+            {         2,                  0},
         };
         lv_canvas_draw_polygon(cone_canvas, outer_tri, 3, &outer_dsc);
         lv_draw_rect_dsc_t inner_dsc;
@@ -1255,9 +1272,9 @@ void buildMainPage() {
         inner_dsc.bg_color = lv_palette_main(LV_PALETTE_YELLOW);
         inner_dsc.bg_opa   = LV_OPA_COVER;
         const lv_point_t inner_tri[3] = {
-            {kConeW / 2,                   4},
-            {kConeW - 4, kConeVisibleBase - 3},
-            {         4, kConeVisibleBase - 3},
+            {kConeW / 2,  kConeVisibleBase - 3},
+            {kConeW - 4,                     4},
+            {         4,                     4},
         };
         lv_canvas_draw_polygon(cone_canvas, inner_tri, 3, &inner_dsc);
         lv_obj_add_flag(cone_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -1969,23 +1986,256 @@ void buildSettingsPage() {
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 
-#if DATA_SOURCE_BLE
-// --- Communication page (step 4) -------------------------------------------
+#if DATA_SOURCE_WIFI
+// --- AIS page — round 85 (v1.5b step 4, list layout) ----------------------
 //
-// Mirrors the TX's Comm page. Read-only, refreshed at the same cadence as
-// the other pages. Layout matches the surrounding pages' visual conventions:
-// title at top, value rows stacked below, light typography.
+// Scrollable list of AIS targets. Source: BoatState::aisSnapshot(), which
+// is populated by the dispatch in NmeaBridge.cpp (PGNs 129038 / 129039 /
+// 129040 / 129809 / 129810). The data path from the converter onto the
+// WiFi bus (ADR-0012 replay) is still pending — until that lands, this
+// page shows "No targets" on the bench, unless another peer publishes
+// AIS PGNs.
+//
+// Step 5 (task #52) overlays a compass when own-GPS is available;
+// step 4 (this code) is the no-GPS fallback list.
+
+// 3-letter ship-type abbreviation, mirroring the converter's labelling.
+static const char* aisTypeAbbrev(uint8_t t) {
+    if (t == 0)             return "—";
+    if (t == 36)            return "SAIL";
+    if (t == 37)            return "PLS";
+    if (t >= 30 && t <= 39) return "FSH";
+    if (t >= 40 && t <= 49) return "HSC";
+    if (t == 50)            return "PLT";
+    if (t == 51)            return "SAR";
+    if (t == 52)            return "TUG";
+    if (t == 53)            return "TND";
+    if (t == 54)            return "POL";
+    if (t == 55)            return "LAW";
+    if (t == 58)            return "MED";
+    if (t >= 60 && t <= 69) return "PAX";
+    if (t >= 70 && t <= 79) return "CRG";
+    if (t >= 80 && t <= 89) return "TNK";
+    return "OTH";
+}
+
+struct AisPage {
+    lv_obj_t* root         = nullptr;
+    lv_obj_t* count_lbl    = nullptr;
+    lv_obj_t* empty_lbl    = nullptr;
+    lv_obj_t* list         = nullptr;
+    // Pre-allocated row labels (one row = single label string) — keeps the
+    // refresh path allocation-free.
+    static constexpr int kMaxRows = 12;
+    lv_obj_t* row_lbl[kMaxRows] = {};
+};
+AisPage ais_pg;
+
+void buildAisPage() {
+    ais_pg.root = lv_obj_create(nullptr);
+    lv_obj_t* scr = ais_pg.root;
+    lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Title.
+    lv_obj_t* title = lv_label_create(scr);
+    lv_label_set_text(title, "AIS");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(title,
+        lv_palette_lighten(LV_PALETTE_BLUE, 2), LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
+
+    // Count badge to the right of the title.
+    ais_pg.count_lbl = lv_label_create(scr);
+    lv_label_set_text(ais_pg.count_lbl, "0");
+    lv_obj_set_style_text_font(ais_pg.count_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ais_pg.count_lbl,
+        lv_palette_lighten(LV_PALETTE_GREY, 1), LV_PART_MAIN);
+    lv_obj_align(ais_pg.count_lbl, LV_ALIGN_TOP_MID, 0, 92);
+
+    // Column header.
+    lv_obj_t* hdr = lv_label_create(scr);
+    lv_label_set_text(hdr, "NAME           TYPE  SOG   RNG  BRG");
+    lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(hdr,
+        lv_palette_lighten(LV_PALETTE_GREY, 2), LV_PART_MAIN);
+    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 60, 130);
+
+    // List container — vertical flex, scrollable on overflow.
+    ais_pg.list = lv_obj_create(scr);
+    lv_obj_set_size(ais_pg.list, 400, 280);
+    lv_obj_align(ais_pg.list, LV_ALIGN_TOP_MID, 0, 150);
+    lv_obj_set_style_bg_opa(ais_pg.list, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ais_pg.list, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ais_pg.list, 0, LV_PART_MAIN);
+    lv_obj_set_flex_flow(ais_pg.list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(ais_pg.list, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    for (int i = 0; i < AisPage::kMaxRows; i++) {
+        ais_pg.row_lbl[i] = lv_label_create(ais_pg.list);
+        lv_obj_set_style_text_font(ais_pg.row_lbl[i],
+                                   &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(ais_pg.row_lbl[i],
+                                    lv_color_white(), LV_PART_MAIN);
+        lv_label_set_text(ais_pg.row_lbl[i], "");
+        lv_obj_add_flag(ais_pg.row_lbl[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Empty-state message, hidden when we have rows.
+    ais_pg.empty_lbl = lv_label_create(scr);
+    lv_label_set_text(ais_pg.empty_lbl, "No targets in range");
+    lv_obj_set_style_text_font(ais_pg.empty_lbl,
+                               &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ais_pg.empty_lbl,
+        lv_palette_lighten(LV_PALETTE_GREY, 1), LV_PART_MAIN);
+    lv_obj_align(ais_pg.empty_lbl, LV_ALIGN_CENTER, 0, 0);
+}
+
+// Round 85 (v1.5b step 5): great-circle range (NM) + bearing (°true)
+// between two lat/lon pairs. Haversine for distance, standard atan2 for
+// initial bearing. Returns range_nm via `rng_nm` and bearing in 0..360.
+// Inline because this is the only caller; if a second arrives, lift into
+// navmath.
+static void rangeAndBearing(double lat1, double lon1,
+                            double lat2, double lon2,
+                            double* rng_nm, double* brg_deg) {
+    constexpr double kEarthNm = 3440.065;  // mean Earth radius in NM
+    constexpr double kDeg2Rad = 0.017453292519943295;
+    constexpr double kRad2Deg = 57.29577951308232;
+    const double phi1   = lat1 * kDeg2Rad;
+    const double phi2   = lat2 * kDeg2Rad;
+    const double dphi   = (lat2 - lat1) * kDeg2Rad;
+    const double dlam   = (lon2 - lon1) * kDeg2Rad;
+    const double a = std::sin(dphi / 2) * std::sin(dphi / 2)
+                   + std::cos(phi1) * std::cos(phi2)
+                   * std::sin(dlam / 2) * std::sin(dlam / 2);
+    const double c = 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
+    *rng_nm = kEarthNm * c;
+    const double y = std::sin(dlam) * std::cos(phi2);
+    const double x = std::cos(phi1) * std::sin(phi2)
+                   - std::sin(phi1) * std::cos(phi2) * std::cos(dlam);
+    double brg = std::atan2(y, x) * kRad2Deg;
+    if (brg < 0) brg += 360.0;
+    *brg_deg = brg;
+}
+
+void refreshAisPage() {
+    if (!ais_pg.root || !g_state) return;
+    std::array<AisTarget, 32> targets = g_state->aisSnapshot();
+    const Instruments s = g_state->snapshot();
+    const bool ownGps = !std::isnan(s.lat) && !std::isnan(s.lon)
+                        && s.gps_last_ms != 0;
+
+    // Collect indices of non-empty targets, then sort. When own-GPS is
+    // known, sort by computed range ascending (closest first). Otherwise
+    // sort by last_seen descending (most-recently-heard first).
+    int    idx[32];
+    double rng[32];   // valid only when ownGps; otherwise unused
+    double brg[32];
+    int    n = 0;
+    for (int i = 0; i < (int)targets.size(); i++) {
+        if (targets[i].mmsi == 0) continue;
+        idx[n] = i;
+        if (ownGps && !std::isnan(targets[i].lat) && !std::isnan(targets[i].lon)) {
+            rangeAndBearing(s.lat, s.lon, targets[i].lat, targets[i].lon,
+                            &rng[n], &brg[n]);
+        } else {
+            rng[n] = NAN;
+            brg[n] = NAN;
+        }
+        n++;
+    }
+    for (int a = 0; a < n - 1; a++) {
+        for (int b = a + 1; b < n; b++) {
+            bool swap;
+            if (ownGps) {
+                // Targets with NaN range sort to the bottom.
+                if (std::isnan(rng[a]) && !std::isnan(rng[b])) swap = true;
+                else if (!std::isnan(rng[a]) && !std::isnan(rng[b])) swap = rng[b] < rng[a];
+                else swap = false;
+            } else {
+                swap = targets[idx[b]].last_seen_ms > targets[idx[a]].last_seen_ms;
+            }
+            if (swap) {
+                int    ti = idx[a]; idx[a] = idx[b]; idx[b] = ti;
+                double tr = rng[a]; rng[a] = rng[b]; rng[b] = tr;
+                double tb = brg[a]; brg[a] = brg[b]; brg[b] = tb;
+            }
+        }
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d in range%s",
+             n, ownGps ? "" : "  (no own GPS)");
+    lv_label_set_text(ais_pg.count_lbl, buf);
+
+    const int rows_to_render = (n < AisPage::kMaxRows) ? n : AisPage::kMaxRows;
+    for (int r = 0; r < AisPage::kMaxRows; r++) {
+        if (r >= rows_to_render) {
+            lv_obj_add_flag(ais_pg.row_lbl[r], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        const AisTarget& t = targets[idx[r]];
+
+        char name[14];
+        if (t.name[0] != 0) {
+            snprintf(name, sizeof(name), "%-12.12s", t.name);
+        } else {
+            snprintf(name, sizeof(name), "%-12u", (unsigned)t.mmsi);
+        }
+
+        const char* type = aisTypeAbbrev(t.ship_type);
+        char sog[8];
+        if (std::isnan(t.sog)) snprintf(sog, sizeof(sog), "  —");
+        else                   snprintf(sog, sizeof(sog), "%4.1f", t.sog);
+
+        char rng_s[8];
+        char brg_s[6];
+        if (std::isnan(rng[r])) snprintf(rng_s, sizeof(rng_s), "  —");
+        else                    snprintf(rng_s, sizeof(rng_s), "%4.1f", rng[r]);
+        if (std::isnan(brg[r])) snprintf(brg_s, sizeof(brg_s), "—");
+        else                    snprintf(brg_s, sizeof(brg_s), "%03d",
+                                         (int)(brg[r] + 0.5) % 360);
+
+        snprintf(buf, sizeof(buf), "%s %-4s %s  %s %s",
+                 name, type, sog, rng_s, brg_s);
+        lv_label_set_text(ais_pg.row_lbl[r], buf);
+        lv_obj_clear_flag(ais_pg.row_lbl[r], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (n == 0) lv_obj_clear_flag(ais_pg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
+    else        lv_obj_add_flag  (ais_pg.empty_lbl, LV_OBJ_FLAG_HIDDEN);
+}
+// TODO(round-85, step 5 polish): full canvas-based compass overlay with
+// AIS targets drawn at their bearing/range positions. Deferred to a
+// follow-up round because (a) no own-GPS hardware on the LCD-2.1 to test
+// against beyond the simulator and (b) the most user-meaningful piece
+// (knowing how far / what bearing each target is) is already covered by
+// the populated RNG/BRG columns above.
+#endif  // DATA_SOURCE_WIFI
+
+#if DATA_SOURCE_WIFI
+// --- Communication page — round 85 two-column layout -----------------------
+//
+// Left column: Network (WiFi role + AP name, IP, RSSI + channel, peer count).
+// Right column: Hardware (GPS state, power, uptime).
+//
+// Power is "—" on RX (no AXP2101 on the LCD-2.1 board); when this layout is
+// ported to TX in v1.5b step 7 the same labels carry real AXP2101 values.
 
 struct CommPage {
-    lv_obj_t* root        = nullptr;
-    lv_obj_t* link_lbl    = nullptr;   // "Connected" / "Scanning..."
-    lv_obj_t* peer_lbl    = nullptr;   // MAC address or "—"
-    lv_obj_t* rssi_lbl    = nullptr;   // "-42 dBm" or "—"
-    lv_obj_t* wind_lbl    = nullptr;
-    lv_obj_t* gps_lbl     = nullptr;
-    lv_obj_t* hdg_lbl     = nullptr;
-    lv_obj_t* depth_lbl   = nullptr;
-    lv_obj_t* att_lbl     = nullptr;
+    lv_obj_t* root         = nullptr;
+    // Network column
+    lv_obj_t* net_wifi_lbl = nullptr;  // "STA  ap=lcd-2.1"
+    lv_obj_t* net_ip_lbl   = nullptr;  // "192.168.4.2"
+    lv_obj_t* net_rssi_lbl = nullptr;  // "-42 dBm  ch 1"
+    lv_obj_t* net_peers_lbl = nullptr; // "2"
+    // Hardware column
+    lv_obj_t* hw_gps_lbl    = nullptr; // "pos OK  age 2s" / "—"
+    lv_obj_t* hw_power_lbl  = nullptr; // "—" on RX
+    lv_obj_t* hw_uptime_lbl = nullptr; // "1h 23m 47s"
 };
 CommPage comm_pg;
 
@@ -2004,7 +2254,163 @@ void buildCommPage() {
         lv_palette_lighten(LV_PALETTE_BLUE, 2), LV_PART_MAIN);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
 
-    // Helper: build one row at (y), value label is what we'll write to.
+    // Column headers.
+    auto makeColHeader = [&](const char* text, lv_align_t align, int x_offset) {
+        lv_obj_t* h = lv_label_create(scr);
+        lv_label_set_text(h, text);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(h,
+            lv_palette_lighten(LV_PALETTE_GREY, 2), LV_PART_MAIN);
+        lv_obj_align(h, align, x_offset, 130);
+        return h;
+    };
+    makeColHeader("Network",  LV_ALIGN_TOP_LEFT,   40);
+    makeColHeader("Hardware", LV_ALIGN_TOP_LEFT,  270);
+
+    // makeRow: 2-line cell at (col_x, y) — caption (small, grey) above value
+    // (regular, white). Two rows of the same caption stack vertically.
+    auto makeRow = [&](const char* caption, int col_x, int y) {
+        lv_obj_t* cap = lv_label_create(scr);
+        lv_label_set_text(cap, caption);
+        lv_obj_set_style_text_font(cap, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_style_text_color(cap,
+            lv_palette_lighten(LV_PALETTE_GREY, 1), LV_PART_MAIN);
+        lv_obj_align(cap, LV_ALIGN_TOP_LEFT, col_x, y);
+
+        lv_obj_t* val = lv_label_create(scr);
+        lv_label_set_text(val, "—");
+        lv_obj_set_style_text_font(val, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_text_color(val, lv_color_white(), LV_PART_MAIN);
+        lv_obj_align(val, LV_ALIGN_TOP_LEFT, col_x, y + 16);
+        return val;
+    };
+
+    constexpr int kColLeftX  =  40;
+    constexpr int kColRightX = 270;
+    constexpr int kRowY0     = 160;
+    constexpr int kRowPitch  =  50;
+
+    comm_pg.net_wifi_lbl   = makeRow("WiFi",  kColLeftX,  kRowY0 + 0 * kRowPitch);
+    comm_pg.net_ip_lbl     = makeRow("IP",    kColLeftX,  kRowY0 + 1 * kRowPitch);
+    comm_pg.net_rssi_lbl   = makeRow("RSSI",  kColLeftX,  kRowY0 + 2 * kRowPitch);
+    comm_pg.net_peers_lbl  = makeRow("Peers", kColLeftX,  kRowY0 + 3 * kRowPitch);
+
+    comm_pg.hw_gps_lbl     = makeRow("GPS",    kColRightX, kRowY0 + 0 * kRowPitch);
+    comm_pg.hw_power_lbl   = makeRow("Power",  kColRightX, kRowY0 + 1 * kRowPitch);
+    comm_pg.hw_uptime_lbl  = makeRow("Uptime", kColRightX, kRowY0 + 2 * kRowPitch);
+}
+
+void refreshComm() {
+    if (!comm_pg.root || !g_bridge_ptr || !g_state) return;
+    char buf[40];
+
+    // --- Network column ---
+    const char* role     = g_bridge_ptr->wifiRoleName();
+    const char* peerName = g_bridge_ptr->wifiPeerName();
+    const int   rssi     = g_bridge_ptr->wifiRssi();
+    const int   ch       = g_bridge_ptr->wifiChannel();
+
+    // Row 1: "STA  ap=lcd-2.1" / "AP (2 sta)" / "Electing…"
+    if (strcmp(role, "AP") == 0) {
+        snprintf(buf, sizeof(buf), "AP (%d sta)",
+                 g_bridge_ptr->wifiStationCount());
+    } else if (strcmp(role, "STA") == 0) {
+        snprintf(buf, sizeof(buf), "STA  ap=%s",
+                 (peerName && *peerName) ? peerName : "—");
+    } else {
+        snprintf(buf, sizeof(buf), "Electing…");
+    }
+    lv_label_set_text(comm_pg.net_wifi_lbl, buf);
+    lv_obj_set_style_text_color(comm_pg.net_wifi_lbl,
+        (strcmp(role, "AP") == 0)
+            ? lv_palette_main(LV_PALETTE_AMBER)
+            : (strcmp(role, "STA") == 0)
+                ? lv_palette_main(LV_PALETTE_GREEN)
+                : lv_palette_lighten(LV_PALETTE_GREY, 1),
+        LV_PART_MAIN);
+
+    // Row 2: IP.
+    lv_label_set_text(comm_pg.net_ip_lbl, g_bridge_ptr->wifiLocalIp());
+
+    // Row 3: RSSI + channel.
+    if (rssi == INT16_MIN) {
+        lv_label_set_text(comm_pg.net_rssi_lbl, "—");
+    } else {
+        snprintf(buf, sizeof(buf), "%d dBm  ch %d", rssi, ch);
+        lv_label_set_text(comm_pg.net_rssi_lbl, buf);
+    }
+
+    // Row 4: peer count.
+    snprintf(buf, sizeof(buf), "%d", g_bridge_ptr->wifiPeerCount());
+    lv_label_set_text(comm_pg.net_peers_lbl, buf);
+
+    // --- Hardware column ---
+    const Instruments s = g_state->snapshot();
+    const uint32_t now = millis();
+
+    // Row 1: GPS state — "pos OK  age 2s" / "—".
+    if (!std::isnan(s.lat) && !std::isnan(s.lon) && s.gps_last_ms != 0) {
+        const uint32_t age_s = (now - s.gps_last_ms) / 1000;
+        if (age_s < 60) {
+            snprintf(buf, sizeof(buf), "pos OK  age %us", (unsigned)age_s);
+        } else {
+            snprintf(buf, sizeof(buf), "pos OK  age %um", (unsigned)(age_s / 60));
+        }
+        lv_label_set_text(comm_pg.hw_gps_lbl, buf);
+    } else {
+        lv_label_set_text(comm_pg.hw_gps_lbl, "—");
+    }
+
+    // Row 2: Power. RX has no AXP2101 — placeholder until v1.5b step 7
+    // ports this page to TX where the AXP2101 readings are available.
+    lv_label_set_text(comm_pg.hw_power_lbl, "—");
+
+    // Row 3: Uptime (h m s).
+    const uint32_t up_s = now / 1000;
+    const uint32_t h = up_s / 3600;
+    const uint32_t m = (up_s % 3600) / 60;
+    const uint32_t sec = up_s % 60;
+    if (h > 0)      snprintf(buf, sizeof(buf), "%uh %um %us", (unsigned)h, (unsigned)m, (unsigned)sec);
+    else if (m > 0) snprintf(buf, sizeof(buf), "%um %us", (unsigned)m, (unsigned)sec);
+    else            snprintf(buf, sizeof(buf), "%us", (unsigned)sec);
+    lv_label_set_text(comm_pg.hw_uptime_lbl, buf);
+}
+#elif DATA_SOURCE_BLE
+// --- Communication page (BLE backend — pre-round-85, preserved for env compat)
+//
+// The BLE envs are no longer the active target (round 80 pivoted to WiFi)
+// but the [env:..._ble] entries still need to compile. Keeps the original
+// single-column layout with notify counters since the BLE link model is
+// genuinely different (central / peripheral, no role election).
+
+struct CommPage {
+    lv_obj_t* root        = nullptr;
+    lv_obj_t* role_lbl    = nullptr;
+    lv_obj_t* link_lbl    = nullptr;
+    lv_obj_t* peer_lbl    = nullptr;
+    lv_obj_t* rssi_lbl    = nullptr;
+    lv_obj_t* wind_lbl    = nullptr;
+    lv_obj_t* gps_lbl     = nullptr;
+    lv_obj_t* hdg_lbl     = nullptr;
+    lv_obj_t* depth_lbl   = nullptr;
+    lv_obj_t* att_lbl     = nullptr;
+};
+CommPage comm_pg;
+
+void buildCommPage() {
+    comm_pg.root = lv_obj_create(nullptr);
+    lv_obj_t* scr = comm_pg.root;
+    lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(scr);
+    lv_label_set_text(title, "Communication");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(title,
+        lv_palette_lighten(LV_PALETTE_BLUE, 2), LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
+
     auto makeRow = [&](const char* caption, int y) {
         lv_obj_t* lab = lv_label_create(scr);
         lv_label_set_text(lab, caption);
@@ -2021,11 +2427,11 @@ void buildCommPage() {
         return val;
     };
 
-    comm_pg.link_lbl  = makeRow("Link:",     115);
-    comm_pg.peer_lbl  = makeRow("Peer:",     145);
-    comm_pg.rssi_lbl  = makeRow("RSSI:",     175);
+    comm_pg.role_lbl  = makeRow("Role:",      95);
+    comm_pg.link_lbl  = makeRow("Link:",     125);
+    comm_pg.peer_lbl  = makeRow("Peer:",     155);
+    comm_pg.rssi_lbl  = makeRow("RSSI:",     185);
 
-    // Small separator gap, then per-channel counters.
     lv_obj_t* sec = lv_label_create(scr);
     lv_label_set_text(sec, "Notifies received");
     lv_obj_set_style_text_font(sec, &lv_font_montserrat_12, LV_PART_MAIN);
@@ -2044,17 +2450,19 @@ void refreshComm() {
     if (!comm_pg.root || !g_bridge_ptr) return;
     char buf[32];
 
-    if (g_bridge_ptr->bleConnected()) {
+    const bool linkOk = g_bridge_ptr->bleConnected();
+    const char* peerName = g_bridge_ptr->blePeerMac();
+    const int rssi = g_bridge_ptr->bleRssi();
+    lv_label_set_text(comm_pg.role_lbl, "BLE central");
+
+    if (linkOk) {
         lv_label_set_text(comm_pg.link_lbl, "Connected");
         lv_obj_set_style_text_color(comm_pg.link_lbl,
             lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-
-        lv_label_set_text(comm_pg.peer_lbl, g_bridge_ptr->blePeerMac());
-
-        const int rssi = g_bridge_ptr->bleRssi();
-        if (rssi == INT16_MIN) {
-            lv_label_set_text(comm_pg.rssi_lbl, "—");
-        } else {
+        lv_label_set_text(comm_pg.peer_lbl,
+                          (peerName && *peerName) ? peerName : "—");
+        if (rssi == INT16_MIN) lv_label_set_text(comm_pg.rssi_lbl, "—");
+        else {
             snprintf(buf, sizeof(buf), "%d dBm", rssi);
             lv_label_set_text(comm_pg.rssi_lbl, buf);
         }
@@ -2081,7 +2489,7 @@ void refreshComm() {
     setCount(comm_pg.att_lbl,
              g_bridge_ptr->bleNotifyCount(NmeaBridge::BLE_CH_ATTITUDE));
 }
-#endif  // DATA_SOURCE_BLE
+#endif  // DATA_SOURCE_WIFI / DATA_SOURCE_BLE
 
 // --- Page navigation -------------------------------------------------------
 //
@@ -2182,20 +2590,56 @@ void refreshOverview(const Instruments& s) {
 // heading + 30° for v1 (will follow a real autopilot SET command in a
 // future round once we expose that on the bus).
 void refreshMain(const Instruments& s) {
+    // Round 85 v1.6 step 1 (ADR-0013): pull no-go-zone half-angle from
+    // the live settings snapshot. If the iOS-pushed value differs from
+    // what the wedge geometry currently shows, re-apply. Cheap when the
+    // value hasn't changed (skip the LVGL re-paint).
+#if DATA_SOURCE_WIFI
+    if (g_bridge_ptr) {
+        const int new_nogo = g_bridge_ptr->currentSettings().nav_no_go_deg;
+        if (new_nogo != g_nogo_half_deg) {
+            g_nogo_half_deg = new_nogo;
+            applyNogoSectors();
+        }
+    }
+#endif
+
+    // Round 85 v1.6 step 4: per-channel staleness. When iOS toggles sim
+    // off and no other source is publishing, the previous source's
+    // value lingers in BoatState forever. Blank the relevant cells
+    // here at render time using each field's *_last_ms timestamp.
+    // 3 s matches the firmware-side all-or-nothing window.
+    constexpr uint32_t kStaleMs = 3000;
+    const uint32_t now_ms = millis();
+    auto fresh = [&](uint32_t last_ms) {
+        return last_ms != 0 && (now_ms - last_ms) < kStaleMs;
+    };
+    const bool wind_fresh = fresh(s.wind_last_ms);
+    const bool stw_fresh  = fresh(s.stw_last_ms);
+    const bool hdg_fresh  = fresh(s.hdg_last_ms);
+    const bool gps_fresh  = fresh(s.gps_last_ms);
+    const bool dep_fresh  = fresh(s.depth_last_ms);
+    // BSPD falls back to SOG only when STW is absent — match the
+    // fallback chain when picking which timestamp to gate on.
+    const bool bspd_fresh = stw_fresh || gps_fresh;
+    const bool aws_fresh  = wind_fresh;
+    // Derived true wind requires wind AND boat-speed AND heading.
+    const bool twd_fresh  = wind_fresh && bspd_fresh && hdg_fresh;
+    // AWA cone fresh iff wind itself is fresh.
+    const bool awa_fresh  = wind_fresh;
+
     // Rotating inner compass ring. transform_angle is in 0.1° units;
     // negative because rotating the LABELS opposite to the heading
     // change keeps the boat's actual heading at the top of the ring.
-    if (!isnan(s.heading_true_deg) && main_pg.inner_ring) {
+    if (hdg_fresh && !isnan(s.heading_true_deg) && main_pg.inner_ring) {
         const int16_t ang_01 =
             -static_cast<int16_t>(std::lround(s.heading_true_deg * 10.0));
         lv_obj_set_style_transform_angle(main_pg.inner_ring,
                                          ang_01, LV_PART_MAIN);
     }
 
-    // Heading label at the bow. Round 76: now appends the 8-point
-    // cardinal abbreviation (N / NE / E / SE / S / SW / W / NW) so the
-    // readout looks like "038\xC2\xB0 NE".
-    if (isnan(s.heading_true_deg)) {
+    // Heading label at the bow.
+    if (!hdg_fresh || isnan(s.heading_true_deg)) {
         lv_label_set_text(main_pg.heading_lbl, "---");
     } else {
         char buf[16];
@@ -2205,9 +2649,9 @@ void refreshMain(const Instruments& s) {
         lv_label_set_text(main_pg.heading_lbl, buf);
     }
 
-    // BSPD at the centre (round 76).
+    // BSPD at the centre. Prefer STW; fall back to SOG.
     const double bspd = !isnan(s.stw) ? s.stw : s.sog;
-    if (isnan(bspd)) {
+    if (!bspd_fresh || isnan(bspd)) {
         lv_label_set_text(main_pg.bspd_lbl, "--");
     } else {
         char buf[8];
@@ -2215,9 +2659,9 @@ void refreshMain(const Instruments& s) {
         lv_label_set_text(main_pg.bspd_lbl, buf);
     }
 
-    // Round 77: AWS just below BSPD inside the hull.
+    // AWS just below BSPD inside the hull.
     if (main_pg.aws_lbl != nullptr) {
-        if (isnan(s.aws)) {
+        if (!aws_fresh || isnan(s.aws)) {
             lv_label_set_text(main_pg.aws_lbl, "--");
         } else {
             char buf[8];
@@ -2227,7 +2671,7 @@ void refreshMain(const Instruments& s) {
     }
 
     // Depth on the right side.
-    if (isnan(s.depth_m)) {
+    if (!dep_fresh || isnan(s.depth_m)) {
         lv_label_set_text(main_pg.depth_lbl, "--");
     } else {
         char buf[8];
@@ -2235,12 +2679,8 @@ void refreshMain(const Instruments& s) {
         lv_label_set_text(main_pg.depth_lbl, buf);
     }
 
-    // Round 76: cone (struct field still named twd_arrow for diff-
-    // minimisation) is now bound to APPARENT wind angle. AWA is already
-    // boat-relative (-180..+180 with + = stbd) so the only conversion
-    // is a -ve→+ve wrap into the meter's 0..360 scale. No heading-true
-    // dependency.
-    if (main_pg.twd_arrow != nullptr && !isnan(s.awa)) {
+    // AWA cone.
+    if (main_pg.twd_arrow != nullptr && awa_fresh && !isnan(s.awa)) {
         double deg = s.awa < 0 ? s.awa + 360.0 : s.awa;
         lv_meter_set_indicator_value(main_pg.compass,
                                      main_pg.twd_arrow,
@@ -2251,7 +2691,7 @@ void refreshMain(const Instruments& s) {
     // indicator (was the round-55 hardcoded autopilot SET-course stub).
     // TWD is in degrees true; convert to boat-frame by subtracting
     // heading_true and normalising into the meter's 0..360 scale.
-    if (main_pg.target_marker != nullptr &&
+    if (main_pg.target_marker != nullptr && twd_fresh &&
         !isnan(s.twd) && !isnan(s.heading_true_deg)) {
         double rel = s.twd - s.heading_true_deg;
         while (rel <    0.0) rel += 360.0;
@@ -2430,16 +2870,24 @@ void refreshFromState() {
     // Only refresh the currently visible page — cheaper, and hidden pages
     // will refresh next time they're shown.
     switch (current_page) {
+#if DATA_SOURCE_WIFI
+        // Round 85 (v1.5b step 4): Main / AIS / PGN / Comm.
+        case 0: refreshMain(s);            break;
+        case 1: refreshAisPage();          break;
+        case 2: refreshHoneycomb(s);       break;
+        case 3: refreshComm();             break;
+#else
         case 0: refreshMain(s);            break;
         case 1: refreshOverview(s);        break;
-        case 2: refreshHoneycomb(s);       break;  // round 78 (was refreshDebug)
+        case 2: refreshHoneycomb(s);       break;
         case 3: refreshSimulator(s);       break;
-#if DATA_SOURCE_BLE
         // case 4 is Settings — no per-tick refresh needed (its labels
         // change only on user input). case 5 is the BLE Communication
         // page, only present in DATA_SOURCE_BLE builds.
+#if DATA_SOURCE_BLE
         case 5: refreshComm();             break;
 #endif
+#endif  // DATA_SOURCE_WIFI
     }
 }
 
@@ -3000,21 +3448,37 @@ void begin(BoatState& state) {
 
     step("build pages");
     buildMainPage();
-    buildOverviewPage();
     buildHoneycombPage();          // round 78 (replaces buildDebugPage)
-#if DATA_SOURCE_BLE
-    buildCommPage();               // step 4 — BLE link status page
+#if DATA_SOURCE_BLE || DATA_SOURCE_WIFI
+    buildCommPage();               // step 4 — BLE link status / round-85 two-col
 #endif
+#if DATA_SOURCE_WIFI
+    buildAisPage();                // round 85 v1.5b step 4
+#endif
+#if !DATA_SOURCE_WIFI
+    // Round 85: WiFi build drops these three pages. BLE + sim builds keep
+    // them for backwards compat.
+    buildOverviewPage();
     buildSimulatorPage();
     buildSettingsPage();
-    pages[0] = main_pg.root;       // Main display (Round 54: was wind page)
+#endif
+
+#if DATA_SOURCE_WIFI
+    // Round 85 (v1.5b step 4): Main / AIS / PGN / Comm.
+    pages[0] = main_pg.root;
+    pages[1] = ais_pg.root;
+    pages[2] = hc_pg.root;
+    pages[3] = comm_pg.root;
+#else
+    pages[0] = main_pg.root;       // Main display
     pages[1] = overview.root;      // Wind display
-    pages[2] = hc_pg.root;         // Round 78: PGN honeycomb (was debug log)
-    pages[3] = sim_pg.root;        // Simulator page (raw + derived values)
+    pages[2] = hc_pg.root;         // Round 78: PGN honeycomb
+    pages[3] = sim_pg.root;        // Simulator page
     pages[4] = settings_pg.root;   // Round 74: Settings (no-go-zone +/-)
 #if DATA_SOURCE_BLE
     pages[5] = comm_pg.root;       // Step 4: BLE link status
 #endif
+#endif  // DATA_SOURCE_WIFI
 
     lv_scr_load(pages[0]);
     // Round 39: no LV_EVENT_GESTURE handler — tap detection lives in
@@ -3064,7 +3528,7 @@ uint32_t tick() {
     return lv_timer_handler();
 }
 
-#if DATA_SOURCE_BLE
+#if DATA_SOURCE_BLE || DATA_SOURCE_WIFI
 void setBleBridge(NmeaBridge& bridge) {
     g_bridge_ptr = &bridge;
 }

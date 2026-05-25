@@ -38,8 +38,15 @@ Thumbs.db
 secrets.h
 .env
 CLAUDE.md
+include/wifi_credentials.h
 
 # Per-clone state — `flash.sh` registers each board's MAC here so it can
 # refuse to flash the wrong device. Different machines will have different
 # boards, so this isn't shareable across clones.
 scripts/.devices.conf
+
+# Claude Code local project state (per-clone).
+.claude/
+
+# One-off serial captures.
+*.log

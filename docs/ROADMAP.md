@@ -104,6 +104,80 @@ through the same wireless link.
       detection added a 300 ms lockout that interfered with swipes,
       so toggle UX waits for step 6.
 
+## v1.5b — screen cleanup (round 85, **shipped**)
+
+**Goal: unified 4-page LCD layout, AIS on the LCDs, drop the
+half-finished pages.** Brief in [SCREEN_REDESIGN.md](SCREEN_REDESIGN.md).
+
+- [x] **Step 1** — Flip the Main-page AWA cone so the thick end
+      points outward instead of inward.
+- [x] **Step 2** — Comm page rewritten as two columns (Network /
+      Hardware), absorbing TX's previous Primary content.
+- [x] **Step 3** — Settings / Wind-overview / Simulator pages dropped
+      from RX. `kNumPages = 4`, swipe order: Main / AIS / PGN / Comm.
+- [x] **Step 4** — AIS list page on RX (sorted by last-seen; renders
+      from `BoatState::aisSnapshot()`).
+- [x] **Step 5** — GPS-aware AIS list: when own-GPS fix is present,
+      list sorts by range ascending and populates RNG / BRG columns
+      via inline haversine. (Full canvas-based compass overlay
+      deferred — the list path delivers the user-meaningful info.)
+- [x] **Step 6** — Converter AIS filters (`ais.range_nm` /
+      `ais.hide_anchored` / `ais.stale_s`) wired into
+      `refreshTargets()`.
+- [x] **Step 7** — TX page set converged to 4 pages (Main / AIS /
+      PGN / Comm). TX now consumes incoming bus PGNs into a local
+      `BoatState` (round-85 step-7-fix) and renders real values; AIS
+      list mirrors RX's; Comm page is two-column.
+
+## v1.6 — iOS companion app + settings control plane (round 85, **mostly shipped**)
+
+**Goal: native SwiftUI app that joins the bus as a full peer and
+becomes the canonical settings UI.** Design in
+[IOS_APP.md](IOS_APP.md); settings control plane in
+[ADR-0013](adr/0013-settings-control-plane.md).
+
+- [x] **Step 1** — Settings control plane on the firmware: AP-side
+      `WebServer` on port 80 with `GET`/`POST /settings`, heartbeat
+      snapshot fan-out, NVS persistence on every ESP. Consumers wired
+      for: `nav.no_go_deg` (RX Main), `sim.*` channel toggles (RX
+      simulator), `ais.hide_anchored` + `ais.stale_s` (converter
+      filter), `ui.brightness` (converter backlight).
+- [x] **Step 2** — Xcode project (`../esp32-boat-ios/`) scaffolded
+      with xcodegen, 4-tab SwiftUI shell, UDP listener + heartbeat
+      publisher + PGN dispatcher all wired. Captive-portal stub on the
+      AP (DNS hairpin + iOS probe URLs) so iOS classifies
+      `_wifi_nmea2k` as a real network and doesn't fall back to
+      cellular.
+- [x] **Step 3** — Boat tab (live instrument grid + TWA/TWS/VMG
+      derived locally + per-channel staleness sweep blanks cells when
+      a channel goes silent).
+- [x] **Step 4** — AIS tab (placeholder; populated by converter's
+      AIS-sim replay over the bus). Plus: iPhone GPS publisher
+      (PGN 129025, **opt-in default off**, toggle on Settings tab,
+      stored in UserDefaults). Plus: Boat-tab Position cell with
+      cross-check of bus-published GPS against iPhone GPS — bold
+      orange when delta > 30 m.
+- [ ] **Step 5** — PGN 129026 (COG/SOG) wire-up across all three
+      peers + iOS publisher. Prereq for the map.
+- [ ] **Step 6** — AIS map view: SwiftUI Canvas with own ship +
+      AIS targets + 5-minute forward-projection arrows. Diagnostics
+      tab polish (PGN-rate honeycomb, raw-log drawer).
+
+## v1.7 — future polish (not yet planned)
+
+- Real boat connectivity: SN65HVD230 to a live N2K backbone (v1.5
+  step 5, hardware-blocked; see
+  [OPENPLOTTER_NMEA2000.md](OPENPLOTTER_NMEA2000.md)).
+- LC76G GPS via the AMOLED-1.75-G's onboard GNSS — requires
+  soldering R15/R16 jumpers.
+- TX compass widget on Main (currently text grid; RX has the full
+  LVGL compass).
+- iOS distribution signing ($99/yr Apple Developer Program) — the
+  free-tier signing requires online cert verification at each launch.
+- Wi-Fi role-priority surfacing in heartbeat (`has_transceiver`
+  bool, task #45) — meaningful once multiple transceiver peers exist
+  on the same physical N2K backbone.
+
 ## v2 — waypoint navigation
 
 - [ ] Waypoint list (load/save JSON on the microSD card)

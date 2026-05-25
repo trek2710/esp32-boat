@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NMEA-converter — Hardware Assembly Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  html { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11pt; color: #1a1a1a; }
+  body { line-height: 1.45; }
+  h1 { font-size: 22pt; border-bottom: 2px solid #1f6feb; padding-bottom: 4px; margin-bottom: 4px; }
+  h1 + p.subtitle { color: #555; margin: 0 0 12mm 0; font-size: 11pt; }
+  h2 { font-size: 14pt; color: #1f6feb; margin-top: 12mm; border-bottom: 1px solid #cfd6e0; padding-bottom: 2px; page-break-after: avoid; }
+  h3 { font-size: 12pt; color: #333; margin-top: 6mm; page-break-after: avoid; }
+  p, ul, ol { margin: 4px 0; }
+  ul, ol { padding-left: 18px; }
+  li { margin: 2px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 4mm 0; font-size: 10pt; }
+  th, td { border: 1px solid #cfd6e0; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #f1f4f9; }
+  code, pre, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt; }
+  pre { background: #f5f7fa; padding: 8px 10px; border-radius: 4px; border: 1px solid #e1e6ed; overflow-x: auto; white-space: pre; }
+  .note { background: #fff8d0; border-left: 4px solid #d4a800; padding: 6px 10px; margin: 4mm 0; }
+  .warn { background: #ffe3e0; border-left: 4px solid #c0392b; padding: 6px 10px; margin: 4mm 0; }
+  .ok   { background: #e2f5e6; border-left: 4px solid #27ae60; padding: 6px 10px; margin: 4mm 0; }
+  figure { margin: 4mm 0; text-align: center; page-break-inside: avoid; }
+  figure img { max-width: 100%; max-height: 78mm; border: 1px solid #e1e6ed; border-radius: 3px; }
+  figcaption { font-size: 9pt; color: #555; margin-top: 3px; }
+  .pageBreak { page-break-before: always; }
+  .stage { background: #f5f7fa; border: 1px solid #cfd6e0; border-radius: 4px; padding: 6px 12px; margin: 4mm 0; }
+  .stage h3 { margin-top: 2px; color: #1f6feb; }
+  .two-col { column-count: 2; column-gap: 6mm; }
+  .footer-meta { color: #888; font-size: 9pt; margin-top: 10mm; border-top: 1px solid #ddd; padding-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>NMEA-converter — Hardware Assembly Guide</h1>
+<p class="subtitle">Wiring a Waveshare ESP32-C6-LCD-1.47, an SN65HVD230 CAN transceiver, and a Wegmatt dAISy 2+ AIS receiver into a NMEA 0183 → NMEA 2000 bridge with on-screen target list.</p>
+
+<h2>What you'll build</h2>
+<p>The converter reads <code>!AIVDM</code> sentences from a dAISy 2+ AIS receiver over a 3.3 V TTL UART link, decodes each AIS message, and re-emits it as the correct NMEA 2000 PGN onto the CAN bus through an SN65HVD230 transceiver. The onboard 172×320 ST7789 LCD shows decoded targets with type, speed, course and name; a sailboat icon flashes orange every time a PGN is sent.</p>
+
+<h2>Bill of materials</h2>
+<table>
+  <thead><tr><th>Item</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Waveshare ESP32-C6-LCD-1.47 (non-touch SKU)</td><td>RISC-V single core, 160 MHz, 8 MB flash, 172×320 ST7789 LCD on SPI. USB-C.</td></tr>
+    <tr><td>SN65HVD230 CAN transceiver breakout</td><td>3.3 V-native CAN transceiver. The Waveshare variant has friendly RX/TX silkscreen labels and a 2-pole screw terminal for CAN_H / CAN_L.</td></tr>
+    <tr><td>Wegmatt dAISy 2+ AIS receiver</td><td>Dual-channel AIS receiver with USB and 3.3 V TTL AUX serial. Powered from its own USB.</td></tr>
+    <tr><td>Terminated NMEA 2000 backbone cable</td><td>Two 120 Ω terminators in place; ~60 Ω end-to-end across CAN_H / CAN_L when unpowered.</td></tr>
+    <tr><td>Hookup wire</td><td>Six conductors, 22–26 AWG. Solid core is fine for breadboard / dev-board headers.</td></tr>
+    <tr><td>USB-C cable for ESP32-C6</td><td>Powers and programs the converter from your computer.</td></tr>
+    <tr><td>USB-A cable for dAISy 2+</td><td>Powers the AIS receiver separately.</td></tr>
+  </tbody>
+</table>
+
+<figure>
+  <img src="images/esp32c6_front.jpg" alt="Waveshare ESP32-C6-LCD-1.47 front">
+  <figcaption>Waveshare ESP32-C6-LCD-1.47, front view. Photo via The Pi Hut product listing.</figcaption>
+</figure>
+
+<figure>
+  <img src="images/esp32c6_features.jpg" alt="Waveshare ESP32-C6-LCD-1.47 pin labels">
+  <figcaption>Rear of the same board with silkscreen pin labels. Note GPIO 19 on the bottom row — this is the pin we wire to the dAISy TX. Photo: The Pi Hut.</figcaption>
+</figure>
+
+<figure>
+  <img src="images/sn65hvd230.jpg" alt="SN65HVD230 CAN transceiver breakout">
+  <figcaption>SN65HVD230 transceiver (Waveshare). Four-pin header on the left: <code>3.3V / GND / RX / TX</code>. Two-screw terminal on the right: <code>CANL / CANH</code>. Photo: The Pi Hut.</figcaption>
+</figure>
+
+<figure>
+  <img src="images/daisy_aux.png" alt="dAISy 2+ AUX serial connector">
+  <figcaption>dAISy 2+ rear, showing the AUX SERIAL header silkscreen. Pin order: <code>NC&nbsp;TXD&nbsp;RXD&nbsp;GND&nbsp;VCC&nbsp;I/O</code>. Source: Wegmatt dAISy 2+ AIS Receiver Manual v2.2, p.10.</figcaption>
+</figure>
+
+<h2>Pin map at a glance</h2>
+<table>
+  <thead><tr><th>From</th><th>To</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>ESP32-C6 <b>GND</b></td><td>SN65HVD230 <code>GND</code> &amp; dAISy 2+ AUX pin 4 (<code>GND</code>)</td><td>Common ground — wire <b>first</b>.</td></tr>
+    <tr><td>ESP32-C6 <b>3V3</b></td><td>SN65HVD230 <code>3.3V</code></td><td>Powers the transceiver. <b>Do not use 5V.</b></td></tr>
+    <tr><td>ESP32-C6 <b>GPIO 4</b></td><td>SN65HVD230 <code>TX</code></td><td>CAN frames out of the ESP32, into the transceiver's driver input.</td></tr>
+    <tr><td>ESP32-C6 <b>GPIO 5</b></td><td>SN65HVD230 <code>RX</code></td><td>Decoded CAN frames back into the ESP32.</td></tr>
+    <tr><td>ESP32-C6 <b>GPIO 19</b></td><td>dAISy 2+ AUX pin 2 (<code>TXD</code>)</td><td>NMEA 0183 stream from the AIS receiver into the ESP32's UART1 RX.</td></tr>
+    <tr><td>SN65HVD230 <code>CANH</code></td><td>Backbone <code>CAN_H</code></td><td>Connect <b>last</b>, after bench tests pass.</td></tr>
+    <tr><td>SN65HVD230 <code>CANL</code></td><td>Backbone <code>CAN_L</code></td><td>Connect <b>last</b>.</td></tr>
+  </tbody>
+</table>
+
+<div class="ok">
+  <b>Safe to know up front:</b> the dAISy 2+ manual states explicitly that the AUX <code>TXD</code> signal is 3.3 V regardless of the unit's VCC switch position. No level shifter or voltage divider is needed to feed it into the ESP32-C6.
+</div>
+
+<div class="pageBreak"></div>
+
+<h2>Stage-by-stage assembly</h2>
+<p>Wire in this order. At each stage the worst-case failure mode is harmless. Connections to the live NMEA 2000 bus come last, after the source side is proven on the bench.</p>
+
+<div class="stage">
+  <h3>Stage 0 — Sanity check the dAISy TXD level (optional)</h3>
+  <ol>
+    <li>Power the dAISy 2+ via USB only. No other wires connected.</li>
+    <li>With a multimeter on DC volts, probe <b>TXD ↔ GND</b> on the AUX header.</li>
+    <li>Expect ~3.3 V (idle high). If you see 5 V or 0 V, stop and review the VCC selector switch position via the configuration menu before continuing.</li>
+  </ol>
+</div>
+
+<div class="stage">
+  <h3>Stage 1 — Unplug the ESP32 before any wiring</h3>
+  <p>Always make and break connections while the ESP32 is <b>off USB</b>. Live wiring is how 3.3 V GPIOs get fried.</p>
+</div>
+
+<div class="stage">
+  <h3>Stage 2 — Ground first, always</h3>
+  <p>Common ground prevents floating-reference glitches and ESD events on the signal pins.</p>
+  <pre>dAISy AUX pin 4 (GND) ──┐
+                         ├── ESP32-C6 GND ── SN65HVD230 GND
+                         └── (star or daisy-chain, either is fine)</pre>
+</div>
+
+<div class="stage">
+  <h3>Stage 3 — Power the transceiver from the ESP32</h3>
+  <pre>ESP32-C6 3V3 ────► SN65HVD230 3.3V</pre>
+  <p>The dAISy keeps its own USB power supply — <b>do not tie its VCC to anything</b>.</p>
+  <p>If your SN65HVD230 breakout has an <code>Rs</code> pin (slope-rate control), tie it to GND. Most boards have this already set internally; the Waveshare variant pictured does.</p>
+</div>
+
+<div class="stage">
+  <h3>Stage 4 — Signal wires (ESP32 still unplugged)</h3>
+  <pre>dAISy AUX pin 2 (TXD)  ────►  ESP32-C6 GPIO19
+ESP32-C6 GPIO 4         ────►  SN65HVD230 TX
+SN65HVD230 RX            ────►  ESP32-C6 GPIO 5</pre>
+  <p>The <code>RX</code>/<code>TX</code> labels on the Waveshare transceiver are written from the microcontroller's point of view, so they line up one-to-one with the ESP32 pin names. Leave <code>CANH</code> / <code>CANL</code> unconnected for now.</p>
+</div>
+
+<div class="stage">
+  <h3>Stage 5 — Power up and verify the source side</h3>
+  <ol>
+    <li>Plug the dAISy USB cable (its LED should light).</li>
+    <li>Plug the ESP32 USB-C cable to your computer. The LCD wakes up showing the <b>AIS BRIDGE</b> title at ~40 % brightness, a gray <code>DAISY</code> pill, and a dim boat icon.</li>
+    <li>Within a few seconds of the dAISy emitting its first sentence, the <code>DAISY</code> pill should turn <b>solid green</b>. It latches — once green, stays green.</li>
+    <li>Each decoded AIS message triggers a ~0.4 s <b>orange flash on the boat icon</b>, and the <code>n2k:N</code> counter at the bottom-right increments by one.</li>
+  </ol>
+  <p>If <code>DAISY</code> stays gray for a minute or more with the dAISy USB-powered and antenna connected, that's a source-side wiring or pin-assignment problem to debug before plugging into the bus.</p>
+</div>
+
+<div class="stage">
+  <h3>Stage 6 — Connect to the NMEA 2000 backbone (only after Stage 5)</h3>
+  <ol>
+    <li>Power the backbone from a <b>12 V supply</b>. NMEA 2000 transceivers expect 12 V on the bus even if the ESP32 board itself stays on USB.</li>
+    <li>Confirm ~<b>60 Ω</b> across <code>CAN_H</code> / <code>CAN_L</code> on the unpowered backbone (both 120 Ω terminators in place, in parallel).</li>
+    <li>Wire:
+      <pre>SN65HVD230 CANH ────► backbone CAN_H
+SN65HVD230 CANL ────► backbone CAN_L</pre>
+    </li>
+    <li>Confirm the boat icon flashes and the <code>n2k</code> counter climbs as AIS targets come in. The <code>0183:M</code> count on the same line is total NMEA 0183 lines seen on UART — a higher number than <code>n2k</code> is normal, because multi-fragment AIS messages take two 0183 lines to make one decoded message.</li>
+  </ol>
+</div>
+
+<div class="pageBreak"></div>
+
+<h2>Reading the screen</h2>
+<p>Each target row, left to right by importance:</p>
+<table>
+  <thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><b>Type</b></td><td>3-char vessel-type abbreviation, coloured by type (TNK=tanker red, CRG=cargo amber, PAX=passenger blue, FSH=fishing magenta, SAL=sailing green, TUG=tug olive, …).</td></tr>
+    <tr><td><b>Kts</b></td><td>Speed over ground in knots. <code>--</code> when unknown.</td></tr>
+    <tr><td><b>Deg</b></td><td>Course over ground in degrees. <code>---</code> when unknown.</td></tr>
+    <tr><td><b>Name</b></td><td>AIS-broadcast vessel name when known, otherwise last 8 digits of MMSI. The whole row is colour-coded by Class-A <b>nav status</b> (green = under way using engine, lime = under sail, orange = at anchor / moored, red = NUC / restricted / aground / SART, blue = engaged in fishing, black = Class B or unknown).</td></tr>
+  </tbody>
+</table>
+<p>Targets that go silent for more than 5 minutes auto-evict from the list. The footer carries the live-target count, uptime, NMEA 2000 source address, and the running <code>n2k:N - 0183:M</code> message totals.</p>
+
+<h3>Power-saver behaviour</h3>
+<p>The CPU runs at 80 MHz and the backlight at ~40 % normally. After 5 minutes with no decoded AIS frames the backlight drops to ~5 %; any new AIS sentence or a press of the <b>BOOT</b> button on the C6 board restores it.</p>
+
+<h2>Troubleshooting</h2>
+<table>
+  <thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead>
+  <tbody>
+    <tr><td>LCD blank or backlight off</td><td>Firmware did not finish boot. Re-flash. Check USB-C cable is data-capable.</td></tr>
+    <tr><td><code>DAISY</code> pill stays gray</td><td>No NMEA 0183 bytes reaching the ESP32. Check (a) dAISy is powered and antenna is connected; (b) the wire is on dAISy AUX <b>pin 2 (TXD)</b>, not RXD; (c) the ESP side lands on GPIO 19, not GPIO 20 or another GPIO; (d) common ground between dAISy and ESP.</td></tr>
+    <tr><td>Boat icon never flashes</td><td>NMEA 0183 sentences arriving but failing to decode. Open a serial monitor — the <code>0183:M</code> counter should be climbing. If it is but <code>n2k:N</code> stays at zero, the dAISy isn't seeing valid AIS messages (out of range or antenna issue).</td></tr>
+    <tr><td><code>n2k</code> counter climbs but boat board sees nothing</td><td>Backbone wiring. Verify ~60 Ω across CAN_H/CAN_L with bus powered off, both terminators present, 12 V applied to the backbone.</td></tr>
+    <tr><td>ESP32 runs hot</td><td>Above ambient warm is normal for an ESP at 80 MHz with TFT backlight. If it's uncomfortable to touch, leave the auto-dim alone (it'll save ~30 % power after 5 min).</td></tr>
+  </tbody>
+</table>
+
+<h2>Disconnect order</h2>
+<ol>
+  <li>Unplug ESP32 USB first.</li>
+  <li>Then any signal wire.</li>
+  <li>Then power (3.3 V).</li>
+  <li>Ground last.</li>
+</ol>
+<p>This sequence avoids any case where a signal pin floats above a missing ground.</p>
+
+<p class="footer-meta">
+Generated for the NMEA-converter project. Product photos credited inline are reproduced for the user's personal reference under fair-use. dAISy 2+ AUX header image is from Wegmatt's official manual (v2.2). Pin definitions are taken from the Waveshare ESP32-C6-LCD-1.47 board silkscreen photographed by The Pi Hut.
+</p>
+
+</body>
+</html>

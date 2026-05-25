@@ -222,16 +222,24 @@ void BoatState::upsertAisTarget(const AisTarget& t) {
     Lock l(mutex_);
     pruneStaleAis_locked();
 
-    // Update existing slot if MMSI already known.
+    // Update existing slot if MMSI already known. Round 85: field-wise
+    // merge — a 129809 (name only) or 129810 (ship-type only) must not
+    // wipe position that was set by a prior 129038/9/40. Each incoming
+    // field overrides the slot ONLY if it is "set":
+    //   * doubles: not NaN
+    //   * name:   non-empty
+    //   * ship_type: non-zero (0 = "unknown")
     for (auto& slot : ais_) {
         if (slot.mmsi == t.mmsi && slot.mmsi != 0) {
-            // Preserve name if the incoming update doesn't include one.
-            char saved_name[sizeof(slot.name)];
-            std::memcpy(saved_name, slot.name, sizeof(saved_name));
-            slot = t;
-            if (t.name[0] == 0) {
-                std::memcpy(slot.name, saved_name, sizeof(saved_name));
+            if (!std::isnan(t.lat))   slot.lat       = t.lat;
+            if (!std::isnan(t.lon))   slot.lon       = t.lon;
+            if (!std::isnan(t.sog))   slot.sog       = t.sog;
+            if (!std::isnan(t.cog))   slot.cog       = t.cog;
+            if (t.ship_type != 0)     slot.ship_type = t.ship_type;
+            if (t.name[0] != 0) {
+                std::memcpy(slot.name, t.name, sizeof(slot.name));
             }
+            slot.last_seen_ms = t.last_seen_ms;
             return;
         }
     }

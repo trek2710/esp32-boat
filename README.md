@@ -1,183 +1,170 @@
 # esp32-boat
 
-A cockpit instrument display for the boat — **two ESP32-S3s, BLE-bridged**.
-A small **transmitter** board taps the boat's NMEA 2000 backbone and a
-larger **receiver** board in the cockpit shows the live data on a round
-touchscreen.
+A cockpit instrument display for the boat. **Three ESP32 peers + an iOS
+companion app** share a WiFi-based virtual N2K bus.
 
 ```
-                                                        BLE GATT
-                                                       ─────────►
-                                                       (5 notify
-                                                        chars + 1
-                                                        cmd char)
- ┌─────────── NMEA 2000 backbone ───┐
- │           SN65HVD230 transceiver │       TX                    RX
- │                ↓                 │   ┌──────────┐         ┌──────────┐
- │           ┌─────────┐            │   │ ESP32-S3 │  ─────► │ ESP32-S3 │
- └──────────►│  TWAI   │────────────────►   AMOLED │         │  Round   │
-             │ peripheral            │   │  1.75″  │         │  LCD 2.1″│
-             └─────────┘             │   │   466²  │         │   480²   │
-                                     │   └──────────┘         └──────────┘
-                                     │   (in a wiring         (in the cockpit)
-                                     │    locker, near
-                                     │    the bus)
+                                                         WiFi (_wifi_nmea2k)
+                                                       ┌─────────────────┐
+                                                       │ unicast star    │
+                                                       │ + AP-as-relay   │
+                                                       └─────────────────┘
+                                                                ▲
+   NMEA 2000 backbone                                           │
+        │                                                       │
+   SN65HVD230  ──►  TX (lcd-gps, S3)  ───── STA ────────────────┤
+                                                                │
+   Daisy 2+ AIS ──► converter (C6) ──────── STA ────────────────┤
+                                                                │
+                    RX (lcd-2.1, S3)  ───── AP (priority 200) ──┤
+                                                                │
+                    iPhone app          ──── STA ───────────────┘
 ```
 
-## The two boards
+## Status (round 85, 2026-05-25)
 
-**Transmitter (TX)** — [Waveshare ESP32-S3-Touch-AMOLED-1.75-G](https://www.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-1.75)
-(ESP32-S3R8, 8 MB PSRAM, 16 MB flash, 1.75″ 466×466 AMOLED, AXP2101 PMIC,
-QMI8658 IMU, LC76G GNSS). Connects to the **NMEA 2000** backbone through
-an **SN65HVD230** CAN transceiver. Decodes incoming PGNs (or, in sim
-mode, fabricates them) and publishes the resulting boat state over BLE
-GATT. Onboard AMOLED shows a status display — link state, PGN/s, errors.
+**v1 + v1.5 + v1.5b + v1.6 step 1–4 are end-to-end working on the
+bench in simulation.** Five-page LCD layout converged (Main / AIS /
+PGN / Comm), AIS sim flowing across all peers, iOS companion app
+shipped with: live instrument mirror, AIS list, settings POST,
+diagnostics. iPhone GPS is opt-in and cross-checks against the
+bus-published GPS (bold orange when > 30 m off).
 
-**Receiver (RX)** — [Waveshare ESP32-S3-Touch-LCD-2.1](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm)
-(same SoC family, 2.1″ 480×480 round IPS, capacitive touch). Connects to
-*nothing on the boat* — just power. Scans for the TX's BLE service UUID,
-subscribes to the boat-state characteristics, and feeds the existing
-LVGL UI. Has the settings page, the honeycomb PGN display, and the
-swipe-paged instruments — the user-facing surface lives entirely here.
+The full architecture is documented in
+[docs/CONTEXT.md](docs/CONTEXT.md); roadmap in
+[docs/ROADMAP.md](docs/ROADMAP.md); design decisions in
+[docs/adr/](docs/adr/) (superseded ones moved to
+[docs/adr/archive/](docs/adr/archive/)).
 
-## Status
+What's **not** yet wired:
 
-**The BLE bridge is end-to-end working on the bench, in simulation.**
-Steps 1–4, 7, 7b, and 9 have shipped. The TX runs the simulator and
-publishes the five boat-state channels over BLE GATT; the RX scans
-for the TX by name, subscribes to all five `NOTIFY` characteristics,
-and feeds the parsed values into the existing `BoatState` so the UI
-renders simulated data over the wireless link with no code path
-changes upstream of `NmeaBridge`. The TX has its own five-page
-status display (Primary / Simulator / PGN / Settings / Communication)
-and CST9217 touch swipe nav.
+- Real boat connectivity — `SN65HVD230` to a live N2K backbone (v1.5
+  step 5, hardware-blocked; see
+  [docs/OPENPLOTTER_NMEA2000.md](docs/OPENPLOTTER_NMEA2000.md) for the
+  OpenPlotter-as-source bring-up path).
+- LC76G GPS on the AMOLED-1.75-G — `R15`/`R16` 0Ω jumpers aren't
+  populated from the factory. Driver code is parked; soldering the
+  jumpers will light it up via Serial1 with no code change.
+- COG/SOG dispatch (PGN 129026) — prereq for the planned AIS map view
+  in the iOS app.
+- Distribution signing for the iOS app — currently free-tier signed,
+  so the app needs upstream internet at launch for Apple cert checks.
+  $99/yr Developer Program would resolve this.
 
-Remaining for v1.5 wireless complete: **step 5** — wire the
-SN65HVD230 transceiver between the TX and a real NMEA 2000
-backbone, swap the TX's data source from the simulator to the
-NMEA2000 library. This is hardware-blocked until the cable + bus
-are connected.
+## The four peers
 
-Two side-quests parked on this branch:
+| Peer | Board | Role on bus |
+|---|---|---|
+| **lcd-2.1** | [Waveshare ESP32-S3-Touch-LCD-2.1](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm) (480×480 round LVGL, touch) | AP (priority 200), always-on instrument display in cockpit, runs the simulator |
+| **lcd-gps** | [Waveshare ESP32-S3-Touch-AMOLED-1.75-G](https://www.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-1.75) (466×466 AMOLED, swipe touch, LC76G GNSS) | STA (priority 100), wiring-locker board with the N2K transceiver |
+| **nmea-converter** | [Waveshare ESP32-C6-LCD-1.47](https://www.waveshare.com/esp32-c6-lcd-1.47) (172×320, BOOT button) | STA (priority 150), decodes AIS sentences from a Daisy 2+ on UART1, also runs a 3-target AIS sim for bench testing |
+| **ios-app** | iPhone (iOS 17+) | STA (priority 80), SwiftUI app — live instrument mirror, AIS list, Settings tab (HTTP POST to AP), Diagnostics |
 
-- **Step 6** (RX → TX command channel — flip the Sim toggles from
-  the RX) is deferred until step 5 lands; the wire protocol's
-  command characteristic is defined in `include/BoatBle.h` and
-  the TX has a callback stub but nothing decodes the bytes yet.
-- **Step 8** (LC76G real GPS over the AMOLED-1.75-G's onboard
-  GNSS) hit a dead-end on this board variant — the I²C path
-  ACKs writes but NACKs reads, and the R15/R16 UART jumpers are
-  not populated. Driver code is parked in place behind a fail-
-  counter so it auto-quiets at boot; soldering the jumpers will
-  reactivate it via Serial1 without further code changes.
+The AP role is decided at runtime by a priority-weighted backoff
+election; RX always wins in practice. See ADR-0009.
 
-## What it shows (v1)
+## Wire protocol
 
-Four swipe-cycled screens on the RX:
+Per-PGN JSON over UDP — one packet per PGN, fan-out via AP:
 
-1. **Main / Overview** — classic-boating wind compass (apparent-wind
-   cone, true-wind triangle on the bezel), BSPD + AWS readouts inside
-   a stylised boat hull, large heading box with cardinal abbreviation,
-   adjustable no-go and no-stop angles for close-hauled marking.
-2. **PGN honeycomb** — 19 colour-coded hex tiles, one per PGN, with
-   name / value / measured Hz. Tiles fade out if the channel goes
-   silent for >10× its observed interval; flash on each update.
-3. **Sim / channel toggles** — per-channel GREEN/RED buttons to enable
-   or silence each simulated PGN class (used both for development and
-   for testing what the display does without that data).
-4. **Settings** — persisted no-go / no-stop half-angles via NVS.
+```
+{"pgn":130306,"src":255,"peer":"lcd-2.1",
+ "fields":{"reference":"Apparent","windSpeed":3.1,"windAngle":0.42}}
+```
 
-Decoded PGNs: GPS position (129025), COG/SOG (129026), Wind (130306),
-Water Depth (128267), Sea Water Temperature (130316-Sea), Outside Air
-Temperature (130316-Outside), Heading (127250), Speed Through Water
-(128259). AIS PGNs (129038/39/809/810) are TODO for v1.1.
+Full spec: [docs/VIRTUAL_BUS_WIRE.md](docs/VIRTUAL_BUS_WIRE.md).
+Why this and not multicast / BLE / a broker: ADRs 0001, 0010, 0011.
 
-Not in v1 (see [docs/ROADMAP.md](docs/ROADMAP.md)): waypoint
-navigation, map rendering, engine telemetry, attitude PGN handling.
+A small control plane runs in parallel on the AP (port 80, HTTP):
 
-## Quick start
+```
+GET  /settings                  → { "settings_v": 42, "settings": {...} }
+POST /settings { "ais.range_nm": 8 }
+                                → { "settings_v": 43, "settings": {...} }
+```
 
-### Build and flash from source
+The new snapshot fans out to every STA via the next 5 s heartbeat (PGN
+65500). Full design: [ADR-0013](docs/adr/0013-settings-control-plane.md).
 
-1. Install [PlatformIO](https://platformio.org/) (VS Code extension or
-   the CLI — `pip install platformio`).
-2. Clone this repo:
-   ```bash
-   git clone https://github.com/trek2710/esp32-boat.git
-   cd esp32-boat
-   ```
-3. The `scripts/flash.sh` helper handles both boards and protects you
-   from flashing the wrong firmware to the wrong device. Both boards
-   are ESP32-S3 and look identical to macOS as `/dev/cu.usbmodem*`,
-   so flash.sh fingerprints them by chip MAC on first run:
-   ```bash
-   ./scripts/flash.sh tx     # build + flash + monitor the transmitter
-   ./scripts/flash.sh rx     # build + flash + monitor the receiver
-   ```
-   First run for each role asks you to register the connected board's
-   MAC. After that, mis-plugging the wrong board is a hard abort
-   before any bytes hit flash.
+A captive-portal stub also runs on the AP (DNS hairpin + iOS probe URL
+handlers) so iOS classifies `_wifi_nmea2k` as a normal internet
+network and doesn't silently switch to cellular.
 
-If you'd rather drive PlatformIO directly:
+## Build + flash
+
 ```bash
-pio run -e nmea2k_tx                       -t upload   # transmitter
-pio run -e waveshare_esp32s3_touch_lcd_21_sim -t upload   # receiver (sim)
+# All three firmware envs (WiFi variants):
+pio run -e nmea2k_tx_wifi              -e waveshare_esp32s3_touch_lcd_21_wifi              -e nmea_converter
+
+# MAC-safe flasher (won't flash the wrong firmware to the wrong board):
+./scripts/flash.sh tx_wifi          # lcd-gps
+./scripts/flash.sh rx_wifi          # lcd-2.1
+./scripts/flash.sh converter        # nmea-converter
 ```
 
-### Pre-built RX firmware (no toolchain needed)
+PlatformIO envs:
 
-The [`binaries/`](binaries/) folder contains ready-to-flash `.bin`
-files for the RX board's sim and safe builds, plus three different
-flash recipes (browser-based `esptool-js`, command-line `esptool.py`,
-or PlatformIO). See [binaries/README.md](binaries/README.md). The TX
-firmware isn't packaged yet — flash it from source with the steps
-above.
+| Env | Board | Notes |
+|---|---|---|
+| `nmea2k_tx_wifi`                       | AMOLED-1.75-G (S3) | Current TX firmware |
+| `waveshare_esp32s3_touch_lcd_21_wifi`  | LCD-2.1 (S3)       | Current RX firmware |
+| `nmea_converter`                       | LCD-1.47 (C6)      | AIS bridge + WiFi peer |
+| `nmea2k_tx`                            | AMOLED-1.75-G      | Legacy BLE TX (round 78, still buildable) |
+| `waveshare_esp32s3_touch_lcd_21_ble`   | LCD-2.1            | Legacy BLE RX |
+| `waveshare_esp32s3_touch_lcd_21_sim`   | LCD-2.1            | Pure-sim, no transport — UI bring-up only |
+
+WiFi credentials default to SSID `_wifi_nmea2k`, password `showmetrust`.
+Override by copying `include/wifi_credentials.example.h` to
+`include/wifi_credentials.h`.
+
+## iOS companion app
+
+Lives in a separate repo: `../esp32-boat-ios/`. Build with `xcodegen`
++ Xcode 16+. Setup steps in
+[docs/IOS_APP.md](docs/IOS_APP.md) and the iOS repo README.
 
 ## Wiring
 
-See [docs/WIRING.md](docs/WIRING.md) for the full pinout of both
-boards. In short:
-
-- **TX** taps the NMEA 2000 bus via an SN65HVD230 transceiver
-  (GPIO assignments TBC in step 5). Powered from USB for v1, planned
-  12 V → 5 V buck off the bus for v2.
-- **RX** has no NMEA 2000 connection. Powered from USB-C; receives
-  data from the TX wirelessly over BLE GATT.
+[docs/WIRING.md](docs/WIRING.md) — full pinout per board.
+[docs/BOM.md](docs/BOM.md) — bill of materials.
 
 ## Repo layout
 
 ```
 esp32-boat/
-├── platformio.ini          PlatformIO build config (RX + TX envs)
-├── src/                    RX firmware — display board
-│   ├── main.cpp            App entry — sets up BLE client + UI
-│   ├── BoatState.{h,cpp}   Thread-safe snapshot of all instrument values
-│   ├── NmeaBridge.{h,cpp}  Sim publisher (real PGN handlers move to TX)
-│   ├── Ui.{h,cpp}          LVGL pages + swipe / tap nav
-│   └── display/            Hand-rolled ST77916 / ST7701 QSPI driver
-├── src_tx/                 TX firmware — NMEA 2000 ↔ BLE bridge
-│   └── main.cpp            AXP2101 init, SH8601 AMOLED, BLE peripheral
-├── include/lv_conf.h       LVGL config, shared by both envs
-├── docs/                   BOM, wiring, roadmap, navigation math
-├── binaries/               Pre-built RX .bin files + flash instructions
-├── scripts/flash.sh        MAC-safe TX/RX build + flash + monitor helper
-├── scripts/update.sh       One-shot "ship a round" — build, log, commit, push
-├── scripts/package.sh      Build + copy RX binaries into binaries/
-└── .github/workflows/      CI that runs `pio run` on every push
+├── platformio.ini              build envs (WiFi + legacy BLE)
+├── src/                        RX firmware (lcd-2.1)
+│   ├── main.cpp                ESP-IDF init + LVGL pump
+│   ├── BoatState.{h,cpp}       thread-safe instrument snapshot
+│   ├── NmeaBridge.{h,cpp}      WiFi role election + UDP drain + dispatch
+│   │                           + AP-side HTTP server + DNS captive stub
+│   ├── Ui.{h,cpp}              LVGL 4-page UI (Main / AIS / PGN / Comm)
+│   ├── magnetic_variation.{h,cpp}
+│   └── display/                ST77916 + CST820 + TCA9554 + ST7701 drivers
+├── src_tx/                     TX firmware (lcd-gps)
+│   ├── main.cpp                4-page LVGL UI + AXP2101 + CST9217
+│   └── WifiPublisher.{h,cpp}   STA-side bus participant + role election
+├── src_converter/              converter firmware (nmea-converter)
+│   ├── main.cpp                AIVDM parser + AIS sim + WiFi heartbeats
+│   ├── ais_decoder.{h,cpp}     NMEA 0183 → tN2kMsg
+│   ├── AisTargetStore.h        in-RAM target cache (16 slots)
+│   ├── WifiPublisher.{h,cpp}   STA-side bus participant
+│   └── Ui.cpp                  Arduino_GFX single-page display
+├── include/
+│   ├── VirtualBusJson.h        shared JSON wire helpers
+│   ├── RoleNegotiator.h        role-election state machine
+│   ├── VbusRole.h              per-env priority + peer name constants
+│   ├── Settings.h              shared settings store + NVS persistence
+│   ├── BoatBle.h               legacy BLE PDU struct definitions
+│   └── lv_conf.h               LVGL config
+├── docs/                       overview + per-doc files
+│   ├── CONTEXT.md              glossary, single source of truth
+│   ├── ROADMAP.md              what's done + what's next
+│   ├── adr/                    active ADRs (0001, 0002, 0005, 0007, 0009-0013)
+│   └── adr/archive/            superseded ADRs (0003, 0004, 0006, 0008)
+├── scripts/flash.sh            MAC-safe build + flash + monitor helper
+└── binaries/                   pre-built RX .bin (legacy BLE only)
 ```
-
-## Contributing / development notes
-
-- PlatformIO targets:
-  - `nmea2k_tx` — transmitter firmware (`src_tx/`)
-  - `waveshare_esp32s3_touch_lcd_21_sim` — receiver, sim mode
-  - `waveshare_esp32s3_touch_lcd_21_safe` — receiver, diagnostic mode
-- LVGL 8.3.11 is pinned (both envs share `include/lv_conf.h`).
-- Native unit tests for PGN decoding will be added under `test/` as
-  the TX-side handlers grow.
-- OTA updates are wired up on the RX but disabled by default — set
-  `ENABLE_OTA=1` in `platformio.ini` to turn them on once you've
-  added a WiFi SSID/password.
 
 ## License
 

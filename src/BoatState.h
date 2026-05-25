@@ -61,6 +61,7 @@ struct AisTarget {
     double   lon = NAN;        // degrees
     double   sog = NAN;        // knots
     double   cog = NAN;        // degrees true
+    uint8_t  ship_type = 0;    // PGN 129810 typeOfShip (0 = unknown until seen)
     uint32_t last_seen_ms = 0; // millis() at last update
 };
 
