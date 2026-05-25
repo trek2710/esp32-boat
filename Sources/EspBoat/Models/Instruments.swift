@@ -35,6 +35,19 @@ struct Instruments: Equatable {
 
     // Derived helpers
     var vmg: Double = .nan
+
+    // Round 85 v1.6 step 3: per-channel last-seen timestamps. Set by
+    // PgnDispatch on every successful parse; consumed by BusState's
+    // staleness sweep to NaN-clear fields whose source channel stopped
+    // (e.g. iOS toggles sim.wind off → AP stops publishing 130306 →
+    // awa/aws should blank within ~3 s).
+    var windLastSeen:   Date? = nil
+    var stwLastSeen:    Date? = nil
+    var hdgLastSeen:    Date? = nil
+    var depthLastSeen:  Date? = nil
+    var gpsLastSeen:    Date? = nil
+    var seaTempLastSeen: Date? = nil
+    var airTempLastSeen: Date? = nil
 }
 
 struct AisTarget: Identifiable, Equatable {

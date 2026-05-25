@@ -29,6 +29,11 @@ final class BusState: ObservableObject {
     private let settingsClient = SettingsClient()
     private let heartbeat = HeartbeatPublisher()
     private var listener: BusListener?
+    private var staleTimer: AnyCancellable?
+    /// How long since a channel's last-seen before we NaN-clear it. Match
+    /// the firmware-side 3 s window used by BoatState::invalidateLiveData
+    /// and the TX-side per-channel staleness check.
+    private let kStaleAfter: TimeInterval = 3.0
 
     // MARK: - lifecycle
     func start() {
@@ -45,13 +50,70 @@ final class BusState: ObservableObject {
         }
         heartbeat.start()
         isOnline = true
+        // Periodic stale sweep — blanks instrument fields whose source
+        // channel has stopped publishing for > kStaleAfter.
+        staleTimer = Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.sweepStale() }
         Task { await refreshSettings() }
     }
 
     func stop() {
         listener?.stop(); listener = nil
         heartbeat.stop()
+        staleTimer?.cancel(); staleTimer = nil
         isOnline = false
+    }
+
+    /// NaN-clear any instrument whose source channel hasn't produced an
+    /// update within kStaleAfter. Triggers @Published so the Boat tab
+    /// re-renders with "—" placeholders.
+    private func sweepStale() {
+        let now = Date()
+        let stale = { (ts: Date?) -> Bool in
+            guard let ts else { return false }
+            return now.timeIntervalSince(ts) > self.kStaleAfter
+        }
+        var changed = false
+        if stale(instruments.windLastSeen) {
+            if !instruments.awa.isNaN { instruments.awa = .nan; changed = true }
+            if !instruments.aws.isNaN { instruments.aws = .nan; changed = true }
+            instruments.windLastSeen = nil
+        }
+        if stale(instruments.stwLastSeen) {
+            if !instruments.stw.isNaN { instruments.stw = .nan; changed = true }
+            instruments.stwLastSeen = nil
+        }
+        if stale(instruments.hdgLastSeen) {
+            if !instruments.headingMagDeg.isNaN {
+                instruments.headingMagDeg = .nan; changed = true
+            }
+            instruments.hdgLastSeen = nil
+        }
+        if stale(instruments.depthLastSeen) {
+            if !instruments.depthM.isNaN { instruments.depthM = .nan; changed = true }
+            instruments.depthLastSeen = nil
+        }
+        if stale(instruments.gpsLastSeen) {
+            if !instruments.lat.isNaN { instruments.lat = .nan; changed = true }
+            if !instruments.lon.isNaN { instruments.lon = .nan; changed = true }
+            instruments.gpsLastSeen = nil
+        }
+        if stale(instruments.seaTempLastSeen) {
+            if !instruments.waterTempC.isNaN {
+                instruments.waterTempC = .nan; changed = true
+            }
+            instruments.seaTempLastSeen = nil
+        }
+        if stale(instruments.airTempLastSeen) {
+            if !instruments.airTempC.isNaN {
+                instruments.airTempC = .nan; changed = true
+            }
+            instruments.airTempLastSeen = nil
+        }
+        // Recompute TWA/TWS/VMG since any of wind/stw going stale
+        // invalidates them too.
+        if changed { recomputeDerived() }
     }
 
     // MARK: - packet dispatch

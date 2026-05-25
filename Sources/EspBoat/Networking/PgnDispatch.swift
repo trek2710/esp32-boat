@@ -83,6 +83,7 @@ enum PgnDispatch {
               let wa = jsonDouble(json, key: "windAngle") else { return false }
         instruments.awa = wa * 180.0 / .pi
         instruments.aws = ws * 1.943844
+        instruments.windLastSeen = Date()
         return true
     }
 
@@ -92,6 +93,7 @@ enum PgnDispatch {
               let lon = jsonDouble(json, key: "longitude") else { return false }
         instruments.lat = lat
         instruments.lon = lon
+        instruments.gpsLastSeen = Date()
         return true
     }
 
@@ -103,6 +105,7 @@ enum PgnDispatch {
             return false
         }
         instruments.headingMagDeg = h * 180.0 / .pi
+        instruments.hdgLastSeen = Date()
         return true
     }
 
@@ -110,6 +113,7 @@ enum PgnDispatch {
                                   instruments: inout Instruments) -> Bool {
         guard let s = jsonDouble(json, key: "speedWaterReferenced") else { return false }
         instruments.stw = s * 1.943844
+        instruments.stwLastSeen = Date()
         return true
     }
 
@@ -117,6 +121,7 @@ enum PgnDispatch {
                                     instruments: inout Instruments) -> Bool {
         guard let d = jsonDouble(json, key: "depth") else { return false }
         instruments.depthM = d
+        instruments.depthLastSeen = Date()
         return true
     }
 
@@ -126,8 +131,14 @@ enum PgnDispatch {
               let tK = jsonDouble(json, key: "actualTemperature") else { return false }
         let tC = tK - 273.15
         switch src {
-        case "Sea Temperature":     instruments.waterTempC = tC; return true
-        case "Outside Temperature": instruments.airTempC = tC;   return true
+        case "Sea Temperature":
+            instruments.waterTempC = tC
+            instruments.seaTempLastSeen = Date()
+            return true
+        case "Outside Temperature":
+            instruments.airTempC = tC
+            instruments.airTempLastSeen = Date()
+            return true
         default: return false
         }
     }
