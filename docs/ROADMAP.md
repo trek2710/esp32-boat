@@ -1,5 +1,44 @@
 # Roadmap
 
+## Sea-trial v1 — standalone AIS + GPS pod ← CURRENT FOCUS
+
+**Goal: a self-powered box that shows real AIS + iPhone-GPS position on
+the RX and iOS, on a boat with no instruments and no NMEA 2000.** The
+test boat has no N2K backbone and no wind instrument, so this release
+drops the "mirror a real bus" premise entirely. Rationale + the four
+scoping decisions: [ADR-0015](adr/0015-standalone-pod-first.md).
+"Standalone pod" deployment mode: [CONTEXT.md](CONTEXT.md).
+
+**In scope:** iPhone GPS (foreground) for own position; real AIS via the
+Daisy 2+ → converter → virtual bus; the RX radar + AIS list; the iOS map
++ list. Self-powered (LCD batteries, converter on a powerbank).
+
+**Deferred:** comfort/IMU (ADR-0014), a dedicated GPS module, wind /
+depth / heading sensors, the N2K **gateway mode**.
+
+**Priorities (do roughly in order):**
+
+- [ ] **1. Simulator master switch** — one `sim.master` setting gates
+      *all* sim publishing (RX sim + converter AIS sim). Bench = on
+      (today's behaviour); trial = one tap off so only real sources
+      flow. Prevents `sim.gps` from pegging own-ship in Copenhagen.
+- [ ] **2. Heading honesty** — there is no magnetometer; own-ship is
+      COG-only (valid when moving). Ensure no display implies a magnetic
+      bow heading; label it COG, not HDG.
+- [ ] **3. Field power-on autonomy** — the three boards + iPhone form
+      the virtual bus on battery alone, no laptop: RX comes up as AP
+      reliably, converter + iPhone join, iOS app foreground.
+- [ ] **4. Real AIS bring-up** — wire the Daisy 2+ to the converter
+      (`docs/hardware/hardware_guide.html`), powerbank it, verify real
+      targets travel Daisy → converter → bus → RX radar + iOS.
+- [ ] **5. Real-position verification** — `sim.master` off, confirm the
+      RX radar + iOS map centre on the live iPhone position with real
+      AIS targets around it.
+
+**Acceptance:** underway on the real boat, battery-powered, no laptop —
+the RX radar and the iOS map show my real position with live AIS targets
+around me for a full short sail.
+
 ## v0 — scaffold (this repo as-is, 2026-04-19)
 
 - [x] PlatformIO project structure
@@ -205,6 +244,18 @@ becomes the canonical settings UI.** Design in
 - [ ] Anchor watch: alarm if the boat drifts > X metres from a dropped pin
 - [ ] Trip log: miles, hours, max SOG, max wind — exported as CSV on the SD
 
+## v5 — comfort / seakeeping (design only, not scheduled)
+
+**Goal: a comfort page driven by the boats' idle QMI8658 IMUs.**
+Architecture pinned in [ADR-0014](adr/0014-comfort-page-sea-state.md)
+and the "Comfort / sea state" glossary in [CONTEXT.md](CONTEXT.md);
+no implementation yet. In short: reconstruct a (boat-distorted) sea
+state from each LCD's IMU, correct it with a learned per-boat model
+held in the iOS app, and show a steepness-based comfort index — with
+the active source (cockpit-measured / locker-measured / manual / GFS
+forecast) user-selectable. See the ADR's "Open questions" for what's
+still undecided.
+
 ## Non-goals
 
 - Being a replacement for a full MFD. We are a single-purpose instrument.
@@ -212,5 +263,8 @@ becomes the canonical settings UI.** Design in
   engine, etc.). The bus-side stays read-only. The BLE command channel
   (RX → TX) is internal — it only configures the TX (sim toggles, future
   brightness, etc.), it never reaches the boat's N2K backbone.
-- Supporting boats without an NMEA 2000 backbone (0183-only boats would need
-  a separate branch — possible but not planned).
+- ~~Supporting boats without an NMEA 2000 backbone.~~ **Reversed
+  (2026-05-26, ADR-0015):** the first sea-trial boat has no N2K backbone,
+  so the **standalone pod** deployment mode (iPhone GPS + Daisy AIS + IMU,
+  no boat connection) is now a first-class target. The N2K **gateway
+  mode** remains supported for boats that do have a backbone.
