@@ -1,0 +1,47 @@
+# esp32-boat-ios — xcodegen project descriptor.
+#
+# Generate the .xcodeproj from this file with:
+#
+#   brew install xcodegen   # one-time
+#   xcodegen generate
+#   open EspBoat.xcodeproj
+#
+# Single iOS App target (EspBoat), all Swift sources under Sources/EspBoat/.
+# Bundle ID + display name are placeholders; change before App Store / TestFlight.
+
+name: EspBoat
+options:
+  bundleIdPrefix: com.koefoed
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_CFBundleDisplayName: "esp32-boat"
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
+    INFOPLIST_KEY_NSLocalNetworkUsageDescription: >-
+      esp32-boat reads N2K instrument PGNs from the boat's WiFi
+      bus over the local network.
+    INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: >-
+      esp32-boat shares the iPhone's GPS with the boat instruments
+      as a real position source. Used only while the app is open.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  EspBoat:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/EspBoat
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.koefoed.esp32boat
+        TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
