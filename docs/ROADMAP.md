@@ -1,6 +1,67 @@
 # Roadmap
 
-## Sea-trial v1 — standalone AIS + GPS pod ← CURRENT FOCUS
+> **v2 pivot (2026-06-07, ADR-0016):** the project abandoned the WiFi
+> "virtual bus" / NMEA 2000 mirror entirely and became a family of
+> **independent, self-contained devices** that link to an iOS companion
+> over BLE. **Everything below the "v2 — independent devices" section is
+> v1 history**, kept for reference and recoverable at the
+> `v1-wifi-bus-archive` tag, but no longer the plan.
+
+## v2 — independent devices over BLE ← CURRENT DIRECTION
+
+**Goal: self-contained ESP boxes, each doing one boat job standalone,
+each linked only to an iOS companion over BLE.** No shared bus, no boat
+network required. Architecture: [ADR-0016](adr/0016-independent-devices-over-ble.md);
+vocabulary: [CONTEXT.md](CONTEXT.md).
+
+### Device 1 — AIS-radar device (milestone 1)
+
+The ESP32-S3-Touch-AMOLED-1.75-G (onboard LC76G GPS) + a Daisy 2+ AIS
+receiver, drawing AIS targets radar-style on its own AMOLED when it has
+a fix, with a BLE link to a fresh iOS app. Self-powered.
+
+**Salvage (keep):** AMOLED display/touch/PMIC bring-up, LC76G GPS
+driver, AIS AIVDM decode (`src_converter/*.h`), radar geometry/trig.
+**Rewrite:** radar rendering → Arduino_GFX (was LVGL on RX); iOS app →
+fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
+
+- [ ] **0. Repo reset** — tag `v1-wifi-bus-archive`; clean per-device
+      source layout; extract the salvage list above.
+- [ ] **1. AMOLED + GPS bring-up** — display/touch up on the new tree;
+      LC76G UART jumpers (R15/R16) soldered; own position acquired.
+- [ ] **2. Daisy AIS in** — wire the Daisy to a spare UART; decode
+      AIVDM into the target store on-device.
+- [ ] **3. On-device radar** — render own ship + AIS targets radar-style
+      in Arduino_GFX; touch = zoom/pan only.
+- [ ] **4. BLE link** — device (peripheral) notifies AIS targets + own
+      GPS + status; iOS settings write characteristic; device persists
+      settings to NVS and runs standalone.
+- [ ] **5. Fresh iOS app** — BLE central: radar/AIS view + the settings
+      writer.
+
+**Acceptance:** powered by its own battery/powerbank, no boat
+connection, the device shows my GPS position with live AIS targets
+around it radar-style; the iOS app mirrors it and can change its
+settings.
+
+### Later devices / capabilities (not scheduled)
+
+- Comfort device (IMU sea-state → comfort index) — design in
+  [ADR-0014](adr/0014-comfort-page-sea-state.md), **mechanism needs BLE
+  rework** (it predates this pivot).
+- Optional per-device **N2K bridging** — a device gains an SN65HVD230 to
+  emit/read PGNs. The v1 encoders + ADR-0005 are kept dormant for this.
+- Fate of the RX 2.1" round display and the C6 converter as future
+  devices.
+
+---
+
+# v1 history (archived — WiFi virtual bus, superseded by ADR-0016)
+
+Everything below predates the v2 pivot. Recoverable at
+`v1-wifi-bus-archive`.
+
+## Sea-trial v1 — standalone AIS + GPS pod (SUPERSEDED by ADR-0016)
 
 **Goal: a self-powered box that shows real AIS + iPhone-GPS position on
 the RX and iOS, on a boat with no instruments and no NMEA 2000.** The
