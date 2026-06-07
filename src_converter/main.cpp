@@ -110,7 +110,8 @@ void setup() {
 // turns these into PGNs.
 
 static void simAisTick(uint32_t now) {
-    if (!WifiPublisher::currentSettings().sim_ais) return;
+    const settings::Settings& cfg = WifiPublisher::currentSettings();
+    if (!cfg.sim_master || !cfg.sim_ais) return;   // master gate (ADR-0015)
 
     static uint32_t last_tick = 0;
     constexpr double kTickS = 6.0;

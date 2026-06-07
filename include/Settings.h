@@ -32,6 +32,9 @@ namespace settings {
 // Defaults match the ADR-0013 v1 table. Bools are 0/1 in NVS for simplicity.
 
 struct Settings {
+    // Master gate over ALL simulator publishing (RX sim + converter AIS
+    // sim). Off = field mode: only real sources flow. ADR-0015.
+    bool sim_master    = true;
     // Simulator channel mask — what RX's wifiSimAndPublish() emits.
     bool sim_wind      = true;
     bool sim_gps       = true;
@@ -75,6 +78,7 @@ public:
         const uint32_t v = p.getUInt("v", 0);
         if (v == 0) { p.end(); return false; }
         version_ = v;
+        data_.sim_master          = p.getBool("sm",   data_.sim_master);
         data_.sim_wind            = p.getBool("sw",   data_.sim_wind);
         data_.sim_gps             = p.getBool("sg",   data_.sim_gps);
         data_.sim_heading         = p.getBool("sh",   data_.sim_heading);
@@ -98,6 +102,7 @@ public:
         Preferences p;
         if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
         p.putUInt  ("v",   version_);
+        p.putBool  ("sm",  data_.sim_master);
         p.putBool  ("sw",  data_.sim_wind);
         p.putBool  ("sg",  data_.sim_gps);
         p.putBool  ("sh",  data_.sim_heading);
@@ -123,6 +128,7 @@ public:
         int n = snprintf(buf, cap,
             "\"settings_v\":%u,"
             "\"settings\":{"
+            "\"sim.master\":%s,"
             "\"sim.wind\":%s,\"sim.gps\":%s,\"sim.heading\":%s,"
             "\"sim.depth\":%s,\"sim.sea_temp\":%s,\"sim.air_temp\":%s,"
             "\"sim.ais\":%s,"
@@ -131,6 +137,7 @@ public:
             "\"ui.brightness\":%u,\"ui.idle_dim_after_s\":%u"
             "}",
             (unsigned)version_,
+            data_.sim_master   ? "true" : "false",
             data_.sim_wind     ? "true" : "false",
             data_.sim_gps      ? "true" : "false",
             data_.sim_heading  ? "true" : "false",
@@ -153,6 +160,7 @@ public:
     // changed; 0 means a no-op POST. Unknown keys are silently ignored.
     int applyFromJson(const char* body, bool bump_version = true) {
         int changes = 0;
+        changes += applyBool  (body, "sim.master",        &data_.sim_master);
         changes += applyBool  (body, "sim.wind",          &data_.sim_wind);
         changes += applyBool  (body, "sim.gps",           &data_.sim_gps);
         changes += applyBool  (body, "sim.heading",       &data_.sim_heading);

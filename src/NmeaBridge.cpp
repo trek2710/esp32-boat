@@ -1270,6 +1270,10 @@ void wifiSimAndPublish(BoatState& state, uint32_t now) {
     // RX Main page does this too as of round 85 step 4).
     const settings::Settings& cfg = g_settings.view();
 
+    // Master gate (ADR-0015): in field mode the simulator publishes
+    // nothing, so only real sources (iPhone GPS, Daisy AIS) reach the bus.
+    if (!cfg.sim_master) return;
+
     if (cfg.sim_gps && now - last_gps >= 100) {
         last_gps = now;
         state.setGps(lat, lon);
