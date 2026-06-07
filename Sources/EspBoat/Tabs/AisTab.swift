@@ -8,15 +8,30 @@ import SwiftUI
 
 struct AisTab: View {
     @EnvironmentObject var bus: BusState
+    @State private var mode: Mode = .list
+
+    private enum Mode: String, CaseIterable { case list = "List", map = "Map" }
 
     var body: some View {
-        Group {
-            if bus.targets.isEmpty {
-                emptyState
-            } else {
-                List(bus.targets) { target in
-                    AisRow(target: target)
+        VStack(spacing: 0) {
+            Picker("View", selection: $mode) {
+                ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.bottom, 4)
+
+            switch mode {
+            case .list:
+                if bus.targets.isEmpty {
+                    emptyState
+                } else {
+                    List(bus.targets) { target in
+                        AisRow(target: target)
+                    }
                 }
+            case .map:
+                AisMapView()
             }
         }
         .navigationTitle("AIS")

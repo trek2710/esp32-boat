@@ -16,14 +16,22 @@ struct SettingsTab: View {
 
     var body: some View {
         Form {
-            Section("Simulator") {
+            Section {
+                Toggle("Simulator", isOn: bind(\.simMaster, key: "sim.master"))
+            } footer: {
+                Text("Master switch for all simulated data. Turn OFF on the water so only real sources (iPhone GPS, AIS) reach the boat.")
+            }
+
+            Section("Simulated channels") {
                 Toggle("Wind",     isOn: bind(\.simWind,    key: "sim.wind"))
                 Toggle("GPS",      isOn: bind(\.simGps,     key: "sim.gps"))
                 Toggle("Heading",  isOn: bind(\.simHeading, key: "sim.heading"))
                 Toggle("Depth/STW", isOn: bind(\.simDepth,  key: "sim.depth"))
                 Toggle("Sea temp", isOn: bind(\.simSeaTemp, key: "sim.sea_temp"))
                 Toggle("Air temp", isOn: bind(\.simAirTemp, key: "sim.air_temp"))
+                Toggle("AIS targets", isOn: bind(\.simAis, key: "sim.ais"))
             }
+            .disabled(!bus.snapshot.settings.simMaster)
 
             Section("Display") {
                 Stepper(value: bind(\.uiBrightness, key: "ui.brightness"),

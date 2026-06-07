@@ -14,3 +14,6 @@ Package.resolved
 
 # Apple noise
 .DS_Store
+
+# Stray disk-image dump (SD-card dd artifact), not project content
+dd-dump
