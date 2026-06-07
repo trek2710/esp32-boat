@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <AmoledDisplay.h>
+#include <Lc76gGps.h>
 #include <AisTargetDecoder.h>
 #include <default_sentence_parser.h>
 
@@ -26,15 +27,19 @@ static void feed(const char* sentence) {
     do { i = decoder.decodeMsg(buf, (size_t)n, i, parser); } while (i != 0);
 }
 
-static void showSummary() {
-    const size_t targets = decoder.store().size();
-    lv_obj_t* label = lv_label_create(lv_scr_act());
-    lv_label_set_text_fmt(label, "AIS-radar\n%u targets\n%llu msgs",
-                          (unsigned)targets,
-                          (unsigned long long)decoder.messages());
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
-    lv_obj_center(label);
+static lv_obj_t* g_label = nullptr;
+
+static void refreshSummary() {
+    if (!g_label) return;
+    const gps::Fix& f = gps::fix();
+    char gpsLine[48];
+    if (f.fixQuality >= 1)
+        snprintf(gpsLine, sizeof(gpsLine), "GPS %.4f, %.4f", f.lat, f.lon);
+    else
+        snprintf(gpsLine, sizeof(gpsLine), "GPS no fix (%lu B)",
+                 (unsigned long)f.uartBytes);
+    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\n%s",
+                          (unsigned)decoder.store().size(), gpsLine);
 }
 
 void setup() {
@@ -43,6 +48,7 @@ void setup() {
     Serial.println("\n[ais-radar] milestone 0 — AMOLED + AIS decode salvage (ADR-0016)");
 
     const bool haveDisplay = amoled::begin();
+    gps::begin();   // UART-only; silent until R15/R16 jumpers are soldered
 
     // Verified sentences (correct checksums) from the AIS test-sentence set.
     feed("!AIVDM,1,1,,B,B52K>7008h>KUH7v8L0L;wv00000,0*59");  // type 18  Class B position
@@ -54,15 +60,25 @@ void setup() {
                   (unsigned)decoder.store().size(),
                   (unsigned long long)decoder.messages());
 
-    if (haveDisplay) showSummary();
-    else Serial.println("[ais-radar] display unavailable — serial only");
+    if (haveDisplay) {
+        g_label = lv_label_create(lv_scr_act());
+        lv_obj_set_style_text_align(g_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g_label, lv_color_white(), LV_PART_MAIN);
+        lv_obj_center(g_label);
+        refreshSummary();
+    } else {
+        Serial.println("[ais-radar] display unavailable — serial only");
+    }
 }
 
 void loop() {
     static uint32_t last = 0;
+    static uint32_t lastRefresh = 0;
     const uint32_t now = millis();
+    gps::poll(now);
     lv_tick_inc(now - last);
     last = now;
+    if (now - lastRefresh >= 1000) { lastRefresh = now; refreshSummary(); }
     lv_timer_handler();
     delay(5);
 }

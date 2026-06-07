@@ -30,10 +30,12 @@ fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
 - [~] **0. Repo reset** — tag `v1-wifi-bus-archive` ✓; `devices/` +
       `shared/` layout ✓; AIS decode extracted to `shared/ais/` (with a
       new de-N2K'd, lat/lon-fixing `AisTargetDecoder`) ✓; `devices/ais-radar/`
-      builds ✓. AMOLED display + LVGL bring-up extracted to
-      `shared/display/AmoledDisplay` ✓ — device shows the decoded AIS
-      count on screen. **Remaining:** extract CST9217 touch + LC76G GPS
-      (still in `src_tx/`) to `shared/`, move `BoatBle.h` to
+      builds ✓. Extracted to `shared/display/` (all hardware-verified on
+      the AMOLED board): `AmoledDisplay` (panel + LVGL) ✓, `Tca9554`
+      (expander) ✓, `Lc76gGps` (UART NMEA, drops the dead I2C path —
+      streams once R15/R16 are soldered) ✓. Device shows AIS count + GPS
+      status on screen. **Remaining:** extract CST9217 touch (needs
+      SensorLib + its build-time patch), move `BoatBle.h` to
       `shared/ble/`, then delete `src/` `src_tx/` + the old root
       `platformio.ini` (recoverable at the tag).
 - [ ] **1. AMOLED + GPS bring-up** — display/touch up on the new tree;
