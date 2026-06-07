@@ -27,17 +27,16 @@ driver, AIS AIVDM decode (now `shared/ais/`), radar geometry/trig.
 re-aim the canvas + screen size, not a graphics-API rewrite. iOS app →
 fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
 
-- [~] **0. Repo reset** — tag `v1-wifi-bus-archive` ✓; `devices/` +
-      `shared/` layout ✓; AIS decode extracted to `shared/ais/` (with a
-      new de-N2K'd, lat/lon-fixing `AisTargetDecoder`) ✓; `devices/ais-radar/`
-      builds ✓. Extracted to `shared/display/` (all hardware-verified on
-      the AMOLED board): `AmoledDisplay` (panel + LVGL) ✓, `Tca9554`
-      (expander) ✓, `Lc76gGps` (UART NMEA, drops the dead I2C path —
-      streams once R15/R16 are soldered) ✓. Device shows AIS count + GPS
-      status on screen. **Remaining:** extract CST9217 touch (needs
-      SensorLib + its build-time patch), move `BoatBle.h` to
-      `shared/ble/`, then delete `src/` `src_tx/` + the old root
-      `platformio.ini` (recoverable at the tag).
+- [x] **0. Repo reset — DONE.** Tag `v1-wifi-bus-archive`; `devices/` +
+      `shared/` layout. Salvaged (all hardware-verified on the AMOLED
+      board): `shared/ais/` (AIVDM decode + de-N2K'd, lat/lon-fixing
+      `AisTargetDecoder`), `shared/display/` (`AmoledDisplay` panel+LVGL,
+      `Tca9554` expander, `Lc76gGps` UART NMEA — dead I2C path dropped,
+      streams once R15/R16 soldered, `Touch` CST9217 via SensorLib),
+      `shared/ble/BoatBle.h`. `devices/ais-radar/` builds + runs:
+      display + touch + GPS + AIS all live on the board. Deleted `src/`
+      `src_tx/` `src_converter/` `include/` + the root `platformio.ini`
+      (recoverable at the tag); CI now builds the device.
 - [ ] **1. AMOLED + GPS bring-up** — display/touch up on the new tree;
       LC76G UART jumpers (R15/R16) soldered; own position acquired.
 - [ ] **2. Daisy AIS in** — wire the Daisy to a spare UART; feed it into
