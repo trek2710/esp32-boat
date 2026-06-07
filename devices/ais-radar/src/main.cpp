@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <AmoledDisplay.h>
+#include <Touch.h>
 #include <Lc76gGps.h>
 #include <AisTargetDecoder.h>
 #include <default_sentence_parser.h>
@@ -28,6 +29,7 @@ static void feed(const char* sentence) {
 }
 
 static lv_obj_t* g_label = nullptr;
+static int16_t g_tapX = -1, g_tapY = -1;
 
 static void refreshSummary() {
     if (!g_label) return;
@@ -38,8 +40,11 @@ static void refreshSummary() {
     else
         snprintf(gpsLine, sizeof(gpsLine), "GPS no fix (%lu B)",
                  (unsigned long)f.uartBytes);
-    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\n%s",
-                          (unsigned)decoder.store().size(), gpsLine);
+    char tapLine[32];
+    if (g_tapX >= 0) snprintf(tapLine, sizeof(tapLine), "tap %d,%d", g_tapX, g_tapY);
+    else             snprintf(tapLine, sizeof(tapLine), "tap —");
+    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\n%s\n%s",
+                          (unsigned)decoder.store().size(), gpsLine, tapLine);
 }
 
 void setup() {
@@ -48,6 +53,7 @@ void setup() {
     Serial.println("\n[ais-radar] milestone 0 — AMOLED + AIS decode salvage (ADR-0016)");
 
     const bool haveDisplay = amoled::begin();
+    touch::begin();
     gps::begin();   // UART-only; silent until R15/R16 jumpers are soldered
 
     // Verified sentences (correct checksums) from the AIS test-sentence set.
@@ -76,9 +82,11 @@ void loop() {
     static uint32_t lastRefresh = 0;
     const uint32_t now = millis();
     gps::poll(now);
+    int16_t tx, ty;
+    if (touch::readPoint(tx, ty)) { g_tapX = tx; g_tapY = ty; }
     lv_tick_inc(now - last);
     last = now;
-    if (now - lastRefresh >= 1000) { lastRefresh = now; refreshSummary(); }
+    if (now - lastRefresh >= 500) { lastRefresh = now; refreshSummary(); }
     lv_timer_handler();
     delay(5);
 }
