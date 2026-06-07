@@ -21,18 +21,25 @@ receiver, drawing AIS targets radar-style on its own AMOLED when it has
 a fix, with a BLE link to a fresh iOS app. Self-powered.
 
 **Salvage (keep):** AMOLED display/touch/PMIC bring-up, LC76G GPS
-driver, AIS AIVDM decode (`src_converter/*.h`), radar geometry/trig.
-**Rewrite:** radar rendering → Arduino_GFX (was LVGL on RX); iOS app →
+driver, AIS AIVDM decode (now `shared/ais/`), radar geometry/trig.
+**Re-target:** the radar is an LVGL→LVGL port — both boards run LVGL
+8.3.11 (the AMOLED uses Arduino_GFX only as LVGL's flush backend), so
+re-aim the canvas + screen size, not a graphics-API rewrite. iOS app →
 fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
 
-- [ ] **0. Repo reset** — tag `v1-wifi-bus-archive`; clean per-device
-      source layout; extract the salvage list above.
+- [~] **0. Repo reset** — tag `v1-wifi-bus-archive` ✓; `devices/` +
+      `shared/` layout ✓; AIS decode extracted to `shared/ais/` (with a
+      new de-N2K'd, lat/lon-fixing `AisTargetDecoder`) ✓; `devices/ais-radar/`
+      builds a serial AIS-decode test ✓. **Remaining:** extract the AMOLED
+      display/touch/PMIC/GPS init to `shared/display/`, move `BoatBle.h`
+      to `shared/ble/`, then delete `src/` `src_tx/` + the old
+      `platformio.ini` envs (recoverable at the tag).
 - [ ] **1. AMOLED + GPS bring-up** — display/touch up on the new tree;
       LC76G UART jumpers (R15/R16) soldered; own position acquired.
-- [ ] **2. Daisy AIS in** — wire the Daisy to a spare UART; decode
-      AIVDM into the target store on-device.
+- [ ] **2. Daisy AIS in** — wire the Daisy to a spare UART; feed it into
+      the on-device `AisTargetDecoder` (already building).
 - [ ] **3. On-device radar** — render own ship + AIS targets radar-style
-      in Arduino_GFX; touch = zoom/pan only.
+      in LVGL (re-targeted from the RX radar); touch = zoom/pan only.
 - [ ] **4. BLE link** — device (peripheral) notifies AIS targets + own
       GPS + status; iOS settings write characteristic; device persists
       settings to NVS and runs standalone.

@@ -103,9 +103,10 @@ Con:
 - A large amount of working v1 code is abandoned (the entire WiFi/bus
   stack, role negotiator, settings control plane, both the RX/TX WiFi
   publishers). Git-tagged, not lost, but no longer built.
-- The radar must be **re-rendered** on the AMOLED's Arduino_GFX (the
-  working radar is LVGL on the RX board); geometry ports, draw calls
-  do not.
+- The radar must be **re-targeted** to the AMOLED. Both boards run
+  LVGL 8.3.11 (the AMOLED uses Arduino_GFX only as LVGL's flush
+  backend), so this is an LVGL→LVGL port — re-aim the canvas + screen
+  dimensions, not a rewrite into a different graphics API.
 - The iOS app is rebuilt from scratch (transport was the whole WiFi
   stack); the map/list/settings UI ideas carry, the code does not.
 - BLE caps throughput; fine for AIS/GPS, but a constraint to respect if
