@@ -74,7 +74,7 @@ struct RadarView: View {
 func threatColor(_ level: Int) -> Color {
     switch level {
     case 1: return Color(red: 0.024, green: 0.20, blue: 0.06)   // green
-    case 2: return Color(red: 0.353, green: 0.27, blue: 0.0)    // amber
+    case 2: return Color(red: 0.48, green: 0.48, blue: 0.0)     // yellow (R=G)
     case 3: return Color(red: 0.478, green: 0.0, blue: 0.0)     // red
     default: return .black
     }

@@ -81,7 +81,7 @@ Threat assess(const AisTarget& t, double ownLat, double ownLon,
 lv_color_t bgFor(Threat w) {
     switch (w) {
         case Threat::Safe:   return lv_color_hex(0x06330F);  // green
-        case Threat::Alert:  return lv_color_hex(0x5A4500);  // amber
+        case Threat::Alert:  return lv_color_hex(0x7A7A00);  // yellow (R=G, not amber)
         case Threat::Danger: return lv_color_hex(0x7A0000);  // red
         default:             return lv_color_black();
     }
