@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <cmath>
+#include <AisFilter.h>
 
 namespace radar {
 namespace {
@@ -138,6 +139,7 @@ int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
         if (t[i].lat_deg == 0.0 && t[i].lon_deg == 0.0) continue;
         double rng, brg;
         rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng, &brg);
+        if (aisfilter::hidden(t[i].nav_status, rng)) continue;
         const Threat lv = assess(t[i], ownLat, ownLon, ownCogDeg, ownSogKn, rng);
         if ((uint8_t)lv > (uint8_t)worst) worst = lv;
     }
@@ -173,6 +175,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     for (size_t i = 0; i < n; ++i) {
         if (t[i].lat_deg != 0.0 || t[i].lon_deg != 0.0) {
             rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng[i], &brg[i]);
+            if (aisfilter::hidden(t[i].nav_status, rng[i])) { rng[i] = NAN; continue; }
             if (rng[i] > maxNm) maxNm = rng[i];
         } else { rng[i] = NAN; brg[i] = NAN; }
     }

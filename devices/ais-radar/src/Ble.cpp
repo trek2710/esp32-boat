@@ -4,6 +4,7 @@
 #include <NimBLEDevice.h>
 #include <cmath>
 #include <AisRadarBle.h>
+#include <AisFilter.h>
 
 namespace ble {
 namespace {
@@ -98,6 +99,17 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     const uint32_t now = millis();
     for (size_t i = 0; i < n; ++i) {
         const bool hasPos = (t[i].lat_deg != 0.0 || t[i].lon_deg != 0.0);
+        if (hasPos) {
+            // same range/anchored filter the radar uses, so the app agrees
+            const double d2r = 0.017453292519943295;
+            const double phi1 = ownLat * d2r, phi2 = t[i].lat_deg * d2r;
+            const double dphi = (t[i].lat_deg - ownLat) * d2r;
+            const double dlam = (t[i].lon_deg - ownLon) * d2r;
+            const double a = sin(dphi / 2) * sin(dphi / 2)
+                           + cos(phi1) * cos(phi2) * sin(dlam / 2) * sin(dlam / 2);
+            const double rngNm = 3440.065 * 2 * atan2(sqrt(a), sqrt(1 - a));
+            if (aisfilter::hidden(t[i].nav_status, rngNm)) continue;
+        }
         BleTarget bt;
         bt.mmsi      = t[i].mmsi;
         bt.lat_e7    = hasPos ? e7(t[i].lat_deg) : INT32_MIN;
