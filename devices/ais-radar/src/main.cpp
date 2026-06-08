@@ -1,8 +1,11 @@
-// AIS-radar device (ADR-0016) — display + touch + GPS + live Daisy AIS.
+// AIS-radar device (ADR-0016) — display + touch + GPS + live Daisy AIS,
+// drawn radar-style on the AMOLED.
 //
-// Reads the Wegmatt dAISy 2+ on IO16 (Serial2 @ 38400, see
-// docs/hardware/ais_radar_wiring), decodes AIVDM into the target store, and
-// shows counts on the AMOLED. Next: the LVGL radar render + BLE link to iOS.
+// Reads the Wegmatt dAISy 2+ on IO16 (Serial2 @ 38400), decodes AIVDM into
+// the target store, and plots targets around own ship. Own position comes
+// from the LC76G once R15/R16 are soldered; until then it's pinned to a
+// fixed bench location so targets place correctly. Targets expire after 10 s
+// of silence. Next: the BLE link to iOS.
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -11,8 +14,14 @@
 #include <Lc76gGps.h>
 #include <AisTargetDecoder.h>
 #include <default_sentence_parser.h>
+#include "Radar.h"
 
-static constexpr uint32_t kDaisyBaud = 38400;   // dAISy "NMEA HS" default
+static constexpr uint32_t kDaisyBaud  = 38400;   // dAISy NMEA-HS default
+static constexpr uint32_t kTargetLifeMs = 10000; // drop targets after 10 s
+
+// Bench own-ship position, used until the LC76G GPS is soldered/working.
+static constexpr double kBenchLat = 55.76196;
+static constexpr double kBenchLon = 12.62900;
 
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
@@ -27,73 +36,41 @@ static void feed(const char* sentence) {
 // ---- Daisy 2+ AIS on IO16 (Serial2 @ 38400) -------------------------------
 static uint32_t g_daisyBytes = 0;
 static uint32_t g_daisyLines = 0;
-static char     g_daisyLine[120];
-static int      g_daisyLen = 0;
-static char     g_lastLine[120] = {0};
+static char     g_line[120];
+static int      g_len = 0;
 
 static void daisyPoll() {
     while (Serial2.available() > 0) {
         char c = (char)Serial2.read();
         g_daisyBytes++;
         if (c == '\n') {
-            if (g_daisyLen > 0) {
-                g_daisyLine[g_daisyLen] = '\0';
-                g_daisyLines++;
-                strncpy(g_lastLine, g_daisyLine, sizeof(g_lastLine) - 1);
-                feed(g_daisyLine);
-            }
-            g_daisyLen = 0;
-        } else if (c != '\r' && g_daisyLen < (int)sizeof(g_daisyLine) - 1) {
-            g_daisyLine[g_daisyLen++] = c;
+            if (g_len > 0) { g_line[g_len] = '\0'; g_daisyLines++; feed(g_line); }
+            g_len = 0;
+        } else if (c != '\r' && g_len < (int)sizeof(g_line) - 1) {
+            g_line[g_len++] = c;
         }
     }
-}
-
-static lv_obj_t* g_label = nullptr;
-
-static void refreshSummary() {
-    if (!g_label) return;
-    const gps::Fix& f = gps::fix();
-    char gpsLine[48];
-    if (f.fixQuality >= 1)
-        snprintf(gpsLine, sizeof(gpsLine), "GPS %.4f, %.4f", f.lat, f.lon);
-    else
-        snprintf(gpsLine, sizeof(gpsLine), "GPS no fix (%lu B)",
-                 (unsigned long)f.uartBytes);
-    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\nAIS %lu B / %lu ln\n%s",
-                          (unsigned)decoder.store().size(),
-                          (unsigned long)g_daisyBytes,
-                          (unsigned long)g_daisyLines, gpsLine);
 }
 
 void setup() {
     Serial.begin(115200);
     delay(800);
-    Serial.println("\n[ais-radar] display + touch + GPS + Daisy AIS (ADR-0016)");
+    Serial.println("\n[ais-radar] radar UI + Daisy AIS (ADR-0016)");
 
     const bool haveDisplay = amoled::begin();
     touch::begin();
     gps::begin();   // UART-only; silent until R15/R16 jumpers are soldered
 
-    // Daisy 2+ AIS on IO16 (header H2). RX only (TX unused).
     Serial2.setRxBufferSize(2048);
     Serial2.begin(kDaisyBaud, SERIAL_8N1, /*rx=*/16, /*tx=*/-1);
-    Serial.printf("[daisy] Serial2 @ %lu on IO16 — listening\n",
-                  (unsigned long)kDaisyBaud);
+    Serial.printf("[daisy] Serial2 @ %lu on IO16\n", (unsigned long)kDaisyBaud);
 
-    if (haveDisplay) {
-        g_label = lv_label_create(lv_scr_act());
-        lv_obj_set_style_text_align(g_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_obj_set_style_text_color(g_label, lv_color_white(), LV_PART_MAIN);
-        lv_obj_center(g_label);
-        refreshSummary();
-    } else {
-        Serial.println("[ais-radar] display unavailable — serial only");
-    }
+    if (haveDisplay) radar::begin();
+    else Serial.println("[ais-radar] display unavailable — serial only");
 }
 
 void loop() {
-    static uint32_t last = 0, lastRefresh = 0, lastStat = 0;
+    static uint32_t last = 0, lastDraw = 0, lastStat = 0;
     const uint32_t now = millis();
 
     daisyPoll();
@@ -103,19 +80,21 @@ void loop() {
 
     lv_tick_inc(now - last);
     last = now;
-    if (now - lastRefresh >= 500) {
-        lastRefresh = now;
-        refreshSummary();
-        // AMOLED sub-pixel drift makes static text read as "italic" because
-        // LVGL skips redrawing unchanged content. Force a full-screen repaint
-        // each tick so the panel keeps refreshing (TX round-80a fix).
-        lv_obj_invalidate(lv_scr_act());
+
+    if (now - lastDraw >= 500) {
+        lastDraw = now;
+        decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
+        const gps::Fix& f = gps::fix();
+        const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
+        const double lat = haveFix ? f.lat : kBenchLat;
+        const double lon = haveFix ? f.lon : kBenchLon;
+        radar::draw(decoder.store(), lat, lon, NAN /*own cog unknown*/);
     }
     if (now - lastStat >= 2000) {
         lastStat = now;
-        Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u | last: %s\n",
+        Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u\n",
                       (unsigned long)g_daisyBytes, (unsigned long)g_daisyLines,
-                      (unsigned)decoder.store().size(), g_lastLine);
+                      (unsigned)decoder.store().size());
     }
     lv_timer_handler();
     delay(5);

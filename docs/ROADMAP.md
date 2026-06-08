@@ -47,8 +47,13 @@ fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
       the Daisy keep-alive heartbeat decodes clean (valid checksum) on the
       AMOLED. (A position-type sentence or a real antenna is needed before
       a vessel shows — the keep-alive is AIS type 15.)
-- [ ] **3. On-device radar** — render own ship + AIS targets radar-style
-      in LVGL (re-targeted from the RX radar); touch = zoom/pan only.
+- [x] **3. On-device radar — DONE.** North-up LVGL PPI on the AMOLED
+      (`Radar.cpp`): own ship centred, AIS targets at range/bearing with
+      5-min COG projection sticks, MMSI labels, range rings, auto-fit
+      range, stale-contact dimming. Own position pinned to a bench
+      coord until the LC76G is soldered; targets expire after 10 s
+      (`evictStale(10000)`). Verified Type-18 test sentences:
+      `scripts/gen_ais_test.py`. (Touch zoom/pan is a later polish.)
 - [ ] **4. BLE link** — device (peripheral) notifies AIS targets + own
       GPS + status; iOS settings write characteristic; device persists
       settings to NVS and runs standalone.

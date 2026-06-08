@@ -32,13 +32,14 @@ public:
     static constexpr size_t   CAPACITY      = 16;
     static constexpr uint32_t STALE_AFTER_MS = 5UL * 60UL * 1000UL;  // 5 min
 
-    // Drop targets we haven't heard from in STALE_AFTER_MS. Call once per UI
-    // tick — cheap; the table is 16 slots wide.
-    void evictStale() {
+    // Drop targets we haven't heard from in `stale_ms` (default STALE_AFTER_MS).
+    // Call once per UI tick — cheap; the table is 16 slots wide. Callers that
+    // want a short test lifetime pass e.g. 10000.
+    void evictStale(uint32_t stale_ms = STALE_AFTER_MS) {
         const uint32_t now = millis();
         for (size_t i = 0; i < CAPACITY; ++i) {
             if (targets_[i].mmsi == 0) continue;
-            if (now - targets_[i].last_seen_ms > STALE_AFTER_MS) {
+            if (now - targets_[i].last_seen_ms > stale_ms) {
                 targets_[i] = AisTarget{};
             }
         }
