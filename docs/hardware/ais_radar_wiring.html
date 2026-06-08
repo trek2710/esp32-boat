@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIS-radar device — Wiring &amp; Power Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  html { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11pt; color: #1a1a1a; }
+  body { line-height: 1.45; }
+  h1 { font-size: 22pt; border-bottom: 2px solid #1f6feb; padding-bottom: 4px; margin-bottom: 4px; }
+  h1 + p.subtitle { color: #555; margin: 0 0 12mm 0; font-size: 11pt; }
+  h2 { font-size: 14pt; color: #1f6feb; margin-top: 12mm; border-bottom: 1px solid #cfd6e0; padding-bottom: 2px; page-break-after: avoid; }
+  h3 { font-size: 12pt; color: #333; margin-top: 6mm; page-break-after: avoid; }
+  p, ul, ol { margin: 4px 0; }
+  ul, ol { padding-left: 18px; }
+  li { margin: 2px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 4mm 0; font-size: 10pt; }
+  th, td { border: 1px solid #cfd6e0; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #f1f4f9; }
+  code, pre, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt; }
+  pre { background: #f5f7fa; padding: 8px 10px; border-radius: 4px; border: 1px solid #e1e6ed; white-space: pre; }
+  .note { background: #fff8d0; border-left: 4px solid #d4a800; padding: 6px 10px; margin: 4mm 0; }
+  .warn { background: #ffe3e0; border-left: 4px solid #c0392b; padding: 6px 10px; margin: 4mm 0; }
+  .ok   { background: #e2f5e6; border-left: 4px solid #27ae60; padding: 6px 10px; margin: 4mm 0; }
+  .pageBreak { page-break-before: always; }
+  .stage { background: #f5f7fa; border: 1px solid #cfd6e0; border-radius: 4px; padding: 6px 12px; margin: 4mm 0; }
+  .stage h3 { margin-top: 2px; color: #1f6feb; }
+  .footer-meta { color: #888; font-size: 9pt; margin-top: 10mm; border-top: 1px solid #ddd; padding-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>AIS-radar device — Wiring &amp; Power Guide</h1>
+<p class="subtitle">Connecting a Wegmatt dAISy 2+ AIS receiver to a Waveshare ESP32-S3-Touch-AMOLED-1.75-G, battery-powered, three wires, no step-up converter.</p>
+
+<div class="ok">
+<b>The short version.</b> The dAISy 2+ runs on <b>3.3&nbsp;V</b> (internal switch) and its data pin is 3.3&nbsp;V logic. The AMOLED board's 8-pin header provides a <b>3V3</b> rail and a free GPIO. So the whole connection is <b>three wires</b> from the header to the dAISy AUX header — <b>no 5&nbsp;V, no step-up converter, no second battery, no 9&nbsp;V</b>. One 3.7&nbsp;V LiPo powers everything; the AMOLED's USB-C charges it.
+</div>
+
+<h2>1. What you need</h2>
+<table>
+<tr><th>Item</th><th>Notes</th></tr>
+<tr><td>Waveshare ESP32-S3-Touch-AMOLED-1.75-<b>G</b></td><td>The GPS (-G) variant, running the <code>ais-radar</code> firmware. Has an 8-pin header <b>H2</b> on the back edge.</td></tr>
+<tr><td>Wegmatt dAISy 2+ AIS receiver</td><td>Has a 6-pin <b>AUX SERIAL</b> header on the rear and an internal 3.3V/5V VCC switch.</td></tr>
+<tr><td>3.7 V LiPo, MX1.25 2-pin plug</td><td>Plugs into the board's <b>BAT</b> (J1) connector. Powers the whole device.</td></tr>
+<tr><td>VHF / AIS antenna</td><td>Into the dAISy SMA. Any 162 MHz-capable antenna; see §7. Needed for real reception (not for the bench test).</td></tr>
+<tr><td>3 × thin wires + soldering iron</td><td>To the H2 header pins (2.54 mm pitch). Dupont jumpers work if you fit a header.</td></tr>
+</table>
+<p class="note"><b>Not needed:</b> the DC-DC step-up (MT3608) — leave it in the drawer. A separate USB cable/powerbank for the dAISy — not used. Series LiPos for 9 V — a misunderstanding; the dAISy never needs 9 V.</p>
+
+<h2>2. The AMOLED 8-pin header (H2)</h2>
+<p>On the back edge of the board, silkscreened left-to-right:</p>
+<pre>IO18   IO17   IO16   RXD   TXD   3V3   GND   VBUS</pre>
+<ul>
+<li><b>IO16</b> — free GPIO. <b>This is our AIS data input.</b> (IO17/IO18 are taken by the onboard LC76G GPS once you solder its R15/R16 jumpers, so don't use them for AIS.)</li>
+<li><b>3V3</b> — the board's always-on 3.3 V rail (present on battery <i>and</i> USB). Powers the dAISy.</li>
+<li><b>GND</b> — common ground.</li>
+<li><b>VBUS</b> — this is the "5 V" pin, but it is <b>USB-only</b> (dead on battery). We do <b>not</b> use it.</li>
+</ul>
+
+<h2>3. The dAISy 2+ AUX SERIAL header</h2>
+<p>6-pin header on the rear, silkscreened:</p>
+<pre>NC   TXD   RXD   GND   VCC   I/O</pre>
+<table>
+<tr><th>dAISy pin</th><th>Use</th></tr>
+<tr><td><b>TXD</b></td><td>AIS data <b>out</b> (3.3 V logic, 38400 baud). → goes to the ESP <b>IO16</b>.</td></tr>
+<tr><td><b>GND</b></td><td>Ground. → ESP <b>GND</b>.</td></tr>
+<tr><td><b>VCC</b></td><td>Power <b>in</b> when fed externally. → ESP <b>3V3</b>. Draws ~50 mA.</td></tr>
+<tr><td>NC / RXD / I/O</td><td>Leave unconnected. (RXD would only be needed to send config to the dAISy; we configure it over USB instead.)</td></tr>
+</table>
+<div class="warn">
+<b>Set the dAISy internal VCC switch to 3.3 V before wiring.</b> It's the small slide switch next to the AUX header marked <code>AUX VCC&nbsp;&nbsp;5V — 3V3</code>. Powering the dAISy through VCC at 5 V while it's switched to 3.3 V (or vice-versa) can damage it. The TXD/RXD/I/O pins are 3.3 V regardless of this switch.
+</div>
+
+<h2>4. Wiring — three connections</h2>
+<table>
+<tr><th>#</th><th>From — AMOLED H2</th><th>To — dAISy AUX</th><th>Wire</th></tr>
+<tr><td>1</td><td><b>GND</b></td><td><b>GND</b></td><td>Ground — connect first.</td></tr>
+<tr><td>2</td><td><b>3V3</b></td><td><b>VCC</b></td><td>Power (dAISy switch = 3.3 V).</td></tr>
+<tr><td>3</td><td><b>IO16</b></td><td><b>TXD</b></td><td>AIS data into the ESP UART RX.</td></tr>
+</table>
+<pre>  AMOLED H2                 dAISy 2+ AUX SERIAL
+  ---------                 -------------------
+  GND   ───────────────────  GND
+  3V3   ───────────────────  VCC   (switch: 3V3)
+  IO16  ───────────────────  TXD
+                             RXD  ─ (unused)
+                             I/O  ─ (unused)
+                             NC   ─ (unused)</pre>
+<div class="warn"><b>Make and break connections with the AMOLED powered off</b> (battery unplugged and off USB). Live wiring is how 3.3 V GPIOs get fried. Double-check polarity before first power-on.</div>
+
+<h2>5. Power summary</h2>
+<ul>
+<li><b>Source:</b> one 3.7 V LiPo into the board's <b>BAT</b> connector. The AXP2101 PMIC runs the board from it and steps it to the 3.3 V rail that also feeds the dAISy.</li>
+<li><b>Charging:</b> plug the AMOLED's <b>USB-C</b> into any charger — the AXP2101 charges the LiPo. No separate charger, no series cells.</li>
+<li><b>Budget:</b> dAISy ~50 mA at 3.3 V, comfortably within the board's 3.3 V rail (which already drives the AMOLED + GPS). The dAISy's VCC pin is rated 150 mA at 3.3 V, so there's margin.</li>
+<li><b>Why not the header's VBUS/5 V?</b> It only exists while USB-C is plugged in. On battery it's 0 V, so it can't power the dAISy — hence we use the 3V3 rail instead.</li>
+</ul>
+<div class="note"><b>If you ever did want 5 V</b> (e.g. to run the dAISy off its own USB or a future 5 V sensor): the step-up module is fed from the battery or the 3V3 pin and trimmed to 5.0 V with a meter <i>before</i> connecting the load. Not needed for this build.</div>
+
+<h2>6. dAISy configuration &amp; bench test</h2>
+<ul>
+<li><b>Baud:</b> the dAISy outputs NMEA-0183 AIVDM at <b>38400</b> baud by default — the firmware's AIS UART is set to match. No change needed.</li>
+<li><b>Bench test without an antenna or live traffic:</b> connect the dAISy to a computer over USB, open its serial console, and press <b>T</b> (test mode). It then emits a test AIS message every 5 s. With the wiring above, that target should appear on the AMOLED — proving the full chain before you rely on real reception.</li>
+<li><b>Real reception</b> needs the VHF antenna and line-of-sight to traffic (see §7).</li>
+</ul>
+
+<h2>7. Antenna (for real AIS)</h2>
+<ul>
+<li>Any antenna tuned to the marine VHF band (~162 MHz) works; a VHF whip (~90 cm) gives far better range than a short "rubber duck". Height + line-of-sight to the water matter most.</li>
+<li class="warn" style="list-style:none; margin-left:-18px;"><b>Never</b> connect the dAISy directly to the same antenna as a transmitting VHF radio — it will damage the receiver. Use an <b>active</b> AIS/VHF splitter if sharing.</li>
+</ul>
+
+<h2>8. Firmware side (for reference)</h2>
+<p>The <code>ais-radar</code> device firmware opens a hardware UART on <b>IO16</b> at <b>38400</b> baud and feeds the bytes into the salvaged AIVDM decoder (<code>shared/ais/AisTargetDecoder</code>), which now records target <b>lat/lon</b> as well as SOG/COG. No NMEA 2000, no WiFi — the targets are drawn radar-style on the AMOLED and (later) sent to the iOS app over BLE.</p>
+
+<div class="footer-meta">
+esp32-boat · AIS-radar device (v2, ADR-0016) · sources: Waveshare ESP32-S3-Touch-AMOLED-1.75 schematic + docs; Wegmatt dAISy 2+ Manual v2.2 (§4–5). Print this page to PDF (A4).
+</div>
+
+</body>
+</html>
