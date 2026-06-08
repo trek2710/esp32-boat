@@ -83,10 +83,14 @@ settings.
   devices.
 - **AIS-radar polish (deferred):** radar **range/scale tuning** from iOS
   (keep or replace autoscale — decide once the app is live); a **C-MAP map
-  overlay** read from the onboard microSD (exFAT card, `cmap/` folder —
-  **card now inserted**) — an *overlay on the radar only*, explicitly
-  **not** a mapping engine; and the AMOLED **swipe/touch** interaction
-  (undecided — possibly just swipe).
+  overlay** read from the onboard microSD (`cmap/` folder) — an *overlay
+  on the radar only*, explicitly **not** a mapping engine; and the AMOLED
+  **swipe/touch** interaction (undecided — possibly just swipe).
+  **SD recon done** (firmware `listSdCard()`): SD is **SD_MMC** on
+  `CLK=2 / CMD=1 / DATA=3` (1-bit), but the **stock SD_MMC can't mount the
+  exFAT card** ("mount FAILED"). Next for C-MAP: an exFAT-enabled build,
+  SdFat, or reformat to FAT32 — then read `cmap/` and assess the (likely
+  proprietary/encrypted) C-MAP format before any rendering.
 - **Weather/chart "mapping" device (idea, future):** a separate device that
   shows C-MAP base charts + **GRIB** weather overlays, reading both from the
   same microSD layout (exFAT; `cmap/` + a GRIB file already on the card).

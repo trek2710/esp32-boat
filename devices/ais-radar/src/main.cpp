@@ -9,6 +9,7 @@
 
 #include <Arduino.h>
 #include <lvgl.h>
+#include <SD_MMC.h>
 #include <AmoledDisplay.h>
 #include <Touch.h>
 #include <Lc76gGps.h>
@@ -54,6 +55,31 @@ static void daisyPoll() {
     }
 }
 
+// One-shot SD-card recon (C-MAP investigation). Mounts the onboard microSD
+// (SD_MMC, 1-bit: CLK=2 CMD=1 DATA=3 per Waveshare pin_config) and lists the
+// root + cmap/ over serial so we can see the card layout + format.
+static void listSdCard() {
+    SD_MMC.setPins(2, 1, 3);
+    if (!SD_MMC.begin("/sdcard", true)) {
+        Serial.println("[sd] mount FAILED — card present? exFAT may not be "
+                       "supported by stock SD_MMC (would need SdFat or FAT32)");
+        return;
+    }
+    Serial.printf("[sd] mounted: type=%d size=%lluMB\n",
+                  (int)SD_MMC.cardType(),
+                  (unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
+    for (const char* dir : {"/", "/cmap"}) {
+        File d = SD_MMC.open(dir);
+        if (!d || !d.isDirectory()) { Serial.printf("[sd] %s: not a directory\n", dir); continue; }
+        Serial.printf("[sd] %s:\n", dir);
+        int count = 0;
+        for (File e = d.openNextFile(); e && count < 50; e = d.openNextFile(), ++count) {
+            Serial.printf("   %-28s %s %lu B\n", e.name(),
+                          e.isDirectory() ? "<DIR>" : "     ", (unsigned long)e.size());
+        }
+    }
+}
+
 // Own-ship state. Priority: onboard LC76G fix > phone GPS over BLE > bench.
 struct Own { double lat, lon, cog, sog; bool realFix; };
 static Own ownShip() {
@@ -85,6 +111,7 @@ void setup() {
     else Serial.println("[ais-radar] display unavailable — serial only");
 
     ble::begin();
+    listSdCard();   // one-shot C-MAP recon (late so it survives USB re-enum)
 }
 
 void loop() {
