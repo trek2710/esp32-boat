@@ -58,8 +58,11 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     const size_t n = store.snapshotByRecency(t, AisTargetStore::CAPACITY);
 
     BleOwnShip o;
-    o.lat_e7    = haveFix ? e7(ownLat) : INT32_MIN;
-    o.lon_e7    = haveFix ? e7(ownLon) : INT32_MIN;
+    // Always send the position the radar is centred on (a bench coord when
+    // there's no real GPS fix). The flags bit, not a sentinel, marks whether
+    // it's a real fix — so the central can still place targets either way.
+    o.lat_e7    = e7(ownLat);
+    o.lon_e7    = e7(ownLon);
     o.cog_deg10 = std::isnan(ownCogDeg) ? INT16_MIN : d10(ownCogDeg);
     o.flags     = haveFix ? 0x01 : 0x00;
     o.targets   = (uint8_t)n;

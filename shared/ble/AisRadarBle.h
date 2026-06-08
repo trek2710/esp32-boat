@@ -18,12 +18,14 @@
 #define AISRADAR_BLE_OWN_UUID  "a15a0002-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // own ship (notify)
 #define AISRADAR_BLE_TGT_UUID  "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // one AIS target (notify)
 
-// Own-ship state. Pushed on every publish cycle.
+// Own-ship state. Pushed on every publish cycle. lat/lon always carry the
+// position the radar is centred on (a bench coord when there's no real fix);
+// flags bit0 says whether it's a real GPS fix.
 struct __attribute__((packed)) BleOwnShip {
-    int32_t lat_e7;       // 1e7 deg; INT32_MIN = no fix
+    int32_t lat_e7;       // 1e7 deg
     int32_t lon_e7;
     int16_t cog_deg10;    // 0.1 deg true; INT16_MIN = n/a
-    uint8_t flags;        // bit0: GPS fix present
+    uint8_t flags;        // bit0: real GPS fix (0 = bench/assumed position)
     uint8_t targets;      // live target count
 };
 static_assert(sizeof(BleOwnShip) == 12, "BleOwnShip size");
