@@ -9,10 +9,18 @@ final class BleCentral: NSObject {
     static let svcUUID = CBUUID(string: "a15a0001-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let ownUUID = CBUUID(string: "a15a0002-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let tgtUUID = CBUUID(string: "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e")
+    static let gpsUUID = CBUUID(string: "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e")
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
+    private var gpsChar: CBCharacteristic?
     private let model: RadarModel
+
+    // Write the phone's GPS to the device (no-op until connected + discovered).
+    func writeHostGps(_ data: Data) {
+        guard let p = peripheral, let c = gpsChar else { return }
+        p.writeValue(data, for: c, type: .withoutResponse)
+    }
 
     init(model: RadarModel) {
         self.model = model
@@ -70,14 +78,16 @@ extension BleCentral: CBCentralManagerDelegate {
 extension BleCentral: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         for s in p.services ?? [] where s.uuid == Self.svcUUID {
-            p.discoverCharacteristics([Self.ownUUID, Self.tgtUUID], for: s)
+            p.discoverCharacteristics([Self.ownUUID, Self.tgtUUID, Self.gpsUUID], for: s)
         }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
         for ch in s.characteristics ?? [] {
-            if ch.uuid == Self.ownUUID || ch.uuid == Self.tgtUUID {
-                p.setNotifyValue(true, for: ch)
+            switch ch.uuid {
+            case Self.ownUUID, Self.tgtUUID: p.setNotifyValue(true, for: ch)
+            case Self.gpsUUID: gpsChar = ch
+            default: break
             }
         }
         setStatus("Connected", connected: true)

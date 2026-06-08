@@ -4,12 +4,20 @@ import SwiftUI
 struct AisRadarApp: App {
     @StateObject private var model = RadarModel()
     @State private var central: BleCentral?
+    @State private var location: LocationPublisher?
 
     var body: some Scene {
         WindowGroup {
             ContentView(model: model)
                 .onAppear {
-                    if central == nil { central = BleCentral(model: model) }
+                    if central == nil {
+                        let c = BleCentral(model: model)
+                        let loc = LocationPublisher()
+                        loc.onLocation = { [weak c] data in c?.writeHostGps(data) }
+                        loc.start()
+                        central = c
+                        location = loc
+                    }
                 }
         }
     }

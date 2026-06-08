@@ -26,6 +26,9 @@ settings:
     INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: >-
       AIS Radar connects to the ais-radar device over Bluetooth to show
       AIS targets and your position.
+    INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: >-
+      AIS Radar sends your position and motion to the ais-radar device so
+      it can centre the radar and warn about collisions. Used while open.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 targets:

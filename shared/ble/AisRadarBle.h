@@ -17,6 +17,7 @@
 #define AISRADAR_BLE_SVC_UUID  "a15a0001-7a11-4b3c-8d2e-0f1a2b3c4d5e"
 #define AISRADAR_BLE_OWN_UUID  "a15a0002-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // own ship (notify)
 #define AISRADAR_BLE_TGT_UUID  "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // one AIS target (notify)
+#define AISRADAR_BLE_GPS_UUID  "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // host (phone) GPS (write)
 
 // Own-ship state. Pushed on every publish cycle. lat/lon always carry the
 // position the radar is centred on (a bench coord when there's no real fix);
@@ -44,3 +45,14 @@ struct __attribute__((packed)) BleTarget {
     uint8_t  age_s;        // seconds since last heard (clamped 255)
 };
 static_assert(sizeof(BleTarget) == 18, "BleTarget size");
+
+// Host (iPhone) GPS, written by the central to the GPS characteristic so the
+// device can use the phone's position + motion as own ship before the LC76G
+// is soldered. INT*_MIN = n/a.
+struct __attribute__((packed)) BleHostGps {
+    int32_t lat_e7;
+    int32_t lon_e7;
+    int16_t cog_deg10;    // 0.1 deg true
+    int16_t sog_kn10;     // 0.1 kn
+};
+static_assert(sizeof(BleHostGps) == 12, "BleHostGps size");

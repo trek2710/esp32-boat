@@ -54,6 +54,20 @@ static void daisyPoll() {
     }
 }
 
+// Own-ship state. Priority: onboard LC76G fix > phone GPS over BLE > bench.
+struct Own { double lat, lon, cog, sog; bool realFix; };
+static Own ownShip() {
+    const gps::Fix& f = gps::fix();
+    ble::HostGps hg;
+    if (f.fixQuality >= 1 && !isnan(f.lat) && !isnan(f.lon)) {
+        return { f.lat, f.lon, NAN, 0.0, true };          // LC76G (position only)
+    }
+    if (ble::hostGps(&hg)) {
+        return { hg.lat, hg.lon, hg.cogDeg, isnan(hg.sogKn) ? 0.0 : hg.sogKn, true };
+    }
+    return { kBenchLat, kBenchLon, NAN, 0.0, false };     // bench fallback
+}
+
 void setup() {
     Serial.begin(115200);
     delay(800);
@@ -88,20 +102,14 @@ void loop() {
     if (now - lastDraw >= 500) {
         lastDraw = now;
         decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
-        const gps::Fix& f = gps::fix();
-        const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
-        const double lat = haveFix ? f.lat : kBenchLat;
-        const double lon = haveFix ? f.lon : kBenchLon;
-        // Own COG/SOG unknown until the GPS feed lands (bench = stationary).
-        radar::draw(decoder.store(), lat, lon, NAN, 0.0);
-        g_threat = radar::assessWorst(decoder.store(), lat, lon, NAN, 0.0);
+        Own o = ownShip();
+        radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
+        g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);
     }
     if (now - lastBle >= 1000) {
         lastBle = now;
-        const gps::Fix& f = gps::fix();
-        const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
-        ble::publish(decoder.store(), haveFix ? f.lat : kBenchLat,
-                     haveFix ? f.lon : kBenchLon, NAN, haveFix, g_threat);
+        Own o = ownShip();
+        ble::publish(decoder.store(), o.lat, o.lon, o.cog, o.realFix, g_threat);
     }
     if (now - lastStat >= 2000) {
         lastStat = now;

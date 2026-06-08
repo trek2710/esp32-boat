@@ -12,6 +12,28 @@ NimBLECharacteristic* g_own = nullptr;
 NimBLECharacteristic* g_tgt = nullptr;
 bool g_connected = false;
 
+HostGps  g_host;
+uint32_t g_hostMs = 0;
+constexpr uint32_t kHostFreshMs = 5000;
+
+double e7d(int32_t v)  { return (v == INT32_MIN) ? NAN : v / 1e7; }
+double d10d(int16_t v) { return (v == INT16_MIN) ? NAN : v / 10.0; }
+
+class GpsCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        const std::string v = c->getValue();
+        if (v.size() < sizeof(BleHostGps)) return;
+        BleHostGps g;
+        memcpy(&g, v.data(), sizeof(g));
+        g_host.lat    = e7d(g.lat_e7);
+        g_host.lon    = e7d(g.lon_e7);
+        g_host.cogDeg = d10d(g.cog_deg10);
+        g_host.sogKn  = d10d(g.sog_kn10);
+        g_hostMs = millis();
+    }
+};
+GpsCb g_gpsCb;
+
 class ServerCb : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer*) override {
         g_connected = true;
@@ -41,6 +63,9 @@ void begin() {
         AISRADAR_BLE_OWN_UUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
     g_tgt = svc->createCharacteristic(
         AISRADAR_BLE_TGT_UUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
+    NimBLECharacteristic* gps = svc->createCharacteristic(
+        AISRADAR_BLE_GPS_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    gps->setCallbacks(&g_gpsCb);
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -89,5 +114,11 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
 }
 
 bool connected() { return g_connected; }
+
+bool hostGps(HostGps* out) {
+    if (g_hostMs == 0 || (millis() - g_hostMs) > kHostFreshMs) return false;
+    *out = g_host;
+    return true;
+}
 
 }  // namespace ble

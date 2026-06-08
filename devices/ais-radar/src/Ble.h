@@ -8,7 +8,18 @@
 
 namespace ble {
 
+// Host (phone) GPS, decoded from the last BLE write. Valid only if recent.
+struct HostGps {
+    double lat;
+    double lon;
+    double cogDeg;   // NAN = n/a
+    double sogKn;    // NAN = n/a
+};
+
 void begin();
+
+// Returns the phone GPS if a write arrived within the freshness window.
+bool hostGps(HostGps* out);
 
 // Notify own ship + every live target. No-op when no central is connected.
 // threatLevel (0-3, from radar::assessWorst) is packed into the own-ship
