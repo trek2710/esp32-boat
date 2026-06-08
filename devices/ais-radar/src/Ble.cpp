@@ -51,7 +51,7 @@ void begin() {
 }
 
 void publish(AisTargetStore& store, double ownLat, double ownLon,
-             double ownCogDeg, bool haveFix) {
+             double ownCogDeg, bool haveFix, int threatLevel) {
     if (!g_connected) return;
 
     AisTarget t[AisTargetStore::CAPACITY];
@@ -64,7 +64,8 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     o.lat_e7    = e7(ownLat);
     o.lon_e7    = e7(ownLon);
     o.cog_deg10 = std::isnan(ownCogDeg) ? INT16_MIN : d10(ownCogDeg);
-    o.flags     = haveFix ? 0x01 : 0x00;
+    o.flags     = (haveFix ? 0x01 : 0x00)
+                | (uint8_t)((threatLevel & 0x03) << 1);
     o.targets   = (uint8_t)n;
     g_own->setValue((uint8_t*)&o, sizeof(o));
     g_own->notify();

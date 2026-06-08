@@ -13,8 +13,15 @@ namespace radar {
 // display is up.
 void begin();
 
+// Worst threat across all targets: 0=none, 1=safe, 2=alert, 3=danger. Used
+// for the background tint and shared with the iOS app over BLE.
+int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
+                double ownCogDeg, double ownSogKn);
+
 // Redraw. ownLat/ownLon centre the plot; ownCogDeg orients the own-ship icon
-// (NaN → pointing up).
-void draw(AisTargetStore& store, double ownLat, double ownLon, double ownCogDeg);
+// (NaN → pointing up); ownSogKn (≤0 = stationary) feeds the collision test.
+// The background is tinted by the worst target threat (green/amber/red).
+void draw(AisTargetStore& store, double ownLat, double ownLon,
+          double ownCogDeg, double ownSogKn);
 
 }  // namespace radar

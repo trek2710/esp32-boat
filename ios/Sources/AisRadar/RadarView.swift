@@ -6,12 +6,14 @@ struct RadarView: View {
     let own: OwnShip
     let targets: [AisTarget]
     let rangeNm: Double
+    let background: Color
 
-    private let ringColor = Color(red: 0.10, green: 0.37, blue: 0.13)
-    private let blip = Color(red: 0.41, green: 0.94, blue: 0.68)
-    private let dim  = Color(red: 0.20, green: 0.41, blue: 0.12)
+    // Neutral so they read on any threat background.
+    private let ringColor = Color(white: 0.35)
+    private let blip = Color.white
+    private let dim  = Color(white: 0.5)
     private let ownColor = Color(red: 0.0, green: 0.90, blue: 1.0)
-    private let labelColor = Color(white: 0.62)
+    private let labelColor = Color(white: 0.75)
 
     var body: some View {
         Canvas { ctx, size in
@@ -19,7 +21,7 @@ struct RadarView: View {
             let cy = size.height / 2
             let r = min(size.width, size.height) / 2 - 28
 
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(background))
             for k in 1...3 {
                 let rr = r * Double(k) / 3
                 ctx.stroke(Path(ellipseIn: CGRect(x: cx - rr, y: cy - rr, width: rr * 2, height: rr * 2)),
@@ -64,7 +66,17 @@ struct RadarView: View {
 
             ctx.fill(vesselPath(x: cx, y: cy, headingDeg: own.cogDeg ?? 0, len: 11), with: .color(ownColor))
         }
-        .background(Color.black)
+        .background(background)
+    }
+}
+
+// Whole-screen threat background: dark → green → amber → red.
+func threatColor(_ level: Int) -> Color {
+    switch level {
+    case 1: return Color(red: 0.024, green: 0.20, blue: 0.06)   // green
+    case 2: return Color(red: 0.353, green: 0.27, blue: 0.0)    // amber
+    case 3: return Color(red: 0.478, green: 0.0, blue: 0.0)     // red
+    default: return .black
     }
 }
 

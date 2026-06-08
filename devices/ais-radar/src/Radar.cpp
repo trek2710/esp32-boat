@@ -9,15 +9,23 @@ namespace {
 
 constexpr int kW = 466, kH = 466;
 constexpr int kCx = kW / 2, kCy = kH / 2;
-constexpr int kR  = 205;                 // outer ring radius (px)
+constexpr int kR  = 205;
 constexpr double kD2R = 0.017453292519943295;
-constexpr uint32_t kDimAfterMs = 5000;   // dim a contact older than this
-constexpr double kProjHr = 300.0 / 3600.0;  // 5-min look-ahead, hours
+constexpr uint32_t kDimAfterMs = 5000;
+constexpr double kProjHr = 300.0 / 3600.0;
+
+// Threat thresholds (tunable).
+constexpr double kAlertSpeedKn     = 15.0;     // yellow if SOG above this …
+constexpr double kAlertSpeedRangeM = 5000.0;   // … and within 5 km
+constexpr double kAlertNearM       = 200.0;    // yellow if moving within 200 m
+constexpr double kDangerCpaM       = 185.0;    // red if closest approach < ~0.1 NM …
+constexpr double kDangerTcpaS      = 360.0;    // … within 6 min
+
+enum class Threat : uint8_t { None = 0, Safe = 1, Alert = 2, Danger = 3 };
 
 lv_obj_t*   g_canvas = nullptr;
 lv_color_t* g_buf    = nullptr;
 
-// great-circle range (NM) + initial bearing (deg true) from 1 → 2.
 void rangeBearing(double lat1, double lon1, double lat2, double lon2,
                   double* rng_nm, double* brg_deg) {
     constexpr double kEarthNm = 3440.065, r2d = 57.29577951308232;
@@ -33,6 +41,50 @@ void rangeBearing(double lat1, double lon1, double lat2, double lon2,
     double b = std::atan2(y, x) * r2d;
     if (b < 0) b += 360;
     *brg_deg = b;
+}
+
+// Threat level for one target, given own state (ownSog ≤ 0 ⇒ own stationary).
+Threat assess(const AisTarget& t, double ownLat, double ownLon,
+              double ownCogDeg, double ownSogKn, double rngNm) {
+    const double rangeM = rngNm * 1852.0;
+    Threat level = Threat::Safe;
+
+    if ((t.sog_kn > kAlertSpeedKn && rangeM < kAlertSpeedRangeM) ||
+        (t.sog_kn > 0.2 && rangeM < kAlertNearM)) {
+        level = Threat::Alert;
+    }
+
+    // CPA collision test (needs both courses).
+    if (t.sog_kn >= 0 && t.cog_deg >= 0) {
+        const double midLat = ownLat * kD2R;
+        const double e = (t.lon_deg - ownLon) * kD2R * 6371000.0 * std::cos(midLat);
+        const double n = (t.lat_deg - ownLat) * kD2R * 6371000.0;
+        const double kn2ms = 0.514444;
+        const bool ownMoving = ownSogKn > 0.2 && ownCogDeg >= 0;
+        const double oVe = ownMoving ? ownSogKn * kn2ms * std::sin(ownCogDeg * kD2R) : 0;
+        const double oVn = ownMoving ? ownSogKn * kn2ms * std::cos(ownCogDeg * kD2R) : 0;
+        const double tVe = t.sog_kn * kn2ms * std::sin(t.cog_deg * kD2R);
+        const double tVn = t.sog_kn * kn2ms * std::cos(t.cog_deg * kD2R);
+        const double rve = tVe - oVe, rvn = tVn - oVn;
+        const double vv = rve * rve + rvn * rvn;
+        if (vv > 1e-6) {
+            const double tcpa = -(e * rve + n * rvn) / vv;
+            if (tcpa > 0 && tcpa < kDangerTcpaS) {
+                const double ce = e + rve * tcpa, cn = n + rvn * tcpa;
+                if (std::sqrt(ce * ce + cn * cn) < kDangerCpaM) level = Threat::Danger;
+            }
+        }
+    }
+    return level;
+}
+
+lv_color_t bgFor(Threat w) {
+    switch (w) {
+        case Threat::Safe:   return lv_color_hex(0x06330F);  // green
+        case Threat::Alert:  return lv_color_hex(0x5A4500);  // amber
+        case Threat::Danger: return lv_color_hex(0x7A0000);  // red
+        default:             return lv_color_black();
+    }
 }
 
 void ring(int r, lv_color_t c, int w) {
@@ -52,7 +104,6 @@ void text(int x, int y, const char* s, lv_color_t c, const lv_font_t* f) {
     d.color = c; d.font = f;
     lv_canvas_draw_text(g_canvas, x, y, 130, &d, s);
 }
-// north-up triangle rotated to a compass heading
 void vessel(int cx, int cy, double hdg, double len, lv_color_t col) {
     const double t = hdg * kD2R, cs = std::cos(t), sn = std::sin(t);
     auto map = [&](double lx, double ly) {
@@ -78,6 +129,21 @@ double niceStepNm(double t) {
 
 }  // namespace
 
+int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
+                double ownCogDeg, double ownSogKn) {
+    AisTarget t[AisTargetStore::CAPACITY];
+    const size_t n = store.snapshotByRecency(t, AisTargetStore::CAPACITY);
+    Threat worst = Threat::None;
+    for (size_t i = 0; i < n; ++i) {
+        if (t[i].lat_deg == 0.0 && t[i].lon_deg == 0.0) continue;
+        double rng, brg;
+        rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng, &brg);
+        const Threat lv = assess(t[i], ownLat, ownLon, ownCogDeg, ownSogKn, rng);
+        if ((uint8_t)lv > (uint8_t)worst) worst = lv;
+    }
+    return (int)worst;
+}
+
 void begin() {
     const size_t sz = LV_CANVAS_BUF_SIZE_TRUE_COLOR(kW, kH);
     g_buf = (lv_color_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -88,32 +154,36 @@ void begin() {
     lv_canvas_fill_bg(g_canvas, lv_color_black(), LV_OPA_COVER);
 }
 
-void draw(AisTargetStore& store, double ownLat, double ownLon, double ownCogDeg) {
+void draw(AisTargetStore& store, double ownLat, double ownLon,
+          double ownCogDeg, double ownSogKn) {
     if (!g_canvas) return;
-    lv_canvas_fill_bg(g_canvas, lv_color_black(), LV_OPA_COVER);
 
-    const lv_color_t ringc = lv_color_hex(0x1B5E20);
-    const lv_color_t blip  = lv_color_hex(0x69F0AE);
-    const lv_color_t dimc  = lv_color_hex(0x33691E);
+    // Radar elements are kept neutral so they read on any threat background.
+    const lv_color_t ringc = lv_color_hex(0x5A5A5A);
+    const lv_color_t blip  = lv_color_hex(0xFFFFFF);
+    const lv_color_t dimc  = lv_color_hex(0x808080);
     const lv_color_t ownc  = lv_color_hex(0x00E5FF);
-    const lv_color_t txtc  = lv_color_hex(0x9E9E9E);
+    const lv_color_t txtc  = lv_color_hex(0xC0C0C0);
 
     AisTarget t[AisTargetStore::CAPACITY];
     const size_t n = store.snapshotByRecency(t, AisTargetStore::CAPACITY);
 
-    // range/bearing + auto-fit
     double rng[AisTargetStore::CAPACITY], brg[AisTargetStore::CAPACITY];
     double maxNm = 0.5;
     for (size_t i = 0; i < n; ++i) {
-        if ((t[i].lat_deg != 0.0 || t[i].lon_deg != 0.0)) {
+        if (t[i].lat_deg != 0.0 || t[i].lon_deg != 0.0) {
             rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng[i], &brg[i]);
             if (rng[i] > maxNm) maxNm = rng[i];
         } else { rng[i] = NAN; brg[i] = NAN; }
     }
-    const double rangeNm = niceStepNm(maxNm * 1.15);
-    const double scale = kR / rangeNm;             // px per NM
 
-    // rings + N + range label
+    const Threat worst = (n == 0) ? Threat::None
+        : (Threat)assessWorst(store, ownLat, ownLon, ownCogDeg, ownSogKn);
+    lv_canvas_fill_bg(g_canvas, bgFor(worst), LV_OPA_COVER);
+
+    const double rangeNm = niceStepNm(maxNm * 1.15);
+    const double scale = kR / rangeNm;
+
     for (int k = 1; k <= 3; ++k) ring(kR * k / 3, ringc, 2);
     line(kCx, kCy - kR, kCx, kCy - kR + 16, ringc, 2);
     text(kCx - 5, kCy - kR + 16, "N", txtc, &lv_font_montserrat_14);
@@ -130,7 +200,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon, double ownCogDeg)
         const lv_color_t c = stale ? dimc : blip;
 
         if (t[i].sog_kn >= 0 && t[i].cog_deg >= 0 && t[i].sog_kn > 0.1) {
-            const double d = t[i].sog_kn * kProjHr;     // NM in 5 min
+            const double d = t[i].sog_kn * kProjHr;
             const double cr = t[i].cog_deg * kD2R;
             line(x, y, x + (int)std::lround(d * scale * std::sin(cr)),
                  y - (int)std::lround(d * scale * std::cos(cr)), c, 2);
@@ -144,7 +214,6 @@ void draw(AisTargetStore& store, double ownLat, double ownLon, double ownCogDeg)
         text(x + 7, y - 7, lbl, txtc, &lv_font_montserrat_12);
     }
 
-    // own ship (on top) + HUD
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
     char hud[16]; snprintf(hud, sizeof(hud), "%u tgt", (unsigned)n);
     text(10, 10, hud, txtc, &lv_font_montserrat_16);

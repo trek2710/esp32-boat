@@ -7,6 +7,7 @@ struct OwnShip {
     var lon: Double?
     var cogDeg: Double?
     var hasFix: Bool = false
+    var threat: Int = 0          // 0=none 1=safe 2=alert 3=danger (from device)
     var targetCount: Int = 0
     var hasPosition: Bool { lat != nil && lon != nil }
 }
@@ -41,7 +42,9 @@ final class RadarModel: ObservableObject {
         own.lat = lat
         own.lon = lon
         own.cogDeg = (cogRaw == Int16.min) ? nil : Double(cogRaw) / 10.0
-        own.hasFix = (d.u8(10) & 0x01) != 0
+        let flags = d.u8(10)
+        own.hasFix = (flags & 0x01) != 0
+        own.threat = Int((flags >> 1) & 0x03)
         own.targetCount = Int(d.u8(11))
     }
 

@@ -37,6 +37,7 @@ static void feed(const char* sentence) {
 // ---- Daisy 2+ AIS on IO16 (Serial2 @ 38400) -------------------------------
 static uint32_t g_daisyBytes = 0;
 static uint32_t g_daisyLines = 0;
+static int      g_threat = 0;          // 0=none 1=safe 2=alert 3=danger
 static char     g_line[120];
 static int      g_len = 0;
 
@@ -91,14 +92,16 @@ void loop() {
         const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
         const double lat = haveFix ? f.lat : kBenchLat;
         const double lon = haveFix ? f.lon : kBenchLon;
-        radar::draw(decoder.store(), lat, lon, NAN /*own cog unknown*/);
+        // Own COG/SOG unknown until the GPS feed lands (bench = stationary).
+        radar::draw(decoder.store(), lat, lon, NAN, 0.0);
+        g_threat = radar::assessWorst(decoder.store(), lat, lon, NAN, 0.0);
     }
     if (now - lastBle >= 1000) {
         lastBle = now;
         const gps::Fix& f = gps::fix();
         const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
         ble::publish(decoder.store(), haveFix ? f.lat : kBenchLat,
-                     haveFix ? f.lon : kBenchLon, NAN, haveFix);
+                     haveFix ? f.lon : kBenchLon, NAN, haveFix, g_threat);
     }
     if (now - lastStat >= 2000) {
         lastStat = now;

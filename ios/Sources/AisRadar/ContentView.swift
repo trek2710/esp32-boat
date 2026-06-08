@@ -32,7 +32,8 @@ struct ContentView: View {
             }
             .padding(.horizontal)
 
-            RadarView(own: model.own, targets: model.targets, rangeNm: range)
+            RadarView(own: model.own, targets: model.targets, rangeNm: range,
+                      background: threatColor(model.own.threat))
                 .aspectRatio(1, contentMode: .fit)
                 .padding(.horizontal, 4)
 
@@ -51,8 +52,9 @@ struct ContentView: View {
             .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .background(threatColor(model.own.threat).ignoresSafeArea())
         .preferredColorScheme(.dark)
+        .animation(.easeInOut(duration: 0.3), value: model.own.threat)
         .onReceive(sweepTimer) { _ in model.sweep() }
     }
 }

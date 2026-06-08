@@ -12,12 +12,43 @@ CENTRE = (55.76196, 12.62900)   # the device's assumed own-ship position
 
 # (mmsi, range_nm, bearing_deg, sog_kn, cog_deg)
 TARGETS = [
+    # Plain targets around the centre — all "green" (safe).
     (211000001, 0.4,  20, 5.2, 200),
     (211000002, 0.8, 110, 7.0, 300),
     (211000003, 1.2, 200, 3.5,  40),
     (211000004, 1.6, 290, 9.0, 120),
     (211000005, 0.6, 340, 4.0,  60),
+    # Threat demo (own ship stationary at the bench coord):
+    (211000011, 1.0,  90, 20.0,  90),   # YELLOW: >15 kn within 5 km, heading away
+    (211000012, 0.08, 200, 3.0, 110),   # YELLOW: moving within 200 m, tangential
+    (211000013, 0.5,   0, 12.0, 180),   # RED: due N, heading due S → collision
 ]
+
+
+def assess_threat(own, target):
+    """Mirror of the device threat logic (own ship stationary at bench)."""
+    olat, olon = own
+    tmmsi, rng_nm, brg, sog, cog = target
+    lat, lon = dest_point(olat, olon, brg, rng_nm)
+    range_m = rng_nm * 1852.0
+    level = 1  # safe / green
+    if (sog > 15 and range_m < 5000) or (sog > 0.2 and range_m < 200):
+        level = 2  # alert / yellow
+    # CPA vs a stationary own ship: does the target's track pass < 185 m, soon?
+    d2r = math.pi / 180
+    e = (lon - olon) * d2r * 6371000.0 * math.cos(olat * d2r)
+    n = (lat - olat) * d2r * 6371000.0
+    kn2ms = 0.514444
+    ve = sog * kn2ms * math.sin(cog * d2r)
+    vn = sog * kn2ms * math.cos(cog * d2r)
+    vv = ve * ve + vn * vn
+    if vv > 1e-6:
+        tcpa = -(e * ve + n * vn) / vv
+        if 0 < tcpa < 360:
+            cpa = math.hypot(e + ve * tcpa, n + vn * tcpa)
+            if cpa < 185:
+                level = 3  # danger / red
+    return ["none", "GREEN", "YELLOW", "RED"][level]
 
 
 def dest_point(lat, lon, bearing_deg, dist_nm):
@@ -114,10 +145,11 @@ def main():
         err = haversine_nm((lat, lon), (d['lat'], d['lon'])) * 1852.0
         ok = (d['mmsi'] == mmsi and err < 1.0
               and abs(d['sog'] - sog) < 0.1 and abs(d['cog'] - cog) < 0.1)
+        threat = assess_threat(CENTRE, (mmsi, rng, brg, sog, cog))
         print(s)
-        print("    # mmsi=%d  %.1fNM brg%03d  sog=%.1f cog=%03d  "
-              "round-trip err=%.2fm  %s"
-              % (mmsi, rng, brg, sog, cog, err, "OK" if ok else "** FAIL **"))
+        print("    # mmsi=%d  %.2fNM brg%03d  sog=%.1f cog=%03d  -> %-6s "
+              "(err=%.2fm %s)"
+              % (mmsi, rng, brg, sog, cog, threat, err, "OK" if ok else "FAIL"))
 
 
 if __name__ == "__main__":

@@ -11,8 +11,10 @@ namespace ble {
 void begin();
 
 // Notify own ship + every live target. No-op when no central is connected.
+// threatLevel (0-3, from radar::assessWorst) is packed into the own-ship
+// flags so the app shows the same background colour.
 void publish(AisTargetStore& store, double ownLat, double ownLon,
-             double ownCogDeg, bool haveFix);
+             double ownCogDeg, bool haveFix, int threatLevel);
 
 bool connected();
 

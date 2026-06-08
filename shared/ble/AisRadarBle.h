@@ -25,7 +25,9 @@ struct __attribute__((packed)) BleOwnShip {
     int32_t lat_e7;       // 1e7 deg
     int32_t lon_e7;
     int16_t cog_deg10;    // 0.1 deg true; INT16_MIN = n/a
-    uint8_t flags;        // bit0: real GPS fix (0 = bench/assumed position)
+    uint8_t flags;        // bit0: real GPS fix (0 = bench); bits1-2: threat
+                          //   0=none 1=safe 2=alert 3=danger (the device
+                          //   computes it so the app shows the same colour)
     uint8_t targets;      // live target count
 };
 static_assert(sizeof(BleOwnShip) == 12, "BleOwnShip size");
