@@ -59,9 +59,12 @@ fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
       NimBLE peripheral), notifies own-ship (`BleOwnShip`) + each AIS target
       (`BleTarget`) once per second to a connected central. **Pending:** the
       iOS-→-device settings write characteristic + NVS persistence.
-- [ ] **5. Fresh iOS app** — BLE central: connect to `ais-radar`, parse the
-      notify structs, draw its own radar (with a tunable scale), settings
-      writer. Replaces the archived v1 WiFi app under `ios/`.
+- [~] **5. Fresh iOS app** — `AisRadar` SwiftUI BLE-central app builds:
+      scans for `ais-radar`, subscribes to both characteristics, decodes
+      `BleOwnShip`/`BleTarget`, draws its own north-up radar with auto-fit
+      + a manual range slider. Replaces the archived v1 WiFi app under
+      `ios/`. **Pending:** run on the iPhone to confirm live; settings
+      write path (iOS → device).
 
 **Acceptance:** powered by its own battery/powerbank, no boat
 connection, the device shows my GPS position with live AIS targets
