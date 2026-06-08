@@ -1,12 +1,8 @@
-// AIS-radar device — milestone 0: salvage bring-up (ADR-0016).
+// AIS-radar device (ADR-0016) — display + touch + GPS + live Daisy AIS.
 //
-// Proves the two salvaged subsystems work together on the new per-device
-// tree: the AMOLED display (shared/display, LVGL over Arduino_GFX) shows the
-// target count decoded by the salvaged AIVDM decoder (shared/ais) from
-// verified test sentences.
-//
-// Next steps (docs/ROADMAP.md "v2 — Device 1"): LC76G GPS + Daisy AIS on a
-// UART (live targets), the LVGL radar render, and the BLE link to iOS.
+// Reads the Wegmatt dAISy 2+ on IO16 (Serial2 @ 38400, see
+// docs/hardware/ais_radar_wiring), decodes AIVDM into the target store, and
+// shows counts on the AMOLED. Next: the LVGL radar render + BLE link to iOS.
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -16,11 +12,11 @@
 #include <AisTargetDecoder.h>
 #include <default_sentence_parser.h>
 
+static constexpr uint32_t kDaisyBaud = 38400;   // dAISy "NMEA HS" default
+
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
 
-// Feed one raw AIVDM sentence; decodeMsg must be called until it returns 0.
-// Multi-fragment messages reassemble across successive feed() calls.
 static void feed(const char* sentence) {
     char buf[128];
     int n = snprintf(buf, sizeof(buf), "%s\r\n", sentence);
@@ -28,8 +24,32 @@ static void feed(const char* sentence) {
     do { i = decoder.decodeMsg(buf, (size_t)n, i, parser); } while (i != 0);
 }
 
+// ---- Daisy 2+ AIS on IO16 (Serial2 @ 38400) -------------------------------
+static uint32_t g_daisyBytes = 0;
+static uint32_t g_daisyLines = 0;
+static char     g_daisyLine[120];
+static int      g_daisyLen = 0;
+static char     g_lastLine[120] = {0};
+
+static void daisyPoll() {
+    while (Serial2.available() > 0) {
+        char c = (char)Serial2.read();
+        g_daisyBytes++;
+        if (c == '\n') {
+            if (g_daisyLen > 0) {
+                g_daisyLine[g_daisyLen] = '\0';
+                g_daisyLines++;
+                strncpy(g_lastLine, g_daisyLine, sizeof(g_lastLine) - 1);
+                feed(g_daisyLine);
+            }
+            g_daisyLen = 0;
+        } else if (c != '\r' && g_daisyLen < (int)sizeof(g_daisyLine) - 1) {
+            g_daisyLine[g_daisyLen++] = c;
+        }
+    }
+}
+
 static lv_obj_t* g_label = nullptr;
-static int16_t g_tapX = -1, g_tapY = -1;
 
 static void refreshSummary() {
     if (!g_label) return;
@@ -40,31 +60,26 @@ static void refreshSummary() {
     else
         snprintf(gpsLine, sizeof(gpsLine), "GPS no fix (%lu B)",
                  (unsigned long)f.uartBytes);
-    char tapLine[32];
-    if (g_tapX >= 0) snprintf(tapLine, sizeof(tapLine), "tap %d,%d", g_tapX, g_tapY);
-    else             snprintf(tapLine, sizeof(tapLine), "tap —");
-    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\n%s\n%s",
-                          (unsigned)decoder.store().size(), gpsLine, tapLine);
+    lv_label_set_text_fmt(g_label, "AIS-radar\n%u targets\nAIS %lu B / %lu ln\n%s",
+                          (unsigned)decoder.store().size(),
+                          (unsigned long)g_daisyBytes,
+                          (unsigned long)g_daisyLines, gpsLine);
 }
 
 void setup() {
     Serial.begin(115200);
     delay(800);
-    Serial.println("\n[ais-radar] milestone 0 — AMOLED + AIS decode salvage (ADR-0016)");
+    Serial.println("\n[ais-radar] display + touch + GPS + Daisy AIS (ADR-0016)");
 
     const bool haveDisplay = amoled::begin();
     touch::begin();
     gps::begin();   // UART-only; silent until R15/R16 jumpers are soldered
 
-    // Verified sentences (correct checksums) from the AIS test-sentence set.
-    feed("!AIVDM,1,1,,B,B52K>7008h>KUH7v8L0L;wv00000,0*59");  // type 18  Class B position
-    feed("!AIVDM,1,1,,A,15Memvh01E0qcJ0Op:D:ggwp00000,5*2C");  // type 1   Class A position
-    feed("!AIVDM,2,1,1,A,55Memvh2;HNMMA@h001@U@4r0<58Lt0000000016000000000Bhkl1CR0AiC,0*53"); // type 5 (1/2)
-    feed("!AIVDM,2,2,1,A,P0000000000,2*45");                   // type 5   (2/2) name + type
-
-    Serial.printf("[ais] %u target(s) from %llu message(s)\n",
-                  (unsigned)decoder.store().size(),
-                  (unsigned long long)decoder.messages());
+    // Daisy 2+ AIS on IO16 (header H2). RX only (TX unused).
+    Serial2.setRxBufferSize(2048);
+    Serial2.begin(kDaisyBaud, SERIAL_8N1, /*rx=*/16, /*tx=*/-1);
+    Serial.printf("[daisy] Serial2 @ %lu on IO16 — listening\n",
+                  (unsigned long)kDaisyBaud);
 
     if (haveDisplay) {
         g_label = lv_label_create(lv_scr_act());
@@ -78,15 +93,23 @@ void setup() {
 }
 
 void loop() {
-    static uint32_t last = 0;
-    static uint32_t lastRefresh = 0;
+    static uint32_t last = 0, lastRefresh = 0, lastStat = 0;
     const uint32_t now = millis();
+
+    daisyPoll();
     gps::poll(now);
     int16_t tx, ty;
-    if (touch::readPoint(tx, ty)) { g_tapX = tx; g_tapY = ty; }
+    (void)touch::readPoint(tx, ty);
+
     lv_tick_inc(now - last);
     last = now;
     if (now - lastRefresh >= 500) { lastRefresh = now; refreshSummary(); }
+    if (now - lastStat >= 2000) {
+        lastStat = now;
+        Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u | last: %s\n",
+                      (unsigned long)g_daisyBytes, (unsigned long)g_daisyLines,
+                      (unsigned)decoder.store().size(), g_lastLine);
+    }
     lv_timer_handler();
     delay(5);
 }

@@ -39,11 +39,14 @@ fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
       (recoverable at the tag); CI now builds the device.
 - [ ] **1. AMOLED + GPS bring-up** — display/touch up on the new tree;
       LC76G UART jumpers (R15/R16) soldered; own position acquired.
-- [ ] **2. Daisy AIS in** — wiring documented:
+- [x] **2. Daisy AIS in — DONE.** Wiring:
       [ais_radar_wiring](../hardware/ais_radar_wiring.html) (3 wires off
       header H2 — `IO16`←TXD, `3V3`→VCC@3.3V, `GND`; no step-up, no 9V).
-      Firmware TODO: open a UART on `IO16` @ 38400 and feed bytes into the
-      on-device `AisTargetDecoder` (already building).
+      Firmware reads the Daisy on `Serial2`/`IO16` @ 38400, assembles
+      lines, and feeds the on-device `AisTargetDecoder`. Hardware-verified:
+      the Daisy keep-alive heartbeat decodes clean (valid checksum) on the
+      AMOLED. (A position-type sentence or a real antenna is needed before
+      a vessel shows — the keep-alive is AIS type 15.)
 - [ ] **3. On-device radar** — render own ship + AIS targets radar-style
       in LVGL (re-targeted from the RX radar); touch = zoom/pan only.
 - [ ] **4. BLE link** — device (peripheral) notifies AIS targets + own
