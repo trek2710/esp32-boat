@@ -103,7 +103,14 @@ void loop() {
 
     lv_tick_inc(now - last);
     last = now;
-    if (now - lastRefresh >= 500) { lastRefresh = now; refreshSummary(); }
+    if (now - lastRefresh >= 500) {
+        lastRefresh = now;
+        refreshSummary();
+        // AMOLED sub-pixel drift makes static text read as "italic" because
+        // LVGL skips redrawing unchanged content. Force a full-screen repaint
+        // each tick so the panel keeps refreshing (TX round-80a fix).
+        lv_obj_invalidate(lv_scr_act());
+    }
     if (now - lastStat >= 2000) {
         lastStat = now;
         Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u | last: %s\n",
