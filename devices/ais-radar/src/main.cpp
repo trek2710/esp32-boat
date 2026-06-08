@@ -15,6 +15,7 @@
 #include <AisTargetDecoder.h>
 #include <default_sentence_parser.h>
 #include "Radar.h"
+#include "Ble.h"
 
 static constexpr uint32_t kDaisyBaud  = 38400;   // dAISy NMEA-HS default
 static constexpr uint32_t kTargetLifeMs = 10000; // drop targets after 10 s
@@ -67,10 +68,12 @@ void setup() {
 
     if (haveDisplay) radar::begin();
     else Serial.println("[ais-radar] display unavailable — serial only");
+
+    ble::begin();
 }
 
 void loop() {
-    static uint32_t last = 0, lastDraw = 0, lastStat = 0;
+    static uint32_t last = 0, lastDraw = 0, lastStat = 0, lastBle = 0;
     const uint32_t now = millis();
 
     daisyPoll();
@@ -90,11 +93,18 @@ void loop() {
         const double lon = haveFix ? f.lon : kBenchLon;
         radar::draw(decoder.store(), lat, lon, NAN /*own cog unknown*/);
     }
+    if (now - lastBle >= 1000) {
+        lastBle = now;
+        const gps::Fix& f = gps::fix();
+        const bool haveFix = (f.fixQuality >= 1) && !isnan(f.lat) && !isnan(f.lon);
+        ble::publish(decoder.store(), haveFix ? f.lat : kBenchLat,
+                     haveFix ? f.lon : kBenchLon, NAN, haveFix);
+    }
     if (now - lastStat >= 2000) {
         lastStat = now;
-        Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u\n",
+        Serial.printf("[stat] ais_bytes=%lu lines=%lu targets=%u ble=%d\n",
                       (unsigned long)g_daisyBytes, (unsigned long)g_daisyLines,
-                      (unsigned)decoder.store().size());
+                      (unsigned)decoder.store().size(), ble::connected());
     }
     lv_timer_handler();
     delay(5);

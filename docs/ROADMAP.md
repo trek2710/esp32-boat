@@ -54,11 +54,14 @@ fresh, BLE central. **Drop:** WiFi bus, role election, HTTP settings.
       coord until the LC76G is soldered; targets expire after 10 s
       (`evictStale(10000)`). Verified Type-18 test sentences:
       `scripts/gen_ais_test.py`. (Touch zoom/pan is a later polish.)
-- [ ] **4. BLE link** — device (peripheral) notifies AIS targets + own
-      GPS + status; iOS settings write characteristic; device persists
-      settings to NVS and runs standalone.
-- [ ] **5. Fresh iOS app** — BLE central: radar/AIS view + the settings
-      writer.
+- [~] **4. BLE link** — device side DONE: advertises as `ais-radar`
+      (`shared/ble/AisRadarBle.h` wire contract; `devices/ais-radar/Ble.cpp`
+      NimBLE peripheral), notifies own-ship (`BleOwnShip`) + each AIS target
+      (`BleTarget`) once per second to a connected central. **Pending:** the
+      iOS-→-device settings write characteristic + NVS persistence.
+- [ ] **5. Fresh iOS app** — BLE central: connect to `ais-radar`, parse the
+      notify structs, draw its own radar (with a tunable scale), settings
+      writer. Replaces the archived v1 WiFi app under `ios/`.
 
 **Acceptance:** powered by its own battery/powerbank, no boat
 connection, the device shows my GPS position with live AIS targets
@@ -74,6 +77,11 @@ settings.
   emit/read PGNs. The v1 encoders + ADR-0005 are kept dormant for this.
 - Fate of the RX 2.1" round display and the C6 converter as future
   devices.
+- **AIS-radar polish (deferred):** radar **range/scale tuning** from iOS
+  (keep or replace autoscale — decide once the app is live); a **C-MAP map
+  overlay** read from the onboard microSD (exFAT card, C-MAP data) — an
+  *overlay on the radar only*, explicitly **not** a mapping engine; and the
+  AMOLED **swipe/touch** interaction (undecided — possibly just swipe).
 
 ---
 
