@@ -82,9 +82,14 @@ settings.
   devices.
 - **AIS-radar polish (deferred):** radar **range/scale tuning** from iOS
   (keep or replace autoscale — decide once the app is live); a **C-MAP map
-  overlay** read from the onboard microSD (exFAT card, C-MAP data) — an
-  *overlay on the radar only*, explicitly **not** a mapping engine; and the
-  AMOLED **swipe/touch** interaction (undecided — possibly just swipe).
+  overlay** read from the onboard microSD (exFAT card, `cmap/` folder —
+  **card now inserted**) — an *overlay on the radar only*, explicitly
+  **not** a mapping engine; and the AMOLED **swipe/touch** interaction
+  (undecided — possibly just swipe).
+- **Weather/chart "mapping" device (idea, future):** a separate device that
+  shows C-MAP base charts + **GRIB** weather overlays, reading both from the
+  same microSD layout (exFAT; `cmap/` + a GRIB file already on the card).
+  Distinct from the AIS-radar device's overlay-only use of the card.
 
 ---
 
