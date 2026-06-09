@@ -49,6 +49,12 @@ struct SettingsTab: View {
                 } footer: {
                     Text("Vector chart under the radar (device + app). Water shallower than the cutoff is shaded blue (lighter = shallower); deeper is white. Slide to change it live.")
                 }
+
+                Section {
+                    Toggle("Demo AIS targets", isOn: testTargetsBinding)
+                } footer: {
+                    Text("Three simulated targets near the bench so the radar has data without live traffic. Turn off for a live test with the dAISy antenna.")
+                }
             }
             .navigationTitle("Settings")
             .disabled(!model.connected)
@@ -57,6 +63,10 @@ struct SettingsTab: View {
 
     private func layerBinding(_ l: ChartLayer) -> Binding<Bool> {
         Binding(get: { model.layerOn(l) }, set: { model.setLayer(l, $0) })
+    }
+    private var testTargetsBinding: Binding<Bool> {
+        Binding(get: { model.settings.testTargets },
+                set: { model.settings.testTargets = $0; model.pushSettings() })
     }
     private var depthBinding: Binding<Double> {
         // Update locally while dragging (radar follows live); the Slider's

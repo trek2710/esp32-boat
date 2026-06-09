@@ -26,11 +26,6 @@ static constexpr uint32_t kTargetLifeMs = 10000; // drop targets after 10 s
 static constexpr double kBenchLat = 55.76196;
 static constexpr double kBenchLon = 12.62900;
 
-// Bench-only: inject a synthetic AIS target ~3 NM out so the radar has a real
-// scale to auto-fit (and the chart shows at that scale) without live traffic.
-// Set false for real use.
-static constexpr bool kInjectTestTarget = true;
-
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
 
@@ -164,7 +159,7 @@ void loop() {
     if (now - lastDraw >= 500) {
         lastDraw = now;
         Own o = ownShip();
-        if (kInjectTestTarget) injectTestTargets();
+        if (devsettings::get().testTargets) injectTestTargets();
         decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
         radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
         g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);
