@@ -29,7 +29,7 @@ static constexpr double kBenchLon = 12.62900;
 // Bench-only: inject a synthetic AIS target ~3 NM out so the radar has a real
 // scale to auto-fit (and the chart shows at that scale) without live traffic.
 // Set false for real use.
-static constexpr bool kInjectTestTarget = true;
+static constexpr bool kInjectTestTarget = false;
 
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
