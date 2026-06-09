@@ -34,17 +34,19 @@ struct SettingsTab: View {
 
                 Section {
                     Toggle("Coastline", isOn: layerBinding(.coastline))
+                    Toggle("Land", isOn: layerBinding(.land))
                     Toggle("Depth shading", isOn: layerBinding(.depth))
+                    Toggle("Shipping lanes", isOn: layerBinding(.tss))
                     HStack {
-                        Text("Shallow depth")
+                        Text("Deep-water cutoff")
                         Spacer()
-                        Text("< \(model.settings.depthThreshM) m").foregroundStyle(.secondary)
+                        Text("\(model.settings.depthThreshM) m").foregroundStyle(.secondary)
                     }
                     Slider(value: depthBinding, in: 0...30, step: 1)
                 } header: {
                     Text("Chart overlay")
                 } footer: {
-                    Text("Vector chart drawn under the radar. Depth areas shallower than the threshold are tinted; slide to change it live.")
+                    Text("Vector chart under the radar (device + app). Water shallower than the cutoff is shaded blue (lighter = shallower); deeper is white. Slide to change it live.")
                 }
             }
             .navigationTitle("Settings")

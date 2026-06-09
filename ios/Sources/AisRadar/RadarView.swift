@@ -1,82 +1,185 @@
 import SwiftUI
 
-// North-up PPI radar: own ship centred, AIS targets at range/bearing with
-// 5-min COG projection sticks. Mirrors the on-device radar.
+// North-up PPI radar with the CM93 chart underneath — mirrors the AMOLED:
+// sand land, depth-banded blues over white deep water, coastline + shipping
+// lanes, range rings, N/E/S/W, AIS targets (icon by type, colour by threat),
+// magenta own ship, and the threat as a ring around the rim.
 struct RadarView: View {
     let own: OwnShip
     let targets: [AisTarget]
     let rangeNm: Double
-    let background: Color
+    let threat: Int            // worst threat from the device (ring colour)
+    let chart: [ChartFeature]
+    let depthThreshM: Int
+    let chartLayers: UInt8
 
-    // Neutral so they read on any threat background.
-    private let ringColor = Color(white: 0.35)
-    private let blip = Color.white
-    private let dim  = Color(white: 0.5)
-    private let ownColor = Color(red: 0.0, green: 0.90, blue: 1.0)
-    private let labelColor = Color(white: 0.75)
+    private let deepWater = Color(hex: 0xE9F1F7)
+    private let sand      = Color(hex: 0xE6D9A8)
+    private let coastline = Color(hex: 0x35434F)
+    private let tssGrey   = Color(hex: 0x8C949C)
+    private let ringColor = Color(hex: 0x6E7A86)
+    private let ownColor  = Color(hex: 0xC00060)
+    private let labelC    = Color(hex: 0x0E1C28)
+
+    private func on(_ l: ChartLayer) -> Bool { chartLayers & (1 << l.rawValue) != 0 }
+
+    private func depthColor(_ drval: Float) -> Color? {
+        if drval.isNaN || drval >= Float(depthThreshM) { return nil }   // offshore = white
+        if drval <= 1 { return Color(hex: 0xCFE6F5) }
+        if drval <= 3 { return Color(hex: 0xA9CFEC) }
+        if drval <= 6 { return Color(hex: 0x7DB2DF) }
+        return Color(hex: 0x5491CB)
+    }
 
     var body: some View {
         Canvas { ctx, size in
-            let cx = size.width / 2
-            let cy = size.height / 2
-            let r = min(size.width, size.height) / 2 - 28
+            let cx = size.width / 2, cy = size.height / 2
+            let outer = min(size.width, size.height) / 2 - 2
+            let ringW: Double = threat > 0 ? 14 : 0
+            let r = outer - ringW
+            let center = CGPoint(x: cx, y: cy)
 
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(background))
-            for k in 1...3 {
-                let rr = r * Double(k) / 3
-                ctx.stroke(Path(ellipseIn: CGRect(x: cx - rr, y: cy - rr, width: rr * 2, height: rr * 2)),
-                           with: .color(ringColor), lineWidth: 1)
+            if threat > 0 {
+                ctx.fill(disc(center, outer), with: .color(threatRingColor(threat)))
             }
-            var nTick = Path()
-            nTick.move(to: CGPoint(x: cx, y: cy - r))
-            nTick.addLine(to: CGPoint(x: cx, y: cy - r + 14))
-            ctx.stroke(nTick, with: .color(ringColor), lineWidth: 1.5)
-            ctx.draw(Text("N").font(.caption2).foregroundColor(labelColor),
-                     at: CGPoint(x: cx, y: cy - r - 7))
-            ctx.draw(Text(String(format: "%.3g NM", rangeNm)).font(.caption2).foregroundColor(labelColor),
-                     at: CGPoint(x: cx, y: cy + r + 12))
+            ctx.fill(disc(center, r), with: .color(deepWater))
 
             guard let olat = own.lat, let olon = own.lon else {
-                ctx.draw(Text("No position").foregroundColor(labelColor), at: CGPoint(x: cx, y: cy))
+                ctx.draw(Text("No position").foregroundColor(labelC), at: center)
                 return
             }
             let scale = r / rangeNm
-
-            for t in targets {
-                let (rng, brg) = rangeBearing(olat, olon, t.lat, t.lon)
-                if rng > rangeNm { continue }
-                let br = brg * .pi / 180
-                let x = cx + rng * scale * sin(br)
-                let y = cy - rng * scale * cos(br)
-                let stale = Date().timeIntervalSince(t.lastSeen) > 6
-                let col = stale ? dim : blip
-
-                if let sog = t.sogKn, let cog = t.cogDeg, sog > 0.1 {
-                    let d = sog * (300.0 / 3600.0)        // NM in 5 min
-                    let cr = cog * .pi / 180
-                    var stick = Path()
-                    stick.move(to: CGPoint(x: x, y: y))
-                    stick.addLine(to: CGPoint(x: x + d * scale * sin(cr), y: y - d * scale * cos(cr)))
-                    ctx.stroke(stick, with: .color(col), lineWidth: 1.5)
-                }
-                ctx.fill(vesselPath(x: x, y: y, headingDeg: t.cogDeg ?? 0, len: 7), with: .color(col))
-                ctx.draw(Text(String(t.mmsi % 100000)).font(.system(size: 9)).foregroundColor(labelColor),
-                         at: CGPoint(x: x + 16, y: y))
+            let coslat = cos(olat * .pi / 180)
+            let clip = rangeNm * 1.25
+            func proj(_ la: Double, _ lo: Double) -> CGPoint {
+                CGPoint(x: cx + (lo - olon) * 60 * coslat * scale,
+                        y: cy - (la - olat) * 60 * scale)
             }
 
-            ctx.fill(vesselPath(x: cx, y: cy, headingDeg: own.cogDeg ?? 0, len: 11), with: .color(ownColor))
+            // Everything below is clipped to the radar circle.
+            var cc = ctx
+            cc.clip(to: disc(center, r))
+
+            // Pass 1 — filled areas (depth bands + land).
+            for f in chart where f.isArea {
+                let col: Color?
+                if f.layer == ChartLayer.depth.rawValue, on(.depth) { col = depthColor(f.depth) }
+                else if f.layer == ChartLayer.land.rawValue, on(.land) { col = sand }
+                else { col = nil }
+                guard let c = col,
+                      let path = featurePath(f, clip, olat, olon, coslat, proj, close: true)
+                else { continue }
+                cc.fill(path, with: .color(c))
+            }
+            // Pass 2 — coastline + shipping lanes on top.
+            for f in chart {
+                let col: Color?
+                if f.layer == ChartLayer.coastline.rawValue, on(.coastline) { col = coastline }
+                else if f.layer == ChartLayer.tss.rawValue, on(.tss) { col = tssGrey }
+                else { col = nil }
+                guard let c = col,
+                      let path = featurePath(f, clip, olat, olon, coslat, proj, close: false)
+                else { continue }
+                cc.stroke(path, with: .color(c), lineWidth: 1)
+            }
+
+            // Range rings + compass.
+            for k in 1...3 {
+                cc.stroke(disc(center, r * Double(k) / 3), with: .color(ringColor), lineWidth: 1)
+            }
+            let lf = Font.system(size: 15, weight: .bold)
+            cc.draw(Text("N").font(lf).foregroundColor(labelC), at: CGPoint(x: cx, y: cy - r + 12))
+            cc.draw(Text("S").font(lf).foregroundColor(labelC), at: CGPoint(x: cx, y: cy + r - 12))
+            cc.draw(Text("E").font(lf).foregroundColor(labelC), at: CGPoint(x: cx + r - 12, y: cy))
+            cc.draw(Text("W").font(lf).foregroundColor(labelC), at: CGPoint(x: cx - r + 12, y: cy))
+            cc.draw(Text(String(format: "%.3g NM", rangeNm)).font(lf).foregroundColor(labelC),
+                    at: CGPoint(x: cx, y: cy - r + 30))
+
+            // AIS targets.
+            for t in targets {
+                let ev = evaluateTarget(t, own: own)
+                if ev.rangeNm > rangeNm { continue }
+                let p = proj(t.lat, t.lon)
+                let col = threatMarkColor(ev.threat)
+                if let sog = t.sogKn, let cog = t.cogDeg, sog > 0.1 {
+                    let d = sog * (300.0 / 3600.0)
+                    let cr = cog * .pi / 180
+                    var stick = Path()
+                    stick.move(to: p)
+                    stick.addLine(to: CGPoint(x: p.x + d * scale * sin(cr), y: p.y - d * scale * cos(cr)))
+                    cc.stroke(stick, with: .color(col), lineWidth: 1.5)
+                }
+                cc.fill(iconPath(t, at: p), with: .color(col))
+                let label = "\(shipTypeName(t.shipType)) \(t.mmsi % 100000)"
+                cc.draw(Text(label).font(.system(size: 11, weight: .semibold)).foregroundColor(labelC),
+                        at: CGPoint(x: p.x + 10, y: p.y - 9), anchor: .leading)
+            }
+
+            // Own ship.
+            cc.fill(vesselPath(x: cx, y: cy, headingDeg: own.cogDeg ?? 0, len: 11), with: .color(ownColor))
         }
-        .background(background)
+    }
+
+    private func iconPath(_ t: AisTarget, at p: CGPoint) -> Path {
+        let hdg = t.cogDeg ?? 0
+        switch shipTypeIcon(t.shipType) {
+        case .circle:   return Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10))
+        case .hull:     return hullPath(x: p.x, y: p.y, headingDeg: hdg, len: 9)
+        case .triangle: return vesselPath(x: p.x, y: p.y, headingDeg: hdg, len: 8)
+        }
     }
 }
 
-// Whole-screen threat background: dark → green → amber → red.
-func threatColor(_ level: Int) -> Color {
+private func disc(_ c: CGPoint, _ r: Double) -> Path {
+    Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+}
+
+// Screen-space path for a chart feature; nil if nothing is in range.
+private func featurePath(_ f: ChartFeature, _ clip: Double,
+                         _ olat: Double, _ olon: Double, _ coslat: Double,
+                         _ proj: (Double, Double) -> CGPoint, close: Bool) -> Path? {
+    var any = false
+    for q in f.pts where abs((q.x - olat) * 60) < clip && abs((q.y - olon) * 60 * coslat) < clip {
+        any = true; break
+    }
+    guard any, f.pts.count >= (close ? 3 : 2) else { return nil }
+    var path = Path()
+    path.move(to: proj(f.pts[0].x, f.pts[0].y))
+    for i in 1..<f.pts.count { path.addLine(to: proj(f.pts[i].x, f.pts[i].y)) }
+    if close { path.closeSubpath() }
+    return path
+}
+
+func threatRingColor(_ level: Int) -> Color {
     switch level {
-    case 1: return Color(red: 0.024, green: 0.20, blue: 0.06)   // green
-    case 2: return Color(red: 0.48, green: 0.48, blue: 0.0)     // yellow (R=G)
-    case 3: return Color(red: 0.478, green: 0.0, blue: 0.0)     // red
-    default: return .black
+    case 1:  return Color(hex: 0x12B021)
+    case 2:  return Color(hex: 0xC8C800)
+    case 3:  return Color(hex: 0xE00000)
+    default: return Color(hex: 0xE9F1F7)
+    }
+}
+
+// elongated hull (cargo/tanker), bow forward along heading
+func hullPath(x: Double, y: Double, headingDeg: Double, len: Double) -> Path {
+    let t = headingDeg * .pi / 180, cs = cos(t), sn = sin(t)
+    func map(_ lx: Double, _ ly: Double) -> CGPoint {
+        CGPoint(x: x + lx * cs + ly * sn, y: y + lx * sn - ly * cs)
+    }
+    var p = Path()
+    p.move(to: map(0, len * 1.3))
+    p.addLine(to: map(len * 0.5, len * 0.3))
+    p.addLine(to: map(len * 0.5, -len))
+    p.addLine(to: map(-len * 0.5, -len))
+    p.addLine(to: map(-len * 0.5, len * 0.3))
+    p.closeSubpath()
+    return p
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(red: Double((hex >> 16) & 0xFF) / 255,
+                  green: Double((hex >> 8) & 0xFF) / 255,
+                  blue: Double(hex & 0xFF) / 255)
     }
 }
 
