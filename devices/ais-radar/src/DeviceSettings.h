@@ -8,8 +8,8 @@
 struct DeviceSettings {
     uint8_t rangeCapNm   = 24;   // hide AIS targets beyond this range (NM)
     uint8_t hideAnchored = 1;    // hide anchored/moored/aground targets
-    uint8_t depthThreshM = 3;    // chart shallow-water shading threshold (m)
-    uint8_t chartLayers  = 0x05; // chart overlay layer bitmask (coastline+depth)
+    uint8_t depthThreshM = 10;   // chart deep-water cutoff (m): shallower → blue bands
+    uint8_t chartLayers  = 0x17; // overlay layers: coastline+land+depth+TSS
 };
 
 namespace devsettings {

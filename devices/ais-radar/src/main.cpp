@@ -108,14 +108,24 @@ static Own ownShip() {
     return { kBenchLat, kBenchLon, NAN, 0.0, false };     // bench fallback
 }
 
-// Bench test target: a Class-B vessel ~3 NM NNE of own ship, moving. Re-stamped
-// each call so it never evicts. Goes to the AMOLED and (via ble::publish) iOS.
-static void injectTestTarget(double ownLat, double ownLon) {
-    const uint32_t mmsi = 992110001;
-    decoder.store().recordName(mmsi, 'B', "TESTSHIP");
-    decoder.store().recordType(mmsi, 'B', 37);            // pleasure craft
-    decoder.store().recordPosition(mmsi, 'B', 6.0f, 210.0f);  // 6 kn, COG 210
-    decoder.store().recordLatLon(mmsi, ownLat + 0.048, ownLon + 0.030);
+// Bench test targets: three Class-B vessels showing the three threat modes —
+// safe (dark), alert (yellow, fast & near), danger (red, on a collision CPA).
+// Re-stamped each call so they never evict. Go to the AMOLED and, via
+// ble::publish, the iOS app.
+static void injectTestTargets(double ownLat, double ownLon) {
+    struct T { uint32_t mmsi; const char* nm; uint8_t type;
+               float sog, cog; double dLat, dLon; };
+    static const T ts[] = {
+        {992110001, "SAILBOAT", 36,  5.0f, 210.0f,  0.0480,  0.0300},  // safe
+        {992110002, "FERRY",    60, 22.0f, 120.0f,  0.0200, -0.0250},  // alert: fast+near
+        {992110003, "TANKER",   80, 10.0f, 180.0f,  0.0133,  0.0000},  // danger: CPA→0
+    };
+    for (const auto& t : ts) {
+        decoder.store().recordName(t.mmsi, 'B', t.nm);
+        decoder.store().recordType(t.mmsi, 'B', t.type);
+        decoder.store().recordPosition(t.mmsi, 'B', t.sog, t.cog);
+        decoder.store().recordLatLon(t.mmsi, ownLat + t.dLat, ownLon + t.dLon);
+    }
 }
 
 void setup() {
@@ -154,7 +164,7 @@ void loop() {
     if (now - lastDraw >= 500) {
         lastDraw = now;
         Own o = ownShip();
-        if (kInjectTestTarget) injectTestTarget(o.lat, o.lon);
+        if (kInjectTestTarget) injectTestTargets(o.lat, o.lon);
         decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
         radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
         g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);

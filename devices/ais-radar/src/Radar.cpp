@@ -109,7 +109,12 @@ void line(int x1, int y1, int x2, int y2, lv_color_t c, int w) {
 void text(int x, int y, const char* s, lv_color_t c, const lv_font_t* f) {
     lv_draw_label_dsc_t d; lv_draw_label_dsc_init(&d);
     d.color = c; d.font = f;
-    lv_canvas_draw_text(g_canvas, x, y, 130, &d, s);
+    lv_canvas_draw_text(g_canvas, x, y, 140, &d, s);
+}
+// No bold Montserrat is built in, so fake it by overstriking 1 px to the right.
+void textB(int x, int y, const char* s, lv_color_t c, const lv_font_t* f) {
+    text(x, y, s, c, f);
+    text(x + 1, y, s, c, f);
 }
 void vessel(int cx, int cy, double hdg, double len, lv_color_t col) {
     const double t = hdg * kD2R, cs = std::cos(t), sn = std::sin(t);
@@ -134,47 +139,93 @@ double niceStepNm(double t) {
     return 50;
 }
 
-// Chart overlay: draw the pre-baked CM93 vectors for the own-ship cell under
-// the AIS plot. Equirectangular projection (cheap, exact enough at radar
-// ranges) + range-clip so only near features cost draw calls. Layers are
-// gated by the chart_layers bitmask; depth areas shallower than the runtime
-// threshold are tinted.
-int g_chSeg = 0;   // chart segments drawn last frame (for the status line)
+// Chart overlay — nautical styling: filled land (sand) + depth-banded water
+// (shades of blue, shallower = darker) over the pale "deep water" background,
+// with coastline + shipping lanes as lines on top. Equirectangular projection
+// (cheap, exact enough at radar ranges) + range-clip. Two passes so the line
+// work lands on top of the area fills.
+int g_chSeg = 0;            // chart features drawn last frame (status line)
+lv_point_t g_poly[600];     // scratch for one projected feature
+
+// DRVAL1 (area min depth, m) -> fill colour. false for water at/beyond the
+// deep-water cutoff (left as the pale background).
+bool depthBandColor(float drval, uint8_t cutoff, lv_color_t* out) {
+    if (std::isnan(drval) || drval >= (float)cutoff) return false;
+    if      (drval <= 0.0f)  *out = lv_color_hex(0x8FCBA0);  // drying (green)
+    else if (drval <= 2.0f)  *out = lv_color_hex(0x4F97CE);  // 0–2 m  (darkest)
+    else if (drval <= 5.0f)  *out = lv_color_hex(0x86BCE2);  // 2–5 m
+    else if (drval <= 10.0f) *out = lv_color_hex(0xBCDDF2);  // 5–10 m
+    else                     *out = lv_color_hex(0xDCEDF9);  // 10 m–cutoff
+    return true;
+}
+
+// Project a feature's lat/lon points into g_poly (screen px); set anyIn if any
+// point falls inside the clip window. Coords clamped to keep lv_coord_t sane.
+uint16_t projectPoly(const chart::Feature& f, double ownLat, double ownLon,
+                     double scale, double coslat, double clip, bool* anyIn) {
+    const uint16_t n = f.npts > 600 ? 600 : f.npts;
+    *anyIn = false;
+    for (uint16_t i = 0; i < n; ++i) {
+        const double dN = (f.pts[2 * i]     - ownLat) * 60.0;
+        const double dE = (f.pts[2 * i + 1] - ownLon) * 60.0 * coslat;
+        int x = kCx + (int)std::lround(dE * scale);
+        int y = kCy - (int)std::lround(dN * scale);
+        g_poly[i].x = (lv_coord_t)(x < -15000 ? -15000 : x > 15000 ? 15000 : x);
+        g_poly[i].y = (lv_coord_t)(y < -15000 ? -15000 : y > 15000 ? 15000 : y);
+        if (std::fabs(dN) < clip && std::fabs(dE) < clip) *anyIn = true;
+    }
+    return n;
+}
+
+void fillPoly(uint16_t n, lv_color_t col) {
+    if (n < 3) return;
+    lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
+    d.bg_color = col; d.bg_opa = LV_OPA_COVER;
+    lv_canvas_draw_polygon(g_canvas, g_poly, n, &d);
+}
+
+void strokePoly(uint16_t n, lv_color_t col, int w) {
+    for (uint16_t i = 1; i < n; ++i)
+        line(g_poly[i - 1].x, g_poly[i - 1].y, g_poly[i].x, g_poly[i].y, col, w);
+}
 
 void drawChart(double ownLat, double ownLon, double scale, double rangeNm) {
     g_chSeg = 0;
     if (!chart::ensureCell(ownLat, ownLon)) return;
     const DeviceSettings& ds = devsettings::get();
     const double coslat = std::cos(ownLat * kD2R);
-    const double clip   = rangeNm * 1.15;            // NM half-window
+    const double clip   = rangeNm * 1.25;
 
-    const lv_color_t coastc   = lv_color_hex(0x9AA0B0);   // coastline
-    const lv_color_t shallowc = lv_color_hex(0x8A3A12);   // shallow-water tint
+    const lv_color_t sand    = lv_color_hex(0xE6D9A8);   // land
+    const lv_color_t coastc  = lv_color_hex(0x35434F);   // coastline
+    const lv_color_t tssGrey = lv_color_hex(0x8C949C);   // shipping lanes
 
+    // Pass 1 — filled areas (depth bands + land) under the lines.
     chart::rewind();
     chart::Feature f;
     while (chart::next(f)) {
+        if (!(ds.chartLayers & (1 << f.layer)) || !(f.flags & 0x01)) continue;
+        lv_color_t col;
+        if (f.layer == CHART_DEPTH) {
+            if (!depthBandColor(f.depth, ds.depthThreshM, &col)) continue;
+        } else if (f.layer == CHART_LAND) {
+            col = sand;
+        } else continue;
+        bool anyIn;
+        const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
+        if (anyIn) { fillPoly(n, col); ++g_chSeg; }
+    }
+    // Pass 2 — coastline + shipping lanes on top.
+    chart::rewind();
+    while (chart::next(f)) {
         if (!(ds.chartLayers & (1 << f.layer))) continue;
         lv_color_t col;
-        if (f.layer == CHART_COASTLINE) {
-            col = coastc;
-        } else if (f.layer == CHART_DEPTH) {
-            if (!(f.depth < (float)ds.depthThreshM)) continue;  // only shallow
-            col = shallowc;
-        } else {
-            continue;   // other layers carried in the tile, not drawn yet
-        }
-
-        int xp = 0, yp = 0; bool prev = false, prevIn = false;
-        for (uint16_t i = 0; i < f.npts; ++i) {
-            const double dN = (f.pts[2 * i]     - ownLat) * 60.0;          // NM N
-            const double dE = (f.pts[2 * i + 1] - ownLon) * 60.0 * coslat; // NM E
-            const int x = kCx + (int)std::lround(dE * scale);
-            const int y = kCy - (int)std::lround(dN * scale);
-            const bool in = std::fabs(dN) < clip && std::fabs(dE) < clip;
-            if (prev && (in || prevIn)) { line(xp, yp, x, y, col, 1); ++g_chSeg; }
-            xp = x; yp = y; prev = true; prevIn = in;
-        }
+        if (f.layer == CHART_COASTLINE) col = coastc;
+        else if (f.layer == CHART_TSS)  col = tssGrey;
+        else continue;
+        bool anyIn;
+        const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
+        if (anyIn) { strokePoly(n, col, 2); ++g_chSeg; }
     }
 }
 
@@ -211,12 +262,12 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
           double ownCogDeg, double ownSogKn) {
     if (!g_canvas) return;
 
-    // Radar elements are kept neutral so they read on any threat background.
-    const lv_color_t ringc = lv_color_hex(0x5A5A5A);
-    const lv_color_t blip  = lv_color_hex(0xFFFFFF);
-    const lv_color_t dimc  = lv_color_hex(0x808080);
-    const lv_color_t ownc  = lv_color_hex(0x00E5FF);
-    const lv_color_t txtc  = lv_color_hex(0xC0C0C0);
+    // Light "chart" theme: dark, saturated marks that read on the pale chart.
+    const lv_color_t ringc = lv_color_hex(0x6E7A86);   // range rings
+    const lv_color_t blip  = lv_color_hex(0x14202B);   // safe target
+    const lv_color_t dimc  = lv_color_hex(0x8A929A);   // stale target
+    const lv_color_t ownc  = lv_color_hex(0xC00060);   // own ship (magenta)
+    const lv_color_t txtc  = lv_color_hex(0x0E1C28);   // labels
 
     AisTarget t[AisTargetStore::CAPACITY];
     const size_t n = store.snapshotByRecency(t, AisTargetStore::CAPACITY);
@@ -235,7 +286,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     const Threat worst = (n == 0) ? Threat::None
         : (Threat)assessWorst(store, ownLat, ownLon, ownCogDeg, ownSogKn);
-    lv_canvas_fill_bg(g_canvas, lv_color_black(), LV_OPA_COVER);  // dark for the chart
+    lv_canvas_fill_bg(g_canvas, lv_color_hex(0xE9F1F7), LV_OPA_COVER);  // deep water
 
     // With the chart on, don't zoom tighter than ~2 NM, so nearby coast/depth
     // is visible even when no AIS targets are driving the range.
@@ -250,9 +301,9 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     for (int k = 1; k <= 3; ++k) ring(kR * k / 3, ringc, 2);
     line(kCx, kCy - kR, kCx, kCy - kR + 16, ringc, 2);
-    text(kCx - 5, kCy - kR + 16, "N", txtc, &lv_font_montserrat_14);
+    textB(kCx - 8, kCy - kR + 14, "N", txtc, &lv_font_montserrat_20);
     char rb[24]; snprintf(rb, sizeof(rb), "%.3g NM", rangeNm);
-    text(kCx - 22, kCy + kR - 20, rb, txtc, &lv_font_montserrat_14);
+    textB(kCx - 34, kCy + kR - 28, rb, txtc, &lv_font_montserrat_20);
 
     const uint32_t now = millis();
     for (size_t i = 0; i < n; ++i) {
@@ -261,7 +312,11 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
         const int x = kCx + (int)std::lround(rng[i] * scale * std::sin(br));
         const int y = kCy - (int)std::lround(rng[i] * scale * std::cos(br));
         const bool stale = (now - t[i].last_seen_ms) > kDimAfterMs;
-        const lv_color_t c = stale ? dimc : blip;
+        // Colour each contact by its own threat so the modes are visible:
+        // safe = dark, alert = yellow, danger = red (the outer ring shows worst).
+        const Threat tlv = assess(t[i], ownLat, ownLon, ownCogDeg, ownSogKn, rng[i]);
+        const lv_color_t c = stale ? dimc
+                           : (tlv > Threat::Safe ? bgFor(tlv) : blip);
 
         if (t[i].sog_kn >= 0 && t[i].cog_deg >= 0 && t[i].sog_kn > 0.1) {
             const double d = t[i].sog_kn * kProjHr;
@@ -269,13 +324,13 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
             line(x, y, x + (int)std::lround(d * scale * std::sin(cr)),
                  y - (int)std::lround(d * scale * std::cos(cr)), c, 2);
         }
-        if (t[i].cog_deg >= 0) vessel(x, y, t[i].cog_deg, 8, c);
-        else                   dot(x, y, 4, c);
+        if (t[i].cog_deg >= 0) vessel(x, y, t[i].cog_deg, 9, c);
+        else                   dot(x, y, 5, c);
 
         char lbl[12];
         if (t[i].name[0]) snprintf(lbl, sizeof(lbl), "%.8s", t[i].name);
         else snprintf(lbl, sizeof(lbl), "%u", (unsigned)(t[i].mmsi % 100000));
-        text(x + 7, y - 7, lbl, txtc, &lv_font_montserrat_12);
+        textB(x + 8, y - 9, lbl, txtc, &lv_font_montserrat_16);
     }
 
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
@@ -292,11 +347,11 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     // the round display (the corners are off-glass).
     char cs[44];
     if (chart::featureCount() > 0)
-        snprintf(cs, sizeof(cs), "chart %uf %dseg",
+        snprintf(cs, sizeof(cs), "chart %uf %dd",
                  (unsigned)chart::featureCount(), g_chSeg);
     else
         snprintf(cs, sizeof(cs), "NO TILE %08u", (unsigned)chart::cellId());
-    text(kCx - 55, kCy + 60, cs, txtc, &lv_font_montserrat_12);
+    textB(kCx - 52, kCy + 52, cs, txtc, &lv_font_montserrat_16);
 
     lv_obj_invalidate(g_canvas);
 }
