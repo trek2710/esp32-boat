@@ -26,10 +26,16 @@ struct SettingsTab: View {
                         Stepper("", value: rangeBinding, in: 1...48).labelsHidden()
                     }
                     Toggle("Hide anchored / moored", isOn: hideAnchoredBinding)
+                    HStack {
+                        Text("Course vector")
+                        Spacer()
+                        Text("\(model.settings.projMin) min").foregroundStyle(.secondary)
+                        Stepper("", value: projBinding, in: 1...30).labelsHidden()
+                    }
                 } header: {
                     Text("AIS filters")
                 } footer: {
-                    Text("Applied on the device and the app. Targets beyond the range cap, or anchored/moored/aground, are hidden.")
+                    Text("Range cap and anchored/moored hiding apply on device + app. The course vector projects own ship and each target ahead by this many minutes (display only — it doesn't change collision warnings).")
                 }
 
                 Section {
@@ -105,5 +111,9 @@ struct SettingsTab: View {
     private var hideAnchoredBinding: Binding<Bool> {
         Binding(get: { model.settings.hideAnchored },
                 set: { model.settings.hideAnchored = $0; model.pushSettings() })
+    }
+    private var projBinding: Binding<Int> {
+        Binding(get: { model.settings.projMin },
+                set: { model.settings.projMin = $0; model.pushSettings() })
     }
 }

@@ -32,6 +32,7 @@ struct DeviceSettings {
     var chartLayers: UInt8 = 0x17    // bit0 coastline,1 land,2 depth,3 depcnt,4 TSS,5 buoys,6 lights
     var testTargets: Bool = true     // device injects the three demo AIS targets
     var phoneGps: Bool = true        // device prefers the phone's GPS as own ship
+    var projMin: Int = 5             // course-projection stick length, minutes
 }
 
 // Chart layer bit positions (mirror CHART_* in shared/ble/AisRadarBle.h).
@@ -60,6 +61,7 @@ final class RadarModel: ObservableObject {
         }
         if d.count >= 5 { settings.testTargets = d.u8(4) != 0 }
         if d.count >= 6 { settings.phoneGps = d.u8(5) != 0 }
+        if d.count >= 7 { settings.projMin = max(1, Int(d.u8(6))) }
     }
 
     // Push the whole settings struct (the device persists + echoes it back).
@@ -71,6 +73,7 @@ final class RadarModel: ObservableObject {
         d.append(settings.chartLayers)
         d.append(settings.testTargets ? 1 : 0)
         d.append(settings.phoneGps ? 1 : 0)
+        d.append(UInt8(max(1, min(60, settings.projMin))))
         onWriteSettings?(d)
     }
 

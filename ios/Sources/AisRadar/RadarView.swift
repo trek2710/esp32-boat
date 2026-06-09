@@ -12,6 +12,7 @@ struct RadarView: View {
     let chart: [ChartFeature]
     let depthThreshM: Int
     let chartLayers: UInt8
+    let projMin: Int
 
     private let deepWater = Color(hex: 0xE9F1F7)
     private let sand      = Color(hex: 0xE6D9A8)
@@ -107,7 +108,7 @@ struct RadarView: View {
                 let p = proj(t.lat, t.lon)
                 let col = threatMarkColor(ev.threat)
                 if let sog = t.sogKn, let cog = t.cogDeg, sog > 0.1 {
-                    let d = sog * (300.0 / 3600.0)
+                    let d = sog * (Double(projMin) / 60.0)
                     let cr = cog * .pi / 180
                     var stick = Path()
                     stick.move(to: p)
@@ -120,8 +121,21 @@ struct RadarView: View {
                         at: CGPoint(x: p.x + 10, y: p.y - 9), anchor: .leading)
             }
 
-            // Own ship.
+            // Own ship: course projection (same time base as targets) + speed.
+            if let sog = own.sogKn, let cog = own.cogDeg, sog > 0.1 {
+                let d = sog * (Double(projMin) / 60.0)
+                let cr = cog * .pi / 180
+                var stick = Path()
+                stick.move(to: center)
+                stick.addLine(to: CGPoint(x: cx + d * scale * sin(cr), y: cy - d * scale * cos(cr)))
+                cc.stroke(stick, with: .color(ownColor), lineWidth: 2)
+            }
             cc.fill(vesselPath(x: cx, y: cy, headingDeg: own.cogDeg ?? 0, len: 11), with: .color(ownColor))
+            if let sog = own.sogKn {
+                cc.draw(Text(String(format: "%.1f kn", sog))
+                            .font(.system(size: 14, weight: .bold)).foregroundColor(ownColor),
+                        at: CGPoint(x: cx, y: cy + 22))
+            }
         }
     }
 

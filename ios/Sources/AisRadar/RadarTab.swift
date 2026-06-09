@@ -44,12 +44,17 @@ struct RadarTab: View {
                     Text(posText).font(.caption.monospacedDigit())
                     Text(model.own.hasFix ? "GPS" : "bench").font(.caption2).foregroundStyle(.secondary)
                     Spacer()
+                    if let sog = model.own.sogKn {
+                        Image(systemName: "speedometer")
+                        Text(String(format: "%.1f kn", sog)).font(.caption.monospacedDigit())
+                    }
                 }
 
                 RadarView(own: model.own, targets: model.targets, rangeNm: range,
                           threat: model.own.threat, chart: chart,
                           depthThreshM: model.settings.depthThreshM,
-                          chartLayers: model.settings.chartLayers)
+                          chartLayers: model.settings.chartLayers,
+                          projMin: model.settings.projMin)
                     .aspectRatio(1, contentMode: .fit)
 
                 VStack(spacing: 4) {

@@ -16,7 +16,6 @@ constexpr int kCx = kW / 2, kCy = kH / 2;
 constexpr int kR  = 205;
 constexpr double kD2R = 0.017453292519943295;
 constexpr uint32_t kDimAfterMs = 5000;
-constexpr double kProjHr = 300.0 / 3600.0;
 
 // Threat thresholds (tunable).
 constexpr double kAlertSpeedKn     = 15.0;     // yellow if SOG above this …
@@ -368,6 +367,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     const double rangeNm = niceStepNm(maxNm * 1.15);
     const double scale = kR / rangeNm;
+    const double projHr = devsettings::get().projMin / 60.0;   // course-stick length
 
     drawChart(ownLat, ownLon, scale, rangeNm);   // chart under the AIS plot
 
@@ -394,7 +394,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
                            : (tlv > Threat::Safe ? bgFor(tlv) : blip);
 
         if (t[i].sog_kn >= 0 && t[i].cog_deg >= 0 && t[i].sog_kn > 0.1) {
-            const double d = t[i].sog_kn * kProjHr;
+            const double d = t[i].sog_kn * projHr;
             const double cr = t[i].cog_deg * kD2R;
             line(x, y, x + (int)std::lround(d * scale * std::sin(cr)),
                  y - (int)std::lround(d * scale * std::cos(cr)), c, 2);
@@ -418,7 +418,18 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
         textB(x + 8, y - 9, lbl, txtc, &lv_font_montserrat_16);
     }
 
+    // Own-ship course projection (same time base as targets) + speed readout.
+    if (ownSogKn > 0.1 && !std::isnan(ownCogDeg)) {
+        const double d = ownSogKn * projHr;
+        const double cr = ownCogDeg * kD2R;
+        line(kCx, kCy, kCx + (int)std::lround(d * scale * std::sin(cr)),
+             kCy - (int)std::lround(d * scale * std::cos(cr)), ownc, 2);
+    }
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
+    if (!std::isnan(ownSogKn)) {
+        char sog[16]; snprintf(sog, sizeof(sog), "%.1f kn", ownSogKn);
+        textB(kCx - 28, kCy + 16, sog, ownc, &lv_font_montserrat_16);
+    }
 
     // Threat as a thick ring filled out to the bezel (no gap).
     if (worst != Threat::None) fillRing(kR + 6, bgFor(worst));
