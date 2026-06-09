@@ -27,15 +27,17 @@ struct __attribute__((packed)) BleOwnShip {
     int32_t lat_e7;       // 1e7 deg
     int32_t lon_e7;
     int16_t cog_deg10;    // 0.1 deg true; INT16_MIN = n/a
+    int16_t sog_kn10;     // 0.1 kn; INT16_MIN = n/a (own speed, for app CPA)
     uint8_t flags;        // bit0: real GPS fix (0 = bench); bits1-2: threat
                           //   0=none 1=safe 2=alert 3=danger (the device
                           //   computes it so the app shows the same colour)
     uint8_t targets;      // live target count
 };
-static_assert(sizeof(BleOwnShip) == 12, "BleOwnShip size");
+static_assert(sizeof(BleOwnShip) == 14, "BleOwnShip size");
 
 // One AIS target. Each live target is notified once per publish cycle; the
-// central keys by MMSI and expires entries on its own.
+// central keys by MMSI and expires entries on its own. With the name field
+// this is 38 B, so the link needs an ATT MTU ≥ 41 (iOS negotiates ~185).
 struct __attribute__((packed)) BleTarget {
     uint32_t mmsi;
     int32_t  lat_e7;       // INT32_MIN = no position
@@ -44,8 +46,9 @@ struct __attribute__((packed)) BleTarget {
     int16_t  cog_deg10;    // 0.1 deg true; INT16_MIN = n/a
     uint8_t  ship_type;    // AIS typeOfShip (0 = unknown)
     uint8_t  age_s;        // seconds since last heard (clamped 255)
+    char     name[20];     // NUL-padded AIS name; name[0]==0 if unknown
 };
-static_assert(sizeof(BleTarget) == 18, "BleTarget size");
+static_assert(sizeof(BleTarget) == 38, "BleTarget size");
 
 // Host (iPhone) GPS, written by the central to the GPS characteristic so the
 // device can use the phone's position + motion as own ship before the LC76G

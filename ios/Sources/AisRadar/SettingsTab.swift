@@ -42,7 +42,8 @@ struct SettingsTab: View {
                         Spacer()
                         Text("\(model.settings.depthThreshM) m").foregroundStyle(.secondary)
                     }
-                    Slider(value: depthBinding, in: 0...30, step: 1)
+                    Slider(value: depthBinding, in: 0...30, step: 1,
+                           onEditingChanged: { editing in if !editing { model.pushSettings() } })
                 } header: {
                     Text("Chart overlay")
                 } footer: {
@@ -58,8 +59,11 @@ struct SettingsTab: View {
         Binding(get: { model.layerOn(l) }, set: { model.setLayer(l, $0) })
     }
     private var depthBinding: Binding<Double> {
+        // Update locally while dragging (radar follows live); the Slider's
+        // onEditingChanged pushes to the device on release — pushing on every
+        // tick made the echo fight the drag and flicker.
         Binding(get: { Double(model.settings.depthThreshM) },
-                set: { model.settings.depthThreshM = Int($0); model.pushSettings() })
+                set: { model.settings.depthThreshM = Int($0) })
     }
 
     private func row(_ label: String, _ value: String) -> some View {

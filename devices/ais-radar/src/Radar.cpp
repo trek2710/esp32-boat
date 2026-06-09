@@ -172,7 +172,6 @@ double niceStepNm(double t) {
 // with coastline + shipping lanes as lines on top. Equirectangular projection
 // (cheap, exact enough at radar ranges) + range-clip. Two passes so the line
 // work lands on top of the area fills.
-int g_chSeg = 0;            // chart features drawn last frame (status line)
 lv_point_t g_poly[600];     // scratch for one projected feature
 
 // DRVAL1 (area min depth, m) -> fill colour. false for water at/beyond the
@@ -206,9 +205,10 @@ uint16_t projectPoly(const chart::Feature& f, double ownLat, double ownLon,
     return n;
 }
 
-// Even-odd scanline fill straight into the canvas buffer. Bounded to the
-// screen and crash-proof, unlike lv_canvas_draw_polygon on raw CM93 rings
-// (concave / self-intersecting / far off-canvas points).
+// Non-zero-winding scanline fill straight into the canvas buffer. Bounded to
+// the screen and crash-proof, unlike lv_canvas_draw_polygon on raw CM93 rings
+// (concave / self-intersecting / far off-canvas points). Non-zero (not
+// even-odd) so self-intersecting rings fill solid instead of poking holes.
 void fillPoly(uint16_t n, lv_color_t col) {
     if (n < 3 || !g_buf) return;
     int ymin = kH, ymax = 0;
@@ -218,27 +218,35 @@ void fillPoly(uint16_t n, lv_color_t col) {
     }
     if (ymin < 0) ymin = 0;
     if (ymax > kH - 1) ymax = kH - 1;
+    struct Cx { float x; int dir; };
     for (int y = ymin; y <= ymax; ++y) {
-        float xs[48]; int m = 0;
+        Cx xs[64]; int m = 0;
         for (uint16_t i = 0, j = n - 1; i < n; j = i++) {
             const int yi = g_poly[i].y, yj = g_poly[j].y;
-            if ((yi <= y && yj > y) || (yj <= y && yi > y)) {
-                const float x = g_poly[i].x +
-                    (float)(y - yi) / (float)(yj - yi) * (g_poly[j].x - g_poly[i].x);
-                if (m < 48) xs[m++] = x;
-            }
+            int dir;
+            if (yi <= y && yj > y) dir = 1;
+            else if (yj <= y && yi > y) dir = -1;
+            else continue;
+            const float x = g_poly[i].x +
+                (float)(y - yi) / (float)(yj - yi) * (g_poly[j].x - g_poly[i].x);
+            if (m < 64) { xs[m].x = x; xs[m].dir = dir; ++m; }
         }
-        for (int a = 1; a < m; ++a) {     // insertion sort the crossings
-            const float v = xs[a]; int b = a - 1;
-            while (b >= 0 && xs[b] > v) { xs[b + 1] = xs[b]; --b; }
+        for (int a = 1; a < m; ++a) {           // insertion sort crossings by x
+            const Cx v = xs[a]; int b = a - 1;
+            while (b >= 0 && xs[b].x > v.x) { xs[b + 1] = xs[b]; --b; }
             xs[b + 1] = v;
         }
         lv_color_t* row = g_buf + (size_t)y * kW;
-        for (int k = 0; k + 1 < m; k += 2) {
-            int x0 = (int)std::ceil(xs[k]), x1 = (int)std::floor(xs[k + 1]);
-            if (x0 < 0) x0 = 0;
-            if (x1 > kW - 1) x1 = kW - 1;
-            for (int x = x0; x <= x1; ++x) row[x] = col;
+        int wind = 0; float x0 = 0;
+        for (int k = 0; k < m; ++k) {
+            const int prev = wind; wind += xs[k].dir;
+            if (prev == 0 && wind != 0) x0 = xs[k].x;          // span opens
+            else if (prev != 0 && wind == 0) {                 // span closes
+                int a0 = (int)std::ceil(x0), a1 = (int)std::floor(xs[k].x);
+                if (a0 < 0) a0 = 0;
+                if (a1 > kW - 1) a1 = kW - 1;
+                for (int x = a0; x <= a1; ++x) row[x] = col;
+            }
         }
     }
 }
@@ -249,42 +257,47 @@ void strokePoly(uint16_t n, lv_color_t col, int w) {
 }
 
 void drawChart(double ownLat, double ownLon, double scale, double rangeNm) {
-    g_chSeg = 0;
     if (!chart::ensureCell(ownLat, ownLon)) return;
     const DeviceSettings& ds = devsettings::get();
     const double coslat = std::cos(ownLat * kD2R);
     const double clip   = rangeNm * 1.25;
-
     const lv_color_t sand    = lv_color_hex(0xE6D9A8);   // land
     const lv_color_t coastc  = lv_color_hex(0x35434F);   // coastline
     const lv_color_t tssGrey = lv_color_hex(0x8C949C);   // shipping lanes
-
-    // Pass 1 — filled areas (depth bands + land) under the lines.
-    chart::rewind();
     chart::Feature f;
-    while (chart::next(f)) {
-        if (!(ds.chartLayers & (1 << f.layer)) || !(f.flags & 0x01)) continue;
-        lv_color_t col;
-        if (f.layer == CHART_DEPTH) {
+
+    // Pass 1 — depth bands (bottom layer).
+    if (ds.chartLayers & (1 << CHART_DEPTH)) {
+        chart::rewind();
+        while (chart::next(f)) {
+            if (f.layer != CHART_DEPTH || !(f.flags & 0x01)) continue;
+            lv_color_t col;
             if (!depthBandColor(f.depth, ds.depthThreshM, &col)) continue;
-        } else if (f.layer == CHART_LAND) {
-            col = sand;
-        } else continue;
-        bool anyIn;
-        const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
-        if (anyIn) { fillPoly(n, col); ++g_chSeg; }
+            bool anyIn;
+            const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
+            if (anyIn) fillPoly(n, col);
+        }
     }
-    // Pass 2 — coastline + shipping lanes on top.
+    // Pass 2 — land on top of the water.
+    if (ds.chartLayers & (1 << CHART_LAND)) {
+        chart::rewind();
+        while (chart::next(f)) {
+            if (f.layer != CHART_LAND || !(f.flags & 0x01)) continue;
+            bool anyIn;
+            const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
+            if (anyIn) fillPoly(n, sand);
+        }
+    }
+    // Pass 3 — coastline + shipping lanes on top.
     chart::rewind();
     while (chart::next(f)) {
-        if (!(ds.chartLayers & (1 << f.layer))) continue;
         lv_color_t col;
-        if (f.layer == CHART_COASTLINE) col = coastc;
-        else if (f.layer == CHART_TSS)  col = tssGrey;
+        if (f.layer == CHART_COASTLINE && (ds.chartLayers & (1 << CHART_COASTLINE))) col = coastc;
+        else if (f.layer == CHART_TSS && (ds.chartLayers & (1 << CHART_TSS))) col = tssGrey;
         else continue;
         bool anyIn;
         const uint16_t n = projectPoly(f, ownLat, ownLon, scale, coslat, clip, &anyIn);
-        if (anyIn) { strokePoly(n, col, 2); ++g_chSeg; }
+        if (anyIn) strokePoly(n, col, 2);
     }
 }
 

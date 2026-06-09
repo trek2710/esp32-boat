@@ -8,11 +8,11 @@ struct AisListView: View {
     let own: OwnShip
 
     private var rows: [(t: AisTarget, ev: TargetEval)] {
-        targets.map { ($0, evaluateTarget($0, own: own)) }
-            .sorted { a, b in
-                a.ev.threat != b.ev.threat ? a.ev.threat > b.ev.threat
-                                           : a.ev.rangeNm < b.ev.rangeNm
-            }
+        let evaluated = targets.map { (t: $0, ev: evaluateTarget($0, own: own)) }
+        return evaluated.sorted { a, b in
+            if a.ev.threat != b.ev.threat { return a.ev.threat > b.ev.threat }
+            return a.ev.rangeNm < b.ev.rangeNm
+        }
     }
 
     var body: some View {
@@ -39,9 +39,9 @@ struct AisRow: View {
         HStack(spacing: 10) {
             Circle().fill(threatMarkColor(ev.threat)).frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(shipTypeName(t.shipType)) · \(t.mmsi)")
-                    .font(.subheadline.weight(.semibold))
-                Text(motion).font(.caption).foregroundStyle(.secondary)
+                Text(targetLabel(t)).font(.subheadline.weight(.semibold))
+                Text("\(shipTypeName(t.shipType)) · \(motion)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {

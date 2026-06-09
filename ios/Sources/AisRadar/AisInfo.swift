@@ -32,6 +32,11 @@ func shipTypeIcon(_ t: UInt8) -> ShipIcon {
     }
 }
 
+// Prefer the AIS name; fall back to type + short MMSI when it's unknown.
+func targetLabel(_ t: AisTarget) -> String {
+    t.name.isEmpty ? "\(shipTypeName(t.shipType)) \(t.mmsi % 100000)" : t.name
+}
+
 struct TargetEval {
     var threat: Int            // 0 none,1 safe,2 alert,3 danger
     var rangeNm: Double
@@ -58,12 +63,17 @@ func evaluateTarget(_ t: AisTarget, own: OwnShip) -> TargetEval {
         let d2r = Double.pi / 180, kn2ms = 0.514444
         let e = (t.lon - olon) * d2r * 6_371_000 * cos(olat * d2r)
         let n = (t.lat - olat) * d2r * 6_371_000
-        let tVe = sog * kn2ms * sin(cog * d2r), tVn = sog * kn2ms * cos(cog * d2r)
-        let vv = tVe * tVe + tVn * tVn
+        let oSog = own.sogKn ?? -1, oCog = own.cogDeg ?? -1
+        let ownMoving = oSog > 0.2 && oCog >= 0
+        let oVe = ownMoving ? oSog * kn2ms * sin(oCog * d2r) : 0
+        let oVn = ownMoving ? oSog * kn2ms * cos(oCog * d2r) : 0
+        let rve = sog * kn2ms * sin(cog * d2r) - oVe
+        let rvn = sog * kn2ms * cos(cog * d2r) - oVn
+        let vv = rve * rve + rvn * rvn
         if vv > 1e-6 {
-            let tcpa = -(e * tVe + n * tVn) / vv
+            let tcpa = -(e * rve + n * rvn) / vv
             if tcpa > 0 {
-                let ce = e + tVe * tcpa, cn = n + tVn * tcpa
+                let ce = e + rve * tcpa, cn = n + rvn * tcpa
                 let cpa = (ce * ce + cn * cn).squareRoot()
                 cpaNm = cpa / 1852.0; tcpaSec = tcpa
                 if tcpa < 360 && cpa < 185 { threat = 3 }

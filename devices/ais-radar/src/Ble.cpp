@@ -40,7 +40,8 @@ SettingsCb g_setCb;
 
 HostGps  g_host;
 uint32_t g_hostMs = 0;
-constexpr uint32_t kHostFreshMs = 5000;
+constexpr uint32_t kHostFreshMs = 30000;   // keep using the phone fix across
+                                           // normal GPS update gaps (no bench flip-flop)
 
 double e7d(int32_t v)  { return (v == INT32_MIN) ? NAN : v / 1e7; }
 double d10d(int16_t v) { return (v == INT16_MIN) ? NAN : v / 10.0; }
@@ -80,6 +81,7 @@ int16_t d10(double v)  { return (int16_t)lround(v * 10.0); }
 
 void begin() {
     NimBLEDevice::init(AISRADAR_BLE_NAME);
+    NimBLEDevice::setMTU(247);                  // BleTarget is 38 B → need MTU ≥ 41
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);
     NimBLEServer* srv = NimBLEDevice::createServer();
     srv->setCallbacks(&g_cb);
@@ -107,7 +109,7 @@ void begin() {
 }
 
 void publish(AisTargetStore& store, double ownLat, double ownLon,
-             double ownCogDeg, bool haveFix, int threatLevel) {
+             double ownCogDeg, double ownSogKn, bool haveFix, int threatLevel) {
     if (!g_connected) return;
 
     AisTarget t[AisTargetStore::CAPACITY];
@@ -120,6 +122,7 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     o.lat_e7    = e7(ownLat);
     o.lon_e7    = e7(ownLon);
     o.cog_deg10 = std::isnan(ownCogDeg) ? INT16_MIN : d10(ownCogDeg);
+    o.sog_kn10  = std::isnan(ownSogKn) ? INT16_MIN : d10(ownSogKn);
     o.flags     = (haveFix ? 0x01 : 0x00)
                 | (uint8_t)((threatLevel & 0x03) << 1);
     o.targets   = (uint8_t)n;
@@ -151,6 +154,7 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
         bt.ship_type = t[i].vessel_type;
         const uint32_t age = (now - t[i].last_seen_ms) / 1000;
         bt.age_s     = age > 255 ? 255 : (uint8_t)age;
+        memcpy(bt.name, t[i].name, sizeof(bt.name));   // 20 of the 21 NUL-padded chars
         g_tgt->setValue((uint8_t*)&bt, sizeof(bt));
         g_tgt->notify();
         delay(6);   // small gap so back-to-back notifies aren't dropped

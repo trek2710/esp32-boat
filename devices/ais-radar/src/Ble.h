@@ -25,7 +25,7 @@ bool hostGps(HostGps* out);
 // threatLevel (0-3, from radar::assessWorst) is packed into the own-ship
 // flags so the app shows the same background colour.
 void publish(AisTargetStore& store, double ownLat, double ownLon,
-             double ownCogDeg, bool haveFix, int threatLevel);
+             double ownCogDeg, double ownSogKn, bool haveFix, int threatLevel);
 
 bool connected();
 

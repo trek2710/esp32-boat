@@ -6,6 +6,7 @@ struct OwnShip {
     var lat: Double?
     var lon: Double?
     var cogDeg: Double?
+    var sogKn: Double?           // own speed (for CPA); nil = n/a
     var hasFix: Bool = false
     var threat: Int = 0          // 0=none 1=safe 2=alert 3=danger (from device)
     var targetCount: Int = 0
@@ -19,6 +20,7 @@ struct AisTarget: Identifiable {
     var sogKn: Double?
     var cogDeg: Double?
     var shipType: UInt8
+    var name: String
     var lastSeen: Date
     var id: UInt32 { mmsi }
 }
@@ -78,23 +80,23 @@ final class RadarModel: ObservableObject {
     private let lifetime: TimeInterval = 12
 
     func applyOwn(_ d: Data) {
-        guard d.count >= 12 else { return }
-        let lat = Double(d.i32le(0)) / 1e7
-        let lon = Double(d.i32le(4)) / 1e7
-        let cogRaw = d.i16le(8)
-        own.lat = lat
-        own.lon = lon
+        guard d.count >= 14 else { return }
+        let cogRaw = d.i16le(8), sogRaw = d.i16le(10)
+        own.lat = Double(d.i32le(0)) / 1e7
+        own.lon = Double(d.i32le(4)) / 1e7
         own.cogDeg = (cogRaw == Int16.min) ? nil : Double(cogRaw) / 10.0
-        let flags = d.u8(10)
+        own.sogKn = (sogRaw == Int16.min) ? nil : Double(sogRaw) / 10.0
+        let flags = d.u8(12)
         own.hasFix = (flags & 0x01) != 0
         own.threat = Int((flags >> 1) & 0x03)
-        own.targetCount = Int(d.u8(11))
+        own.targetCount = Int(d.u8(13))
     }
 
     func applyTarget(_ d: Data) {
-        guard d.count >= 18 else { return }
-        let sogRaw = d.i16le(12)
-        let cogRaw = d.i16le(14)
+        guard d.count >= 38 else { return }
+        let sogRaw = d.i16le(12), cogRaw = d.i16le(14)
+        var nameBytes: [UInt8] = []
+        for k in 18..<38 { let c = d.u8(k); if c == 0 { break }; nameBytes.append(c) }
         let t = AisTarget(
             mmsi: d.u32le(0),
             lat: Double(d.i32le(4)) / 1e7,
@@ -102,6 +104,8 @@ final class RadarModel: ObservableObject {
             sogKn: (sogRaw == Int16.min) ? nil : Double(sogRaw) / 10.0,
             cogDeg: (cogRaw == Int16.min) ? nil : Double(cogRaw) / 10.0,
             shipType: d.u8(16),
+            name: String(bytes: nameBytes, encoding: .ascii)?
+                .trimmingCharacters(in: .whitespaces) ?? "",
             lastSeen: Date())
         if let i = targets.firstIndex(where: { $0.mmsi == t.mmsi }) { targets[i] = t }
         else { targets.append(t) }

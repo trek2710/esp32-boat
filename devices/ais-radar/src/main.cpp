@@ -108,11 +108,11 @@ static Own ownShip() {
     return { kBenchLat, kBenchLon, NAN, 0.0, false };     // bench fallback
 }
 
-// Bench test targets: three Class-B vessels showing the three threat modes —
-// safe (dark), alert (yellow, fast & near), danger (red, on a collision CPA).
-// Re-stamped each call so they never evict. Go to the AMOLED and, via
-// ble::publish, the iOS app.
-static void injectTestTargets(double ownLat, double ownLon) {
+// Bench test targets: three Class-B vessels at FIXED positions near the bench
+// (absolute, like real AIS — they don't follow own ship). Showing the three
+// threat modes when own ship is at the bench. Re-stamped each call so they
+// never evict. Go to the AMOLED and, via ble::publish, the iOS app.
+static void injectTestTargets() {
     struct T { uint32_t mmsi; const char* nm; uint8_t type;
                float sog, cog; double dLat, dLon; };
     static const T ts[] = {
@@ -124,7 +124,7 @@ static void injectTestTargets(double ownLat, double ownLon) {
         decoder.store().recordName(t.mmsi, 'B', t.nm);
         decoder.store().recordType(t.mmsi, 'B', t.type);
         decoder.store().recordPosition(t.mmsi, 'B', t.sog, t.cog);
-        decoder.store().recordLatLon(t.mmsi, ownLat + t.dLat, ownLon + t.dLon);
+        decoder.store().recordLatLon(t.mmsi, kBenchLat + t.dLat, kBenchLon + t.dLon);
     }
 }
 
@@ -164,7 +164,7 @@ void loop() {
     if (now - lastDraw >= 500) {
         lastDraw = now;
         Own o = ownShip();
-        if (kInjectTestTarget) injectTestTargets(o.lat, o.lon);
+        if (kInjectTestTarget) injectTestTargets();
         decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
         radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
         g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);
@@ -172,7 +172,7 @@ void loop() {
     if (now - lastBle >= 1000) {
         lastBle = now;
         Own o = ownShip();
-        ble::publish(decoder.store(), o.lat, o.lon, o.cog, o.realFix, g_threat);
+        ble::publish(decoder.store(), o.lat, o.lon, o.cog, o.sog, o.realFix, g_threat);
     }
     if (now - lastStat >= 2000) {
         lastStat = now;

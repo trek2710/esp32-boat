@@ -60,16 +60,21 @@ struct RadarView: View {
             var cc = ctx
             cc.clip(to: disc(center, r))
 
-            // Pass 1 — filled areas (depth bands + land).
-            for f in chart where f.isArea {
-                let col: Color?
-                if f.layer == ChartLayer.depth.rawValue, on(.depth) { col = depthColor(f.depth) }
-                else if f.layer == ChartLayer.land.rawValue, on(.land) { col = sand }
-                else { col = nil }
-                guard let c = col,
-                      let path = featurePath(f, clip, olat, olon, coslat, proj, close: true)
-                else { continue }
-                cc.fill(path, with: .color(c))
+            // Pass 1a — depth bands (bottom). 1b — land on top of the water.
+            if on(.depth) {
+                for f in chart where f.isArea && f.layer == ChartLayer.depth.rawValue {
+                    guard let c = depthColor(f.depth),
+                          let path = featurePath(f, clip, olat, olon, coslat, proj, close: true)
+                    else { continue }
+                    cc.fill(path, with: .color(c))
+                }
+            }
+            if on(.land) {
+                for f in chart where f.isArea && f.layer == ChartLayer.land.rawValue {
+                    guard let path = featurePath(f, clip, olat, olon, coslat, proj, close: true)
+                    else { continue }
+                    cc.fill(path, with: .color(sand))
+                }
             }
             // Pass 2 — coastline + shipping lanes on top.
             for f in chart {
@@ -110,8 +115,8 @@ struct RadarView: View {
                     cc.stroke(stick, with: .color(col), lineWidth: 1.5)
                 }
                 cc.fill(iconPath(t, at: p), with: .color(col))
-                let label = "\(shipTypeName(t.shipType)) \(t.mmsi % 100000)"
-                cc.draw(Text(label).font(.system(size: 11, weight: .semibold)).foregroundColor(labelC),
+                cc.draw(Text(targetLabel(t)).font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(labelC),
                         at: CGPoint(x: p.x + 10, y: p.y - 9), anchor: .leading)
             }
 
