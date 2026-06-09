@@ -42,8 +42,9 @@ bool ensureCell(double lat, double lon) {
     g_valid = false;
     if (g_buf) { heap_caps_free(g_buf); g_buf = nullptr; }
 
-    char path[40];
-    snprintf(path, sizeof(path), "/sdcard/tiles/%08u.c93t", (unsigned)id);
+    // Path is relative to the card root — SD_MMC adds the "/sdcard" mount.
+    char path[32];
+    snprintf(path, sizeof(path), "/tiles/%08u.c93t", (unsigned)id);
     File f = SD_MMC.open(path, FILE_READ);
     if (!f) { Serial.printf("[chart] no tile %s\n", path); return false; }
 

@@ -26,6 +26,11 @@ static constexpr uint32_t kTargetLifeMs = 10000; // drop targets after 10 s
 static constexpr double kBenchLat = 55.76196;
 static constexpr double kBenchLon = 12.62900;
 
+// Bench-only: inject a synthetic AIS target ~3 NM out so the radar has a real
+// scale to auto-fit (and the chart shows at that scale) without live traffic.
+// Set false for real use.
+static constexpr bool kInjectTestTarget = true;
+
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
 
@@ -103,6 +108,16 @@ static Own ownShip() {
     return { kBenchLat, kBenchLon, NAN, 0.0, false };     // bench fallback
 }
 
+// Bench test target: a Class-B vessel ~3 NM NNE of own ship, moving. Re-stamped
+// each call so it never evicts. Goes to the AMOLED and (via ble::publish) iOS.
+static void injectTestTarget(double ownLat, double ownLon) {
+    const uint32_t mmsi = 992110001;
+    decoder.store().recordName(mmsi, 'B', "TESTSHIP");
+    decoder.store().recordType(mmsi, 'B', 37);            // pleasure craft
+    decoder.store().recordPosition(mmsi, 'B', 6.0f, 210.0f);  // 6 kn, COG 210
+    decoder.store().recordLatLon(mmsi, ownLat + 0.048, ownLon + 0.030);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(800);
@@ -138,8 +153,9 @@ void loop() {
 
     if (now - lastDraw >= 500) {
         lastDraw = now;
-        decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
         Own o = ownShip();
+        if (kInjectTestTarget) injectTestTarget(o.lat, o.lon);
+        decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
         radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
         g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);
     }

@@ -288,14 +288,15 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     char pos[40]; snprintf(pos, sizeof(pos), "%.5f\n%.5f", ownLat, ownLon);
     text(10, 32, pos, ownc, &lv_font_montserrat_12);
 
-    // Chart status line (diagnostic): tile cell, feature count, drawn segments.
+    // Chart status (diagnostic) — kept on the vertical axis so it stays inside
+    // the round display (the corners are off-glass).
     char cs[44];
     if (chart::featureCount() > 0)
-        snprintf(cs, sizeof(cs), "chart %08u %uf %dseg", (unsigned)chart::cellId(),
+        snprintf(cs, sizeof(cs), "chart %uf %dseg",
                  (unsigned)chart::featureCount(), g_chSeg);
     else
-        snprintf(cs, sizeof(cs), "chart: NO TILE %08u", (unsigned)chart::cellId());
-    text(10, kH - 22, cs, txtc, &lv_font_montserrat_12);
+        snprintf(cs, sizeof(cs), "NO TILE %08u", (unsigned)chart::cellId());
+    text(kCx - 55, kCy + 60, cs, txtc, &lv_font_montserrat_12);
 
     lv_obj_invalidate(g_canvas);
 }
