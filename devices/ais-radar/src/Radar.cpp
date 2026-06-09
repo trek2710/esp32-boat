@@ -177,11 +177,41 @@ uint16_t projectPoly(const chart::Feature& f, double ownLat, double ownLon,
     return n;
 }
 
+// Even-odd scanline fill straight into the canvas buffer. Bounded to the
+// screen and crash-proof, unlike lv_canvas_draw_polygon on raw CM93 rings
+// (concave / self-intersecting / far off-canvas points).
 void fillPoly(uint16_t n, lv_color_t col) {
-    if (n < 3) return;
-    lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
-    d.bg_color = col; d.bg_opa = LV_OPA_COVER;
-    lv_canvas_draw_polygon(g_canvas, g_poly, n, &d);
+    if (n < 3 || !g_buf) return;
+    int ymin = kH, ymax = 0;
+    for (uint16_t i = 0; i < n; ++i) {
+        if (g_poly[i].y < ymin) ymin = g_poly[i].y;
+        if (g_poly[i].y > ymax) ymax = g_poly[i].y;
+    }
+    if (ymin < 0) ymin = 0;
+    if (ymax > kH - 1) ymax = kH - 1;
+    for (int y = ymin; y <= ymax; ++y) {
+        float xs[48]; int m = 0;
+        for (uint16_t i = 0, j = n - 1; i < n; j = i++) {
+            const int yi = g_poly[i].y, yj = g_poly[j].y;
+            if ((yi <= y && yj > y) || (yj <= y && yi > y)) {
+                const float x = g_poly[i].x +
+                    (float)(y - yi) / (float)(yj - yi) * (g_poly[j].x - g_poly[i].x);
+                if (m < 48) xs[m++] = x;
+            }
+        }
+        for (int a = 1; a < m; ++a) {     // insertion sort the crossings
+            const float v = xs[a]; int b = a - 1;
+            while (b >= 0 && xs[b] > v) { xs[b + 1] = xs[b]; --b; }
+            xs[b + 1] = v;
+        }
+        lv_color_t* row = g_buf + (size_t)y * kW;
+        for (int k = 0; k + 1 < m; k += 2) {
+            int x0 = (int)std::ceil(xs[k]), x1 = (int)std::floor(xs[k + 1]);
+            if (x0 < 0) x0 = 0;
+            if (x1 > kW - 1) x1 = kW - 1;
+            for (int x = x0; x <= x1; ++x) row[x] = col;
+        }
+    }
 }
 
 void strokePoly(uint16_t n, lv_color_t col, int w) {
