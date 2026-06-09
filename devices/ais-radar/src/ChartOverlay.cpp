@@ -65,6 +65,8 @@ bool ensureCell(double lat, double lon) {
 }
 
 bool valid() { return g_valid; }
+uint32_t cellId() { return g_cell; }
+uint32_t featureCount() { return g_valid ? g_feat : 0; }
 
 void rewind() { g_cur = kHdr; g_idx = 0; }
 

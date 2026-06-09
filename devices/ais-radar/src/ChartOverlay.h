@@ -15,6 +15,10 @@ bool ensureCell(double lat, double lon);
 
 bool valid();
 
+// Diagnostics for the on-screen status line.
+uint32_t cellId();        // cell id last looked up
+uint32_t featureCount();  // features in the loaded tile (0 if none)
+
 // One chart feature. pts points into the loaded tile buffer: npts pairs of
 // (lat, lon) float32. layer is a CHART_* id; flags bit0 = closed area.
 struct Feature {

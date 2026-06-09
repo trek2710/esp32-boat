@@ -82,11 +82,14 @@ Threat assess(const AisTarget& t, double ownLat, double ownLon,
     return level;
 }
 
+// Threat is shown as a thick ring around the outside (not a full-screen tint)
+// so the dark background stays clear for the chart overlay. Brighter, more
+// saturated than the old fill colours so the ring reads at a glance.
 lv_color_t bgFor(Threat w) {
     switch (w) {
-        case Threat::Safe:   return lv_color_hex(0x06330F);  // green
-        case Threat::Alert:  return lv_color_hex(0x7A7A00);  // yellow (R=G, not amber)
-        case Threat::Danger: return lv_color_hex(0x7A0000);  // red
+        case Threat::Safe:   return lv_color_hex(0x12B021);  // green
+        case Threat::Alert:  return lv_color_hex(0xC8C800);  // yellow (R=G, not amber)
+        case Threat::Danger: return lv_color_hex(0xE00000);  // red
         default:             return lv_color_black();
     }
 }
@@ -136,7 +139,10 @@ double niceStepNm(double t) {
 // ranges) + range-clip so only near features cost draw calls. Layers are
 // gated by the chart_layers bitmask; depth areas shallower than the runtime
 // threshold are tinted.
+int g_chSeg = 0;   // chart segments drawn last frame (for the status line)
+
 void drawChart(double ownLat, double ownLon, double scale, double rangeNm) {
+    g_chSeg = 0;
     if (!chart::ensureCell(ownLat, ownLon)) return;
     const DeviceSettings& ds = devsettings::get();
     const double coslat = std::cos(ownLat * kD2R);
@@ -166,7 +172,7 @@ void drawChart(double ownLat, double ownLon, double scale, double rangeNm) {
             const int x = kCx + (int)std::lround(dE * scale);
             const int y = kCy - (int)std::lround(dN * scale);
             const bool in = std::fabs(dN) < clip && std::fabs(dE) < clip;
-            if (prev && (in || prevIn)) line(xp, yp, x, y, col, 1);
+            if (prev && (in || prevIn)) { line(xp, yp, x, y, col, 1); ++g_chSeg; }
             xp = x; yp = y; prev = true; prevIn = in;
         }
     }
@@ -229,7 +235,13 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     const Threat worst = (n == 0) ? Threat::None
         : (Threat)assessWorst(store, ownLat, ownLon, ownCogDeg, ownSogKn);
-    lv_canvas_fill_bg(g_canvas, bgFor(worst), LV_OPA_COVER);
+    lv_canvas_fill_bg(g_canvas, lv_color_black(), LV_OPA_COVER);  // dark for the chart
+
+    // With the chart on, don't zoom tighter than ~2 NM, so nearby coast/depth
+    // is visible even when no AIS targets are driving the range.
+    const bool chartOn = devsettings::get().chartLayers != 0
+                         && chart::ensureCell(ownLat, ownLon);
+    if (chartOn && maxNm < 1.5) maxNm = 1.5;
 
     const double rangeNm = niceStepNm(maxNm * 1.15);
     const double scale = kR / rangeNm;
@@ -267,10 +279,23 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     }
 
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
+
+    // Threat as a thick ring around the outer edge (replaces the bg tint).
+    if (worst != Threat::None) ring(kH / 2 - 10, bgFor(worst), 16);
+
     char hud[16]; snprintf(hud, sizeof(hud), "%u tgt", (unsigned)n);
     text(10, 10, hud, txtc, &lv_font_montserrat_16);
     char pos[40]; snprintf(pos, sizeof(pos), "%.5f\n%.5f", ownLat, ownLon);
     text(10, 32, pos, ownc, &lv_font_montserrat_12);
+
+    // Chart status line (diagnostic): tile cell, feature count, drawn segments.
+    char cs[44];
+    if (chart::featureCount() > 0)
+        snprintf(cs, sizeof(cs), "chart %08u %uf %dseg", (unsigned)chart::cellId(),
+                 (unsigned)chart::featureCount(), g_chSeg);
+    else
+        snprintf(cs, sizeof(cs), "chart: NO TILE %08u", (unsigned)chart::cellId());
+    text(10, kH - 22, cs, txtc, &lv_font_montserrat_12);
 
     lv_obj_invalidate(g_canvas);
 }
