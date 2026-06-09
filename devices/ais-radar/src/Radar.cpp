@@ -149,13 +149,14 @@ lv_point_t g_poly[600];     // scratch for one projected feature
 
 // DRVAL1 (area min depth, m) -> fill colour. false for water at/beyond the
 // deep-water cutoff (left as the pale background).
+// Shallow = light blue, deeper = darker blue; offshore (>= cutoff) = white
+// background (deepest). No green for water.
 bool depthBandColor(float drval, uint8_t cutoff, lv_color_t* out) {
-    if (std::isnan(drval) || drval >= (float)cutoff) return false;
-    if      (drval <= 0.0f)  *out = lv_color_hex(0x8FCBA0);  // drying (green)
-    else if (drval <= 2.0f)  *out = lv_color_hex(0x4F97CE);  // 0–2 m  (darkest)
-    else if (drval <= 5.0f)  *out = lv_color_hex(0x86BCE2);  // 2–5 m
-    else if (drval <= 10.0f) *out = lv_color_hex(0xBCDDF2);  // 5–10 m
-    else                     *out = lv_color_hex(0xDCEDF9);  // 10 m–cutoff
+    if (std::isnan(drval) || drval >= (float)cutoff) return false;  // offshore (white)
+    if      (drval <= 1.0f)  *out = lv_color_hex(0xCFE6F5);  // shallowest — lightest
+    else if (drval <= 3.0f)  *out = lv_color_hex(0xA9CFEC);
+    else if (drval <= 6.0f)  *out = lv_color_hex(0x7DB2DF);
+    else                     *out = lv_color_hex(0x5491CB);  // deeper — darkest
     return true;
 }
 
