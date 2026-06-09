@@ -26,4 +26,8 @@ constexpr int16_t kLcdH   = 466;
 // reason on Serial) if any stage fails.
 bool begin();
 
+// Battery charge from the AXP2101 fuel gauge (0–100), or < 0 if unavailable /
+// no battery (e.g. running on USB power only).
+int batteryPercent();
+
 }  // namespace amoled

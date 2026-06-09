@@ -10,6 +10,7 @@ struct OwnShip {
     var hasFix: Bool = false
     var threat: Int = 0          // 0=none 1=safe 2=alert 3=danger (from device)
     var targetCount: Int = 0
+    var batteryPct: Int?         // ESP battery %, nil = unknown / on USB
     var hasPosition: Bool { lat != nil && lon != nil }
 }
 
@@ -99,6 +100,7 @@ final class RadarModel: ObservableObject {
         own.hasFix = (flags & 0x01) != 0
         own.threat = Int((flags >> 1) & 0x03)
         own.targetCount = Int(d.u8(13))
+        if d.count >= 15 { let b = d.u8(14); own.batteryPct = (b == 255) ? nil : Int(b) }
     }
 
     func applyTarget(_ d: Data) {

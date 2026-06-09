@@ -37,6 +37,13 @@ struct RadarTab: View {
                     Circle().fill(model.connected ? .green : .orange).frame(width: 10, height: 10)
                     Text(model.status).font(.caption)
                     Spacer()
+                    if let b = model.own.batteryPct {
+                        HStack(spacing: 3) {
+                            Image(systemName: batterySymbol(b))
+                            Text("\(b)%").font(.caption.monospacedDigit())
+                        }
+                        .foregroundStyle(b < 10 ? Color.red : Color.secondary)
+                    }
                     Text("\(model.targets.count) tgt").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
@@ -81,4 +88,14 @@ struct RadarTab: View {
 func niceStep(_ t: Double) -> Double {
     for v in [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 48] where v >= t { return v }
     return 48
+}
+
+func batterySymbol(_ p: Int) -> String {
+    switch p {
+    case ..<13: return "battery.0"
+    case ..<38: return "battery.25"
+    case ..<63: return "battery.50"
+    case ..<88: return "battery.75"
+    default:    return "battery.100"
+    }
 }

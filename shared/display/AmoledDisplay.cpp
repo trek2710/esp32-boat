@@ -87,4 +87,8 @@ bool begin() {
     return true;
 }
 
+int batteryPercent() {
+    return PMU.getBatteryPercent();
+}
+
 }  // namespace amoled

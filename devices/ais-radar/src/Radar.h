@@ -22,6 +22,6 @@ int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
 // (NaN → pointing up); ownSogKn (≤0 = stationary) feeds the collision test.
 // The background is tinted by the worst target threat (green/amber/red).
 void draw(AisTargetStore& store, double ownLat, double ownLon,
-          double ownCogDeg, double ownSogKn);
+          double ownCogDeg, double ownSogKn, int batteryPct);
 
 }  // namespace radar

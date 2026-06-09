@@ -112,7 +112,8 @@ void begin() {
 }
 
 void publish(AisTargetStore& store, double ownLat, double ownLon,
-             double ownCogDeg, double ownSogKn, bool haveFix, int threatLevel) {
+             double ownCogDeg, double ownSogKn, bool haveFix, int threatLevel,
+             int batteryPct) {
     if (!g_connected) return;
 
     AisTarget t[AisTargetStore::CAPACITY];
@@ -129,6 +130,7 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     o.flags     = (haveFix ? 0x01 : 0x00)
                 | (uint8_t)((threatLevel & 0x03) << 1);
     o.targets   = (uint8_t)n;
+    o.battery   = (batteryPct < 0 || batteryPct > 100) ? 255 : (uint8_t)batteryPct;
     g_own->setValue((uint8_t*)&o, sizeof(o));
     g_own->notify();
 

@@ -32,8 +32,9 @@ struct __attribute__((packed)) BleOwnShip {
                           //   0=none 1=safe 2=alert 3=danger (the device
                           //   computes it so the app shows the same colour)
     uint8_t targets;      // live target count
+    uint8_t battery;      // ESP battery %, 0–100; 255 = unknown / on USB power
 };
-static_assert(sizeof(BleOwnShip) == 14, "BleOwnShip size");
+static_assert(sizeof(BleOwnShip) == 15, "BleOwnShip size");
 
 // One AIS target. Each live target is notified once per publish cycle; the
 // central keys by MMSI and expires entries on its own. With the name field

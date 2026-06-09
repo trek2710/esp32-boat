@@ -330,7 +330,7 @@ void begin() {
 }
 
 void draw(AisTargetStore& store, double ownLat, double ownLon,
-          double ownCogDeg, double ownSogKn) {
+          double ownCogDeg, double ownSogKn, int batteryPct) {
     if (!g_canvas) return;
 
     // Light "chart" theme: dark, saturated marks that read on the pale chart.
@@ -442,6 +442,12 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     // Only warn if the chart tile is missing; nothing in the middle otherwise.
     if (chart::featureCount() == 0)
         textB(kCx - 40, kCy + 52, "NO CHART", txtc, &lv_font_montserrat_16);
+
+    // Low-battery warning (only shown below 10%).
+    if (batteryPct >= 0 && batteryPct < 10) {
+        char bt[20]; snprintf(bt, sizeof(bt), "BATT %d%%", batteryPct);
+        textB(kCx - 52, kCy - kR + 62, bt, lv_color_hex(0xE00000), &lv_font_montserrat_20);
+    }
 
     lv_obj_invalidate(g_canvas);
 }

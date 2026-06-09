@@ -40,6 +40,7 @@ static void feed(const char* sentence) {
 static uint32_t g_daisyBytes = 0;
 static uint32_t g_daisyLines = 0;
 static int      g_threat = 0;          // 0=none 1=safe 2=alert 3=danger
+static int      g_batt = -1;           // ESP battery % (AXP2101), <0 = unknown
 static char     g_line[120];
 static int      g_len = 0;
 
@@ -147,7 +148,7 @@ void setup() {
 }
 
 void loop() {
-    static uint32_t last = 0, lastDraw = 0, lastStat = 0, lastBle = 0;
+    static uint32_t last = 0, lastDraw = 0, lastStat = 0, lastBle = 0, lastBatt = 0;
     const uint32_t now = millis();
 
     daisyPoll();
@@ -158,18 +159,20 @@ void loop() {
     lv_tick_inc(now - last);
     last = now;
 
+    if (now - lastBatt >= 5000) { lastBatt = now; g_batt = amoled::batteryPercent(); }
+
     if (now - lastDraw >= 500) {
         lastDraw = now;
         Own o = ownShip();
         if (devsettings::get().testTargets) injectTestTargets();
         decoder.store().evictStale(kTargetLifeMs);   // 10 s lifetime
-        radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog);
+        radar::draw(decoder.store(), o.lat, o.lon, o.cog, o.sog, g_batt);
         g_threat = radar::assessWorst(decoder.store(), o.lat, o.lon, o.cog, o.sog);
     }
     if (now - lastBle >= 1000) {
         lastBle = now;
         Own o = ownShip();
-        ble::publish(decoder.store(), o.lat, o.lon, o.cog, o.sog, o.realFix, g_threat);
+        ble::publish(decoder.store(), o.lat, o.lon, o.cog, o.sog, o.realFix, g_threat, g_batt);
     }
     if (now - lastStat >= 2000) {
         lastStat = now;
