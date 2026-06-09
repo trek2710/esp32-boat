@@ -1,4 +1,6 @@
 reference/
 charts/
-*.cm93tiles
+tiles/
+intermediate.pkl
+*.c93t
 spike_out.geojson

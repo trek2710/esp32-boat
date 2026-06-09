@@ -51,7 +51,7 @@ def build_decode_table():
 
 
 def load_obj_dict(chart_root):
-    """CM93OBJ.DIC: 'CLASSNAME|classnum|geomtype' -> {classnum: name}."""
+    """CM93OBJ.DIC: 'CLASSNAME|classnum|geomtype|...' -> {classnum: name}."""
     for cand in ("CM93OBJ.DIC", "cm93obj.dic"):
         p = os.path.join(chart_root, cand)
         if os.path.exists(p):
@@ -62,6 +62,64 @@ def load_obj_dict(chart_root):
                     d[int(parts[1])] = parts[0].strip()
             return d
     return {}
+
+
+# aTYPE -> (value-type char, fixed byte size or None for variable)
+_ATYPE = {"aFLOAT": ("R", 4), "aBYTE": ("B", 1), "aSTRING": ("S", None),
+          "aCMPLX": ("C", None), "aLIST": ("L", None), "aWORD10": ("W", 2),
+          "aLONG": ("G", 4)}
+
+
+def load_attr_dict(chart_root):
+    """CM93ATTR.DIC: 'NAME|num|aTYPE|min|max' -> {num: (name, type_char)}."""
+    for cand in ("CM93ATTR.DIC", "cm93attr.dic"):
+        p = os.path.join(chart_root, cand)
+        if os.path.exists(p):
+            d = {}
+            for line in open(p, encoding="latin-1"):
+                if line.startswith(";"):
+                    continue
+                parts = [x.strip() for x in line.strip().split("|")]
+                if len(parts) >= 3 and parts[1].isdigit():
+                    tc = _ATYPE.get(parts[2], ("?", None))[0]
+                    d[int(parts[1])] = (parts[0], tc)
+            return d
+    return {}
+
+
+def decode_attr_block(buf, off, length, nattr, attr_dict):
+    """Walk a feature's attribute block -> {attr_name: value}. Self-contained
+    per feature (byte range known), so a bad type just stops this feature."""
+    out, p, end = {}, off, off + length
+    for _ in range(nattr):
+        if p >= end:
+            break
+        iattr = buf[p]; p += 1
+        name, tc = attr_dict.get(iattr, ("?%d" % iattr, "?"))
+        if tc == "R":
+            out[name] = struct.unpack_from("<f", buf, p)[0]; p += 4
+        elif tc == "G":
+            out[name] = struct.unpack_from("<i", buf, p)[0]; p += 4
+        elif tc == "W":
+            out[name] = struct.unpack_from("<H", buf, p)[0]; p += 2
+        elif tc == "B":
+            out[name] = buf[p]; p += 1
+        elif tc == "S":
+            s = p
+            while p < end and buf[p]:
+                p += 1
+            out[name] = buf[s:p].decode("latin-1"); p += 1
+        elif tc == "C":
+            p += 3; s = p
+            while p < end and buf[p]:
+                p += 1
+            out[name] = buf[s:p].decode("latin-1"); p += 1
+        elif tc == "L":
+            n = buf[p]; p += 1
+            out[name] = list(buf[p:p + n]); p += n
+        else:
+            break  # unknown type -> can't size; stop this block
+    return out
 
 
 # ---- CM93 cell-index / file-path math (Get_CM93_CellIndex + Is_CM93Cell_Present)
@@ -181,7 +239,35 @@ def decode_cell(path, decode_table):
     return dict(path=path, integrity=integrity, word0=word0,
                 bbox=(lat_min, lon_min, lat_max, lon_max),
                 counts=dict(vec=n_vec, p3d=n_p3d, p2d=n_p2d, feat=n_feat),
-                edges=edges, p2d=p2d, feats=feats, to_ll=to_ll, end=c.o, len=len(raw))
+                edges=edges, p2d=p2d, feats=feats, to_ll=to_ll, buf=buf,
+                end=c.o, len=len(raw))
+
+
+def build_features(cell, objd, attr_dict):
+    """Resolve every feature to {class, geom, points:[(lat,lon)], attrs:{}}.
+    geom: 'line' (2), 'area' (4), 'point' (1). 3D points (8) are skipped."""
+    to_ll, edges, p2d, buf = cell["to_ll"], cell["edges"], cell["p2d"], cell["buf"]
+    out = []
+    for otype, prim, geom, attrs in cell["feats"]:
+        cls = objd.get(otype, "?%d" % otype)
+        pts = []
+        if prim in (2, 4) and geom:                  # line / area: edge refs
+            for ref in geom:
+                idx = ref & 0x1fff
+                if idx < len(edges):
+                    pts.extend(to_ll(x, y) for (x, y) in edges[idx])
+            kind = "line" if prim == 2 else "area"
+        elif prim == 1 and geom and geom[0] == "p2d":  # 2D point
+            i = geom[1]
+            if i < len(p2d):
+                pts = [to_ll(*p2d[i])]
+            kind = "point"
+        else:
+            continue
+        a = decode_attr_block(buf, attrs[1], attrs[2], attrs[0], attr_dict) if attrs else {}
+        if pts:
+            out.append(dict(cls=cls, geom=kind, points=pts, attrs=a))
+    return out
 
 
 def build_lines(cell, class_filter):

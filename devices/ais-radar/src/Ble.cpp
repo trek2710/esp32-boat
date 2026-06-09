@@ -17,8 +17,10 @@ bool g_connected = false;
 
 void loadSettingsValue() {
     BleSettings s;
-    s.range_cap_nm  = devsettings::get().rangeCapNm;
-    s.hide_anchored = devsettings::get().hideAnchored;
+    s.range_cap_nm   = devsettings::get().rangeCapNm;
+    s.hide_anchored  = devsettings::get().hideAnchored;
+    s.depth_thresh_m = devsettings::get().depthThreshM;
+    s.chart_layers   = devsettings::get().chartLayers;
     if (g_set) g_set->setValue((uint8_t*)&s, sizeof(s));
 }
 
@@ -28,7 +30,8 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
         if (v.size() < sizeof(BleSettings)) return;
         BleSettings s;
         memcpy(&s, v.data(), sizeof(s));
-        devsettings::set(s.range_cap_nm, s.hide_anchored);
+        devsettings::set(s.range_cap_nm, s.hide_anchored,
+                         s.depth_thresh_m, s.chart_layers);
         loadSettingsValue();           // echo the clamped/applied value
         if (g_connected) g_set->notify();
     }

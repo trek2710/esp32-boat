@@ -31,10 +31,33 @@ struct SettingsTab: View {
                 } footer: {
                     Text("Applied on the device and the app. Targets beyond the range cap, or anchored/moored/aground, are hidden.")
                 }
+
+                Section {
+                    Toggle("Coastline", isOn: layerBinding(.coastline))
+                    Toggle("Depth shading", isOn: layerBinding(.depth))
+                    HStack {
+                        Text("Shallow depth")
+                        Spacer()
+                        Text("< \(model.settings.depthThreshM) m").foregroundStyle(.secondary)
+                    }
+                    Slider(value: depthBinding, in: 0...30, step: 1)
+                } header: {
+                    Text("Chart overlay")
+                } footer: {
+                    Text("Vector chart drawn under the radar. Depth areas shallower than the threshold are tinted; slide to change it live.")
+                }
             }
             .navigationTitle("Settings")
             .disabled(!model.connected)
         }
+    }
+
+    private func layerBinding(_ l: ChartLayer) -> Binding<Bool> {
+        Binding(get: { model.layerOn(l) }, set: { model.setLayer(l, $0) })
+    }
+    private var depthBinding: Binding<Double> {
+        Binding(get: { Double(model.settings.depthThreshM) },
+                set: { model.settings.depthThreshM = Int($0); model.pushSettings() })
     }
 
     private func row(_ label: String, _ value: String) -> some View {
@@ -49,10 +72,10 @@ struct SettingsTab: View {
     // which updates model.settings — so the bindings read from the model.
     private var rangeBinding: Binding<Int> {
         Binding(get: { model.settings.rangeCapNm },
-                set: { model.writeSettings(rangeCapNm: $0, hideAnchored: model.settings.hideAnchored) })
+                set: { model.settings.rangeCapNm = $0; model.pushSettings() })
     }
     private var hideAnchoredBinding: Binding<Bool> {
         Binding(get: { model.settings.hideAnchored },
-                set: { model.writeSettings(rangeCapNm: model.settings.rangeCapNm, hideAnchored: $0) })
+                set: { model.settings.hideAnchored = $0; model.pushSettings() })
     }
 }

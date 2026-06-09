@@ -60,8 +60,26 @@ static_assert(sizeof(BleHostGps) == 12, "BleHostGps size");
 
 // Device settings — read by the app on connect (current values), written by
 // the app to change them (the device persists to NVS), notified on change.
+// chart_layers is a bitmask over the chart tile's layer ids (see below) so
+// each overlay can be toggled; depth_thresh_m keeps the shallow-water shading
+// threshold a runtime control (DRVAL1 < threshold ⇒ shaded shallow).
 struct __attribute__((packed)) BleSettings {
     uint8_t range_cap_nm;     // hide AIS targets beyond this range
     uint8_t hide_anchored;    // 1 = hide anchored/moored/aground
+    uint8_t depth_thresh_m;   // shallow-water shading threshold, metres
+    uint8_t chart_layers;     // bit0 coastline,1 land,2 depth,3 depth-contour,
+                              //   4 TSS,5 buoys,6 lights
 };
-static_assert(sizeof(BleSettings) == 2, "BleSettings size");
+static_assert(sizeof(BleSettings) == 4, "BleSettings size");
+
+// Chart overlay layer ids — the bit index in BleSettings.chart_layers and the
+// layer byte in the .c93t tiles produced by tools/chart-transcode.
+enum {
+    CHART_COASTLINE = 0,
+    CHART_LAND      = 1,
+    CHART_DEPTH     = 2,   // DEPARE depth areas (carry DRVAL1)
+    CHART_DEPCNT    = 3,   // depth contours
+    CHART_TSS       = 4,
+    CHART_BUOYS     = 5,
+    CHART_LIGHTS    = 6,
+};

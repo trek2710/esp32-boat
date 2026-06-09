@@ -26,6 +26,13 @@ struct AisTarget: Identifiable {
 struct DeviceSettings {
     var rangeCapNm: Int = 24
     var hideAnchored: Bool = true
+    var depthThreshM: Int = 3        // chart shallow-water shading threshold (m)
+    var chartLayers: UInt8 = 0x05    // bit0 coastline,1 land,2 depth,3 depcnt,4 TSS,5 buoys,6 lights
+}
+
+// Chart layer bit positions (mirror CHART_* in shared/ble/AisRadarBle.h).
+enum ChartLayer: UInt8 {
+    case coastline = 0, land = 1, depth = 2, depcnt = 3, tss = 4, buoys = 5, lights = 6
 }
 
 @MainActor
@@ -36,20 +43,34 @@ final class RadarModel: ObservableObject {
     @Published var connected = false
     @Published var settings = DeviceSettings()
 
-    // Set by the app — writes a 2-byte BleSettings to the device.
+    // Set by the app — writes a 4-byte BleSettings to the device.
     var onWriteSettings: ((Data) -> Void)?
 
     func applySettings(_ d: Data) {
         guard d.count >= 2 else { return }
         settings.rangeCapNm = Int(d.u8(0))
         settings.hideAnchored = d.u8(1) != 0
+        if d.count >= 4 {
+            settings.depthThreshM = Int(d.u8(2))
+            settings.chartLayers = d.u8(3)
+        }
     }
 
-    func writeSettings(rangeCapNm: Int, hideAnchored: Bool) {
+    // Push the whole settings struct (the device persists + echoes it back).
+    func pushSettings() {
         var d = Data()
-        d.append(UInt8(max(1, min(255, rangeCapNm))))
-        d.append(hideAnchored ? 1 : 0)
+        d.append(UInt8(max(1, min(255, settings.rangeCapNm))))
+        d.append(settings.hideAnchored ? 1 : 0)
+        d.append(UInt8(max(0, min(255, settings.depthThreshM))))
+        d.append(settings.chartLayers)
         onWriteSettings?(d)
+    }
+
+    func layerOn(_ l: ChartLayer) -> Bool { settings.chartLayers & (1 << l.rawValue) != 0 }
+    func setLayer(_ l: ChartLayer, _ on: Bool) {
+        if on { settings.chartLayers |= (1 << l.rawValue) }
+        else  { settings.chartLayers &= ~(1 << l.rawValue) }
+        pushSettings()
     }
 
     // Client-side expiry, a touch longer than the device's 10 s lifetime so a

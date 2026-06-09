@@ -4,7 +4,9 @@
 #include <lvgl.h>
 #include <cmath>
 #include <AisFilter.h>
+#include <AisRadarBle.h>
 #include "DeviceSettings.h"
+#include "ChartOverlay.h"
 
 namespace radar {
 namespace {
@@ -129,6 +131,47 @@ double niceStepNm(double t) {
     return 50;
 }
 
+// Chart overlay: draw the pre-baked CM93 vectors for the own-ship cell under
+// the AIS plot. Equirectangular projection (cheap, exact enough at radar
+// ranges) + range-clip so only near features cost draw calls. Layers are
+// gated by the chart_layers bitmask; depth areas shallower than the runtime
+// threshold are tinted.
+void drawChart(double ownLat, double ownLon, double scale, double rangeNm) {
+    if (!chart::ensureCell(ownLat, ownLon)) return;
+    const DeviceSettings& ds = devsettings::get();
+    const double coslat = std::cos(ownLat * kD2R);
+    const double clip   = rangeNm * 1.15;            // NM half-window
+
+    const lv_color_t coastc   = lv_color_hex(0x9AA0B0);   // coastline
+    const lv_color_t shallowc = lv_color_hex(0x8A3A12);   // shallow-water tint
+
+    chart::rewind();
+    chart::Feature f;
+    while (chart::next(f)) {
+        if (!(ds.chartLayers & (1 << f.layer))) continue;
+        lv_color_t col;
+        if (f.layer == CHART_COASTLINE) {
+            col = coastc;
+        } else if (f.layer == CHART_DEPTH) {
+            if (!(f.depth < (float)ds.depthThreshM)) continue;  // only shallow
+            col = shallowc;
+        } else {
+            continue;   // other layers carried in the tile, not drawn yet
+        }
+
+        int xp = 0, yp = 0; bool prev = false, prevIn = false;
+        for (uint16_t i = 0; i < f.npts; ++i) {
+            const double dN = (f.pts[2 * i]     - ownLat) * 60.0;          // NM N
+            const double dE = (f.pts[2 * i + 1] - ownLon) * 60.0 * coslat; // NM E
+            const int x = kCx + (int)std::lround(dE * scale);
+            const int y = kCy - (int)std::lround(dN * scale);
+            const bool in = std::fabs(dN) < clip && std::fabs(dE) < clip;
+            if (prev && (in || prevIn)) line(xp, yp, x, y, col, 1);
+            xp = x; yp = y; prev = true; prevIn = in;
+        }
+    }
+}
+
 }  // namespace
 
 int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
@@ -190,6 +233,8 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     const double rangeNm = niceStepNm(maxNm * 1.15);
     const double scale = kR / rangeNm;
+
+    drawChart(ownLat, ownLon, scale, rangeNm);   // chart under the AIS plot
 
     for (int k = 1; k <= 3; ++k) ring(kR * k / 3, ringc, 2);
     line(kCx, kCy - kR, kCx, kCy - kR + 16, ringc, 2);
