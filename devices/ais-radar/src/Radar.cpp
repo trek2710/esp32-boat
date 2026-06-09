@@ -134,9 +134,9 @@ void dot(int x, int y, int r, lv_color_t col) {
     lv_canvas_draw_rect(g_canvas, x - r, y - r, 2 * r, 2 * r, &d);
 }
 double niceStepNm(double t) {
-    const double s[] = {0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50};
+    const double s[] = {0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 48};
     for (double v : s) if (v >= t) return v;
-    return 50;
+    return 48;
 }
 
 // Chart overlay — nautical styling: filled land (sand) + depth-banded water
@@ -323,7 +323,7 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     // is visible even when no AIS targets are driving the range.
     const bool chartOn = devsettings::get().chartLayers != 0
                          && chart::ensureCell(ownLat, ownLon);
-    if (chartOn && maxNm < 1.5) maxNm = 1.5;
+    if (chartOn && maxNm < 1.0) maxNm = 1.0;
 
     const double rangeNm = niceStepNm(maxNm * 1.15);
     const double scale = kR / rangeNm;
@@ -331,10 +331,13 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     drawChart(ownLat, ownLon, scale, rangeNm);   // chart under the AIS plot
 
     for (int k = 1; k <= 3; ++k) ring(kR * k / 3, ringc, 2);
-    line(kCx, kCy - kR, kCx, kCy - kR + 16, ringc, 2);
-    textB(kCx - 8, kCy - kR + 14, "N", txtc, &lv_font_montserrat_20);
+    line(kCx, kCy - kR, kCx, kCy - kR + 14, ringc, 2);
+    textB(kCx - 8,       kCy - kR + 10, "N", txtc, &lv_font_montserrat_20);
+    textB(kCx - 8,       kCy + kR - 34, "S", txtc, &lv_font_montserrat_20);
+    textB(kCx + kR - 22, kCy - 14,      "E", txtc, &lv_font_montserrat_20);
+    textB(kCx - kR + 6,  kCy - 14,      "W", txtc, &lv_font_montserrat_20);
     char rb[24]; snprintf(rb, sizeof(rb), "%.3g NM", rangeNm);
-    textB(kCx - 34, kCy + kR - 28, rb, txtc, &lv_font_montserrat_20);
+    textB(kCx - 28, kCy - kR + 36, rb, txtc, &lv_font_montserrat_20);   // under N
 
     const uint32_t now = millis();
     for (size_t i = 0; i < n; ++i) {
@@ -355,12 +358,19 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
             line(x, y, x + (int)std::lround(d * scale * std::sin(cr)),
                  y - (int)std::lround(d * scale * std::cos(cr)), c, 2);
         }
-        if (t[i].cog_deg >= 0) vessel(x, y, t[i].cog_deg, 9, c);
+        const uint8_t vt = t[i].vessel_type;
+        const int sz = (vt >= 60 && vt <= 89) ? 12 : 9;   // passenger/cargo/tanker bigger
+        if (t[i].cog_deg >= 0) vessel(x, y, t[i].cog_deg, sz, c);
         else                   dot(x, y, 5, c);
 
-        char lbl[12];
-        if (t[i].name[0]) snprintf(lbl, sizeof(lbl), "%.8s", t[i].name);
-        else snprintf(lbl, sizeof(lbl), "%u", (unsigned)(t[i].mmsi % 100000));
+        char lbl[20];
+        const char* nm = t[i].name[0] ? t[i].name : nullptr;
+        char id[12];
+        if (!nm) { snprintf(id, sizeof(id), "%u", (unsigned)(t[i].mmsi % 100000)); }
+        if (t[i].sog_kn >= 0)
+            snprintf(lbl, sizeof(lbl), "%.8s %.0fkt", nm ? nm : id, t[i].sog_kn);
+        else
+            snprintf(lbl, sizeof(lbl), "%.8s", nm ? nm : id);
         textB(x + 8, y - 9, lbl, txtc, &lv_font_montserrat_16);
     }
 
@@ -375,15 +385,9 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     char pos[40]; snprintf(pos, sizeof(pos), "%.5f\n%.5f", ownLat, ownLon);
     text(10, 32, pos, ownc, &lv_font_montserrat_12);
 
-    // Chart status (diagnostic) — kept on the vertical axis so it stays inside
-    // the round display (the corners are off-glass).
-    char cs[44];
-    if (chart::featureCount() > 0)
-        snprintf(cs, sizeof(cs), "chart %uf %dd",
-                 (unsigned)chart::featureCount(), g_chSeg);
-    else
-        snprintf(cs, sizeof(cs), "NO TILE %08u", (unsigned)chart::cellId());
-    textB(kCx - 52, kCy + 52, cs, txtc, &lv_font_montserrat_16);
+    // Only warn if the chart tile is missing; nothing in the middle otherwise.
+    if (chart::featureCount() == 0)
+        textB(kCx - 40, kCy + 52, "NO CHART", txtc, &lv_font_montserrat_16);
 
     lv_obj_invalidate(g_canvas);
 }
