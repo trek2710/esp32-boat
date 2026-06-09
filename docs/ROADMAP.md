@@ -87,10 +87,14 @@ settings.
   on the radar only*, explicitly **not** a mapping engine; and the AMOLED
   **swipe/touch** interaction (undecided — possibly just swipe).
   **SD recon done** (firmware `listSdCard()`): SD is **SD_MMC** on
-  `CLK=2 / CMD=1 / DATA=3` (1-bit), but the **stock SD_MMC can't mount the
-  exFAT card** ("mount FAILED"). Next for C-MAP: an exFAT-enabled build,
-  SdFat, or reformat to FAT32 — then read `cmap/` and assess the (likely
-  proprietary/encrypted) C-MAP format before any rendering.
+  `CLK=2 / CMD=1 / DATA=3` (1-bit). exFAT doesn't mount on stock
+  Arduino-ESP32 → card reformatted **FAT32** (60 GB), now mounts fine.
+  The charts are **CM93 v2/v3** (`cm93_World2014/` → numeric cell dirs ×
+  `A`–`G` scale bands × `.INF`), **not** encrypted C-MAP — so it's
+  decodable (OpenCPN's `cm93` plugin is the reference implementation), but
+  the overlay is a substantial **vector decode + render** job (decode the
+  cell geometry for the own-ship area at an appropriate scale band → draw
+  coastlines/land as a radar overlay). A real feature, not a quick add.
 - **Weather/chart "mapping" device (idea, future):** a separate device that
   shows C-MAP base charts + **GRIB** weather overlays, reading both from the
   same microSD layout (exFAT; `cmap/` + a GRIB file already on the card).

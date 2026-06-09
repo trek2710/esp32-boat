@@ -59,26 +59,34 @@ static void daisyPoll() {
 // One-shot SD-card recon (C-MAP investigation). Mounts the onboard microSD
 // (SD_MMC, 1-bit: CLK=2 CMD=1 DATA=3 per Waveshare pin_config) and lists the
 // root + cmap/ over serial so we can see the card layout + format.
+static void listSdDir(const String& path, int depth, int maxDepth) {
+    File d = SD_MMC.open(path);
+    if (!d || !d.isDirectory()) return;
+    int count = 0;
+    for (File e = d.openNextFile(); e && count < 16; e = d.openNextFile(), ++count) {
+        const char* name = e.name();
+        if (name[0] == '.') continue;   // skip macOS cruft (._, .Spotlight…)
+        for (int i = 0; i < depth; ++i) Serial.print("  ");
+        Serial.printf("%s%s  %lu B\n", name, e.isDirectory() ? "/" : "",
+                      (unsigned long)e.size());
+        if (e.isDirectory() && depth < maxDepth) {
+            String sub = (path == "/") ? ("/" + String(name)) : (path + "/" + name);
+            listSdDir(sub, depth + 1, maxDepth);
+        }
+    }
+}
+
 static void listSdCard() {
     SD_MMC.setPins(2, 1, 3);
     if (!SD_MMC.begin("/sdcard", true)) {
-        Serial.println("[sd] mount FAILED — card present? exFAT may not be "
-                       "supported by stock SD_MMC (would need SdFat or FAT32)");
+        Serial.println("[sd] mount FAILED");
         return;
     }
-    Serial.printf("[sd] mounted: type=%d size=%lluMB\n",
+    Serial.printf("[sd] mounted: type=%d size=%lluMB\n[sd] tree (2 levels):\n",
                   (int)SD_MMC.cardType(),
                   (unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
-    for (const char* dir : {"/", "/cmap"}) {
-        File d = SD_MMC.open(dir);
-        if (!d || !d.isDirectory()) { Serial.printf("[sd] %s: not a directory\n", dir); continue; }
-        Serial.printf("[sd] %s:\n", dir);
-        int count = 0;
-        for (File e = d.openNextFile(); e && count < 50; e = d.openNextFile(), ++count) {
-            Serial.printf("   %-28s %s %lu B\n", e.name(),
-                          e.isDirectory() ? "<DIR>" : "     ", (unsigned long)e.size());
-        }
-    }
+    listSdDir("/", 0, 2);
+    Serial.println("[sd] end");
 }
 
 // Own-ship state. Priority: onboard LC76G fix > phone GPS over BLE > bench.
