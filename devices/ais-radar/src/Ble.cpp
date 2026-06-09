@@ -22,6 +22,7 @@ void loadSettingsValue() {
     s.depth_thresh_m = devsettings::get().depthThreshM;
     s.chart_layers   = devsettings::get().chartLayers;
     s.test_targets   = devsettings::get().testTargets;
+    s.phone_gps      = devsettings::get().phoneGps;
     if (g_set) g_set->setValue((uint8_t*)&s, sizeof(s));
 }
 
@@ -32,7 +33,7 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
         BleSettings s;
         memcpy(&s, v.data(), sizeof(s));
         devsettings::set(s.range_cap_nm, s.hide_anchored, s.depth_thresh_m,
-                         s.chart_layers, s.test_targets);
+                         s.chart_layers, s.test_targets, s.phone_gps);
         loadSettingsValue();           // echo the clamped/applied value
         if (g_connected) g_set->notify();
     }

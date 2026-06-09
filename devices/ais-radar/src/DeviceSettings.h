@@ -11,6 +11,7 @@ struct DeviceSettings {
     uint8_t depthThreshM = 10;   // chart deep-water cutoff (m): shallower → blue bands
     uint8_t chartLayers  = 0x17; // overlay layers: coastline+land+depth+TSS
     uint8_t testTargets  = 1;    // inject the three demo AIS targets
+    uint8_t phoneGps     = 1;    // prefer phone GPS as own ship (over LC76G)
 };
 
 namespace devsettings {
@@ -18,6 +19,6 @@ namespace devsettings {
 const DeviceSettings& get();
 void load();                                  // from NVS (defaults on first boot)
 void set(uint8_t rangeCapNm, uint8_t hideAnchored, uint8_t depthThreshM,
-         uint8_t chartLayers, uint8_t testTargets);   // update + persist
+         uint8_t chartLayers, uint8_t testTargets, uint8_t phoneGps);  // update + persist
 
 }  // namespace devsettings

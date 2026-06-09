@@ -39,7 +39,8 @@ struct AisRow: View {
         HStack(spacing: 10) {
             Circle().fill(threatMarkColor(ev.threat)).frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
-                Text(targetLabel(t)).font(.subheadline.weight(.semibold))
+                Text(t.name.isEmpty ? "MMSI \(t.mmsi)" : t.name)
+                    .font(.subheadline.weight(.semibold))
                 Text("\(shipTypeName(t.shipType)) · \(motion)")
                     .font(.caption).foregroundStyle(.secondary)
             }

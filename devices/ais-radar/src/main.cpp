@@ -94,11 +94,13 @@ struct Own { double lat, lon, cog, sog; bool realFix; };
 static Own ownShip() {
     const gps::Fix& f = gps::fix();
     ble::HostGps hg;
+    // Phone GPS preferred when enabled + fresh (even over the LC76G, in case the
+    // phone is more accurate); otherwise LC76G; otherwise the bench coord.
+    if (devsettings::get().phoneGps && ble::hostGps(&hg)) {
+        return { hg.lat, hg.lon, hg.cogDeg, isnan(hg.sogKn) ? 0.0 : hg.sogKn, true };
+    }
     if (f.fixQuality >= 1 && !isnan(f.lat) && !isnan(f.lon)) {
         return { f.lat, f.lon, NAN, 0.0, true };          // LC76G (position only)
-    }
-    if (ble::hostGps(&hg)) {
-        return { hg.lat, hg.lon, hg.cogDeg, isnan(hg.sogKn) ? 0.0 : hg.sogKn, true };
     }
     return { kBenchLat, kBenchLon, NAN, 0.0, false };     // bench fallback
 }

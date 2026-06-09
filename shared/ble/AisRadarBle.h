@@ -73,8 +73,10 @@ struct __attribute__((packed)) BleSettings {
     uint8_t chart_layers;     // bit0 coastline,1 land,2 depth,3 depth-contour,
                               //   4 TSS,5 buoys,6 lights
     uint8_t test_targets;     // 1 = inject the three demo AIS targets
+    uint8_t phone_gps;        // 1 = prefer the phone's GPS as own ship (over
+                              //   the onboard LC76G); 0 = ignore phone GPS
 };
-static_assert(sizeof(BleSettings) == 5, "BleSettings size");
+static_assert(sizeof(BleSettings) == 6, "BleSettings size");
 
 // Chart overlay layer ids — the bit index in BleSettings.chart_layers and the
 // layer byte in the .c93t tiles produced by tools/chart-transcode.

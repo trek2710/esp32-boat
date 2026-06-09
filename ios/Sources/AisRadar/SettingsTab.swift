@@ -51,6 +51,14 @@ struct SettingsTab: View {
                 }
 
                 Section {
+                    Toggle("Use iPhone GPS", isOn: phoneGpsBinding)
+                } header: {
+                    Text("Position")
+                } footer: {
+                    Text("Send this phone's GPS (position + speed) to the device as own ship; the device prefers it over its onboard GPS. The radar header shows GPS or bench. Turn off to use the device's own GPS only.")
+                }
+
+                Section {
                     Toggle("Demo AIS targets", isOn: testTargetsBinding)
                 } footer: {
                     Text("Three simulated targets near the bench so the radar has data without live traffic. Turn off for a live test with the dAISy antenna.")
@@ -67,6 +75,10 @@ struct SettingsTab: View {
     private var testTargetsBinding: Binding<Bool> {
         Binding(get: { model.settings.testTargets },
                 set: { model.settings.testTargets = $0; model.pushSettings() })
+    }
+    private var phoneGpsBinding: Binding<Bool> {
+        Binding(get: { model.settings.phoneGps },
+                set: { model.settings.phoneGps = $0; model.pushSettings() })
     }
     private var depthBinding: Binding<Double> {
         // Update locally while dragging (radar follows live); the Slider's

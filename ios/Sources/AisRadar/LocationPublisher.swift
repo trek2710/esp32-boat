@@ -7,6 +7,8 @@ import Foundation
 final class LocationPublisher: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     var onLocation: ((Data) -> Void)?
+    private var lastData: Data?
+    private var timer: Timer?
 
     override init() {
         super.init()
@@ -21,6 +23,12 @@ final class LocationPublisher: NSObject, CLLocationManagerDelegate {
         case .authorizedWhenInUse, .authorizedAlways: manager.startUpdatingLocation()
         default: break
         }
+        // Re-send the last fix every 2 s so the device's host-GPS never goes
+        // stale (iOS throttles updates when stationary).
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            if let d = self?.lastData { self?.onLocation?(d) }
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
@@ -33,8 +41,10 @@ final class LocationPublisher: NSObject, CLLocationManagerDelegate {
         guard let l = locs.last else { return }
         let cog: Double? = l.course >= 0 ? l.course : nil
         let sog: Double? = l.speed >= 0 ? l.speed * 1.943844 : nil   // m/s → kn
-        onLocation?(packHostGps(lat: l.coordinate.latitude, lon: l.coordinate.longitude,
-                                cogDeg: cog, sogKn: sog))
+        let d = packHostGps(lat: l.coordinate.latitude, lon: l.coordinate.longitude,
+                            cogDeg: cog, sogKn: sog)
+        lastData = d
+        onLocation?(d)
     }
 }
 
