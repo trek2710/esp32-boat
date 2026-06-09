@@ -8,13 +8,14 @@ struct AisRadarApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            RootView(model: model)
                 .onAppear {
                     if central == nil {
                         let c = BleCentral(model: model)
                         let loc = LocationPublisher()
                         loc.onLocation = { [weak c] data in c?.writeHostGps(data) }
                         loc.start()
+                        model.onWriteSettings = { [weak c] data in c?.writeSettings(data) }
                         central = c
                         location = loc
                     }

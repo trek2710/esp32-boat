@@ -17,6 +17,7 @@
 #include <default_sentence_parser.h>
 #include "Radar.h"
 #include "Ble.h"
+#include "DeviceSettings.h"
 
 static constexpr uint32_t kDaisyBaud  = 38400;   // dAISy NMEA-HS default
 static constexpr uint32_t kTargetLifeMs = 10000; // drop targets after 10 s
@@ -98,6 +99,7 @@ void setup() {
     Serial.begin(115200);
     delay(800);
     Serial.println("\n[ais-radar] radar UI + Daisy AIS (ADR-0016)");
+    devsettings::load();
 
     const bool haveDisplay = amoled::begin();
     touch::begin();

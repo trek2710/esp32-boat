@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ContentView: View {
+struct RadarTab: View {
     @ObservedObject var model: RadarModel
     @State private var autoScale = true
     @State private var manualRange = 2.0
@@ -19,23 +19,30 @@ struct ContentView: View {
         return niceStep(maxNm * 1.15)
     }
 
+    private var posText: String {
+        guard let lat = model.own.lat, let lon = model.own.lon else { return "—" }
+        return String(format: "%.5f, %.5f", lat, lon)
+    }
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             HStack(spacing: 8) {
                 Circle().fill(model.connected ? .green : .orange).frame(width: 10, height: 10)
                 Text(model.status).font(.caption)
                 Spacer()
-                if let fix = model.own.lat != nil ? model.own.hasFix : nil {
-                    Text(fix ? "GPS" : "bench").font(.caption2).foregroundStyle(.secondary)
-                }
                 Text("\(model.targets.count) tgt").font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.horizontal)
+            HStack {
+                Image(systemName: model.own.hasFix ? "location.fill" : "location")
+                Text(posText).font(.caption.monospacedDigit())
+                Text(model.own.hasFix ? "GPS" : "bench").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 2)
 
             RadarView(own: model.own, targets: model.targets, rangeNm: range,
                       background: threatColor(model.own.threat))
                 .aspectRatio(1, contentMode: .fit)
-                .padding(.horizontal, 4)
 
             VStack(spacing: 4) {
                 Toggle("Auto scale", isOn: $autoScale).font(.subheadline)
@@ -48,12 +55,10 @@ struct ContentView: View {
                     }
                 }
             }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(threatColor(model.own.threat).ignoresSafeArea())
-        .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.3), value: model.own.threat)
         .onReceive(sweepTimer) { _ in model.sweep() }
     }

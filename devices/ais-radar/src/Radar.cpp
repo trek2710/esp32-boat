@@ -4,6 +4,7 @@
 #include <lvgl.h>
 #include <cmath>
 #include <AisFilter.h>
+#include "DeviceSettings.h"
 
 namespace radar {
 namespace {
@@ -139,7 +140,8 @@ int assessWorst(AisTargetStore& store, double ownLat, double ownLon,
         if (t[i].lat_deg == 0.0 && t[i].lon_deg == 0.0) continue;
         double rng, brg;
         rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng, &brg);
-        if (aisfilter::hidden(t[i].nav_status, rng)) continue;
+        if (aisfilter::hidden(t[i].nav_status, rng, devsettings::get().rangeCapNm,
+                              devsettings::get().hideAnchored)) continue;
         const Threat lv = assess(t[i], ownLat, ownLon, ownCogDeg, ownSogKn, rng);
         if ((uint8_t)lv > (uint8_t)worst) worst = lv;
     }
@@ -175,7 +177,9 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     for (size_t i = 0; i < n; ++i) {
         if (t[i].lat_deg != 0.0 || t[i].lon_deg != 0.0) {
             rangeBearing(ownLat, ownLon, t[i].lat_deg, t[i].lon_deg, &rng[i], &brg[i]);
-            if (aisfilter::hidden(t[i].nav_status, rng[i])) { rng[i] = NAN; continue; }
+            if (aisfilter::hidden(t[i].nav_status, rng[i],
+                                  devsettings::get().rangeCapNm,
+                                  devsettings::get().hideAnchored)) { rng[i] = NAN; continue; }
             if (rng[i] > maxNm) maxNm = rng[i];
         } else { rng[i] = NAN; brg[i] = NAN; }
     }
@@ -220,6 +224,8 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
     char hud[16]; snprintf(hud, sizeof(hud), "%u tgt", (unsigned)n);
     text(10, 10, hud, txtc, &lv_font_montserrat_16);
+    char pos[40]; snprintf(pos, sizeof(pos), "%.5f\n%.5f", ownLat, ownLon);
+    text(10, 32, pos, ownc, &lv_font_montserrat_12);
 
     lv_obj_invalidate(g_canvas);
 }

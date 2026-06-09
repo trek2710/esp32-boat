@@ -5,13 +5,35 @@
 #include <cmath>
 #include <AisRadarBle.h>
 #include <AisFilter.h>
+#include "DeviceSettings.h"
 
 namespace ble {
 namespace {
 
 NimBLECharacteristic* g_own = nullptr;
 NimBLECharacteristic* g_tgt = nullptr;
+NimBLECharacteristic* g_set = nullptr;
 bool g_connected = false;
+
+void loadSettingsValue() {
+    BleSettings s;
+    s.range_cap_nm  = devsettings::get().rangeCapNm;
+    s.hide_anchored = devsettings::get().hideAnchored;
+    if (g_set) g_set->setValue((uint8_t*)&s, sizeof(s));
+}
+
+class SettingsCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        const std::string v = c->getValue();
+        if (v.size() < sizeof(BleSettings)) return;
+        BleSettings s;
+        memcpy(&s, v.data(), sizeof(s));
+        devsettings::set(s.range_cap_nm, s.hide_anchored);
+        loadSettingsValue();           // echo the clamped/applied value
+        if (g_connected) g_set->notify();
+    }
+};
+SettingsCb g_setCb;
 
 HostGps  g_host;
 uint32_t g_hostMs = 0;
@@ -67,6 +89,11 @@ void begin() {
     NimBLECharacteristic* gps = svc->createCharacteristic(
         AISRADAR_BLE_GPS_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     gps->setCallbacks(&g_gpsCb);
+    g_set = svc->createCharacteristic(
+        AISRADAR_BLE_SET_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+    g_set->setCallbacks(&g_setCb);
+    loadSettingsValue();
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -108,7 +135,9 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
             const double a = sin(dphi / 2) * sin(dphi / 2)
                            + cos(phi1) * cos(phi2) * sin(dlam / 2) * sin(dlam / 2);
             const double rngNm = 3440.065 * 2 * atan2(sqrt(a), sqrt(1 - a));
-            if (aisfilter::hidden(t[i].nav_status, rngNm)) continue;
+            if (aisfilter::hidden(t[i].nav_status, rngNm,
+                                  devsettings::get().rangeCapNm,
+                                  devsettings::get().hideAnchored)) continue;
         }
         BleTarget bt;
         bt.mmsi      = t[i].mmsi;

@@ -23,12 +23,34 @@ struct AisTarget: Identifiable {
     var id: UInt32 { mmsi }
 }
 
+struct DeviceSettings {
+    var rangeCapNm: Int = 24
+    var hideAnchored: Bool = true
+}
+
 @MainActor
 final class RadarModel: ObservableObject {
     @Published var own = OwnShip()
     @Published var targets: [AisTarget] = []
     @Published var status: String = "Starting…"
     @Published var connected = false
+    @Published var settings = DeviceSettings()
+
+    // Set by the app — writes a 2-byte BleSettings to the device.
+    var onWriteSettings: ((Data) -> Void)?
+
+    func applySettings(_ d: Data) {
+        guard d.count >= 2 else { return }
+        settings.rangeCapNm = Int(d.u8(0))
+        settings.hideAnchored = d.u8(1) != 0
+    }
+
+    func writeSettings(rangeCapNm: Int, hideAnchored: Bool) {
+        var d = Data()
+        d.append(UInt8(max(1, min(255, rangeCapNm))))
+        d.append(hideAnchored ? 1 : 0)
+        onWriteSettings?(d)
+    }
 
     // Client-side expiry, a touch longer than the device's 10 s lifetime so a
     // dropped notify doesn't blink a target out.

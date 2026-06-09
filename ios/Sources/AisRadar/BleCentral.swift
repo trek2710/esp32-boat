@@ -10,16 +10,24 @@ final class BleCentral: NSObject {
     static let ownUUID = CBUUID(string: "a15a0002-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let tgtUUID = CBUUID(string: "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let gpsUUID = CBUUID(string: "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e")
+    static let setUUID = CBUUID(string: "a15a0005-7a11-4b3c-8d2e-0f1a2b3c4d5e")
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var gpsChar: CBCharacteristic?
+    private var setChar: CBCharacteristic?
     private let model: RadarModel
 
     // Write the phone's GPS to the device (no-op until connected + discovered).
     func writeHostGps(_ data: Data) {
         guard let p = peripheral, let c = gpsChar else { return }
         p.writeValue(data, for: c, type: .withoutResponse)
+    }
+
+    // Write a settings change to the device.
+    func writeSettings(_ data: Data) {
+        guard let p = peripheral, let c = setChar else { return }
+        p.writeValue(data, for: c, type: .withResponse)
     }
 
     init(model: RadarModel) {
@@ -78,7 +86,8 @@ extension BleCentral: CBCentralManagerDelegate {
 extension BleCentral: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         for s in p.services ?? [] where s.uuid == Self.svcUUID {
-            p.discoverCharacteristics([Self.ownUUID, Self.tgtUUID, Self.gpsUUID], for: s)
+            p.discoverCharacteristics(
+                [Self.ownUUID, Self.tgtUUID, Self.gpsUUID, Self.setUUID], for: s)
         }
     }
 
@@ -87,6 +96,10 @@ extension BleCentral: CBPeripheralDelegate {
             switch ch.uuid {
             case Self.ownUUID, Self.tgtUUID: p.setNotifyValue(true, for: ch)
             case Self.gpsUUID: gpsChar = ch
+            case Self.setUUID:
+                setChar = ch
+                p.setNotifyValue(true, for: ch)
+                p.readValue(for: ch)          // pull current settings on connect
             default: break
             }
         }
@@ -96,8 +109,12 @@ extension BleCentral: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
         guard let d = ch.value else { return }
         Task { @MainActor in
-            if ch.uuid == Self.ownUUID { model.applyOwn(d) }
-            else if ch.uuid == Self.tgtUUID { model.applyTarget(d) }
+            switch ch.uuid {
+            case Self.ownUUID: model.applyOwn(d)
+            case Self.tgtUUID: model.applyTarget(d)
+            case Self.setUUID: model.applySettings(d)
+            default: break
+            }
         }
     }
 }

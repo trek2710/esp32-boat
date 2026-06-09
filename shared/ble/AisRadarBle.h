@@ -18,6 +18,7 @@
 #define AISRADAR_BLE_OWN_UUID  "a15a0002-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // own ship (notify)
 #define AISRADAR_BLE_TGT_UUID  "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // one AIS target (notify)
 #define AISRADAR_BLE_GPS_UUID  "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // host (phone) GPS (write)
+#define AISRADAR_BLE_SET_UUID  "a15a0005-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // settings (read/write/notify)
 
 // Own-ship state. Pushed on every publish cycle. lat/lon always carry the
 // position the radar is centred on (a bench coord when there's no real fix);
@@ -56,3 +57,11 @@ struct __attribute__((packed)) BleHostGps {
     int16_t sog_kn10;     // 0.1 kn
 };
 static_assert(sizeof(BleHostGps) == 12, "BleHostGps size");
+
+// Device settings — read by the app on connect (current values), written by
+// the app to change them (the device persists to NVS), notified on change.
+struct __attribute__((packed)) BleSettings {
+    uint8_t range_cap_nm;     // hide AIS targets beyond this range
+    uint8_t hide_anchored;    // 1 = hide anchored/moored/aground
+};
+static_assert(sizeof(BleSettings) == 2, "BleSettings size");
