@@ -133,6 +133,34 @@ void dot(int x, int y, int r, lv_color_t col) {
     d.bg_color = col; d.bg_opa = LV_OPA_COVER; d.radius = LV_RADIUS_CIRCLE;
     lv_canvas_draw_rect(g_canvas, x - r, y - r, 2 * r, 2 * r, &d);
 }
+// Elongated hull (cargo/tanker), pointed bow forward along heading.
+void iconShip(int cx, int cy, double hdg, double len, lv_color_t col) {
+    const double t = hdg * kD2R, cs = std::cos(t), sn = std::sin(t);
+    auto map = [&](double lx, double ly) {
+        return lv_point_t{(lv_coord_t)std::lround(cx + lx * cs + ly * sn),
+                          (lv_coord_t)std::lround(cy + lx * sn - ly * cs)};
+    };
+    lv_point_t hull[5] = { map(0, len * 1.3), map(len * 0.5, len * 0.3),
+                           map(len * 0.5, -len), map(-len * 0.5, -len),
+                           map(-len * 0.5, len * 0.3) };
+    lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
+    d.bg_color = col; d.bg_opa = LV_OPA_COVER;
+    lv_canvas_draw_polygon(g_canvas, hull, 5, &d);
+}
+// Fill everything from rInner outward to the canvas edge — the threat ring.
+// Guaranteed flush to the round bezel since the corners are clipped anyway.
+void fillRing(int rInner, lv_color_t col) {
+    if (!g_buf) return;
+    const long r2 = (long)rInner * rInner;
+    for (int y = 0; y < kH; ++y) {
+        const long dy = y - kCy;
+        lv_color_t* row = g_buf + (size_t)y * kW;
+        for (int x = 0; x < kW; ++x) {
+            const long dx = x - kCx;
+            if (dx * dx + dy * dy >= r2) row[x] = col;
+        }
+    }
+}
 double niceStepNm(double t) {
     const double s[] = {0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 48};
     for (double v : s) if (v >= t) return v;
@@ -358,10 +386,13 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
             line(x, y, x + (int)std::lround(d * scale * std::sin(cr)),
                  y - (int)std::lround(d * scale * std::cos(cr)), c, 2);
         }
+        // Icon by type: cargo/tanker = hull, pleasure = circle, sailing/other = triangle.
         const uint8_t vt = t[i].vessel_type;
-        const int sz = (vt >= 60 && vt <= 89) ? 12 : 9;   // passenger/cargo/tanker bigger
-        if (t[i].cog_deg >= 0) vessel(x, y, t[i].cog_deg, sz, c);
-        else                   dot(x, y, 5, c);
+        const int sz = (vt >= 70 && vt <= 89) ? 12 : 10;
+        if (t[i].cog_deg < 0)           dot(x, y, 5, c);                     // no heading
+        else if (vt >= 70 && vt <= 89)  iconShip(x, y, t[i].cog_deg, sz, c); // cargo/tanker
+        else if (vt == 37)              dot(x, y, 6, c);                     // pleasure
+        else                            vessel(x, y, t[i].cog_deg, sz, c);   // sailing/other
 
         char lbl[20];
         const char* nm = t[i].name[0] ? t[i].name : nullptr;
@@ -376,9 +407,8 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
 
-    // Threat as a thick ring flush to the display rim (outer edge runs past the
-    // canvas border so it clips exactly to the round edge — no chart outside it).
-    if (worst != Threat::None) ring(kH / 2 - 4, bgFor(worst), 20);
+    // Threat as a thick ring filled out to the bezel (no gap).
+    if (worst != Threat::None) fillRing(kR + 6, bgFor(worst));
 
     char hud[16]; snprintf(hud, sizeof(hud), "%u tgt", (unsigned)n);
     text(10, 10, hud, txtc, &lv_font_montserrat_16);

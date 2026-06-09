@@ -29,7 +29,7 @@ static constexpr double kBenchLon = 12.62900;
 // Bench-only: inject a synthetic AIS target ~3 NM out so the radar has a real
 // scale to auto-fit (and the chart shows at that scale) without live traffic.
 // Set false for real use.
-static constexpr bool kInjectTestTarget = false;
+static constexpr bool kInjectTestTarget = true;
 
 static AisTargetDecoder decoder;
 static AIS::DefaultSentenceParser parser;
@@ -116,9 +116,9 @@ static void injectTestTargets(double ownLat, double ownLon) {
     struct T { uint32_t mmsi; const char* nm; uint8_t type;
                float sog, cog; double dLat, dLon; };
     static const T ts[] = {
-        {992110001, "SAILBOAT", 36,  5.0f, 210.0f,  0.0480,  0.0300},  // safe
-        {992110002, "FERRY",    60, 22.0f, 120.0f,  0.0200, -0.0250},  // alert: fast+near
-        {992110003, "TANKER",   80, 10.0f, 180.0f,  0.0133,  0.0000},  // danger: CPA→0
+        {992110001, "SAILBOAT", 36,  5.0f, 210.0f,  0.0480,  0.0300},  // safe   — triangle
+        {992110002, "YACHT",    37, 22.0f, 120.0f,  0.0200, -0.0250},  // alert  — circle
+        {992110003, "TANKER",   80, 10.0f, 180.0f,  0.0133,  0.0000},  // danger — hull
     };
     for (const auto& t : ts) {
         decoder.store().recordName(t.mmsi, 'B', t.nm);
