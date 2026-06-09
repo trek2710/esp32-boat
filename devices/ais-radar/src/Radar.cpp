@@ -365,8 +365,9 @@ void draw(AisTargetStore& store, double ownLat, double ownLon,
 
     vessel(kCx, kCy, std::isnan(ownCogDeg) ? 0 : ownCogDeg, 12, ownc);
 
-    // Threat as a thick ring around the outer edge (replaces the bg tint).
-    if (worst != Threat::None) ring(kH / 2 - 10, bgFor(worst), 16);
+    // Threat as a thick ring flush to the display rim (outer edge runs past the
+    // canvas border so it clips exactly to the round edge — no chart outside it).
+    if (worst != Threat::None) ring(kH / 2 - 4, bgFor(worst), 20);
 
     char hud[16]; snprintf(hud, sizeof(hud), "%u tgt", (unsigned)n);
     text(10, 10, hud, txtc, &lv_font_montserrat_16);
