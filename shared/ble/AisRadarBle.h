@@ -19,6 +19,7 @@
 #define AISRADAR_BLE_TGT_UUID  "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // one AIS target (notify)
 #define AISRADAR_BLE_GPS_UUID  "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // host (phone) GPS (write)
 #define AISRADAR_BLE_SET_UUID  "a15a0005-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // settings (read/write/notify)
+#define AISRADAR_BLE_LOG_UUID  "a15a0006-7a11-4b3c-8d2e-0f1a2b3c4d5e"  // raw dAISy NMEA line (notify)
 
 // Own-ship state. Pushed on every publish cycle. lat/lon always carry the
 // position the radar is centred on (a bench coord when there's no real fix);
@@ -30,7 +31,8 @@ struct __attribute__((packed)) BleOwnShip {
     int16_t sog_kn10;     // 0.1 kn; INT16_MIN = n/a (own speed, for app CPA)
     uint8_t flags;        // bit0: real GPS fix (0 = bench); bits1-2: threat
                           //   0=none 1=safe 2=alert 3=danger (the device
-                          //   computes it so the app shows the same colour)
+                          //   computes it so the app shows the same colour);
+                          //   bit3: dAISy data seen recently (the heartbeat)
     uint8_t targets;      // live target count
     uint8_t battery;      // ESP battery %, 0–100; 255 = unknown / on USB power
 };

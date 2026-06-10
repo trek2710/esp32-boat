@@ -13,7 +13,9 @@ namespace {
 NimBLECharacteristic* g_own = nullptr;
 NimBLECharacteristic* g_tgt = nullptr;
 NimBLECharacteristic* g_set = nullptr;
+NimBLECharacteristic* g_log = nullptr;
 bool g_connected = false;
+uint32_t g_lastLogMs = 0;          // last raw dAISy line — drives the heartbeat bit
 
 void loadSettingsValue() {
     BleSettings s;
@@ -101,6 +103,8 @@ void begin() {
         AISRADAR_BLE_SET_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
     g_set->setCallbacks(&g_setCb);
+    g_log = svc->createCharacteristic(
+        AISRADAR_BLE_LOG_UUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
     loadSettingsValue();
     svc->start();
 
@@ -128,7 +132,8 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
     o.cog_deg10 = std::isnan(ownCogDeg) ? INT16_MIN : d10(ownCogDeg);
     o.sog_kn10  = std::isnan(ownSogKn) ? INT16_MIN : d10(ownSogKn);
     o.flags     = (haveFix ? 0x01 : 0x00)
-                | (uint8_t)((threatLevel & 0x03) << 1);
+                | (uint8_t)((threatLevel & 0x03) << 1)
+                | ((g_lastLogMs && millis() - g_lastLogMs < 10000) ? 0x08 : 0x00);
     o.targets   = (uint8_t)n;
     o.battery   = (batteryPct < 0 || batteryPct > 100) ? 255 : (uint8_t)batteryPct;
     g_own->setValue((uint8_t*)&o, sizeof(o));
@@ -167,6 +172,14 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
 }
 
 bool connected() { return g_connected; }
+
+void logLine(const char* s) {
+    g_lastLogMs = millis();                  // heartbeat, even if no one's listening
+    if (g_connected && g_log) {
+        g_log->setValue((uint8_t*)s, strlen(s));
+        g_log->notify();
+    }
+}
 
 bool hostGps(HostGps* out) {
     if (g_hostMs == 0 || (millis() - g_hostMs) > kHostFreshMs) return false;

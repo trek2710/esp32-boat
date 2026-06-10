@@ -11,6 +11,7 @@ final class BleCentral: NSObject {
     static let tgtUUID = CBUUID(string: "a15a0003-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let gpsUUID = CBUUID(string: "a15a0004-7a11-4b3c-8d2e-0f1a2b3c4d5e")
     static let setUUID = CBUUID(string: "a15a0005-7a11-4b3c-8d2e-0f1a2b3c4d5e")
+    static let logUUID = CBUUID(string: "a15a0006-7a11-4b3c-8d2e-0f1a2b3c4d5e")
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -87,14 +88,14 @@ extension BleCentral: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         for s in p.services ?? [] where s.uuid == Self.svcUUID {
             p.discoverCharacteristics(
-                [Self.ownUUID, Self.tgtUUID, Self.gpsUUID, Self.setUUID], for: s)
+                [Self.ownUUID, Self.tgtUUID, Self.gpsUUID, Self.setUUID, Self.logUUID], for: s)
         }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
         for ch in s.characteristics ?? [] {
             switch ch.uuid {
-            case Self.ownUUID, Self.tgtUUID: p.setNotifyValue(true, for: ch)
+            case Self.ownUUID, Self.tgtUUID, Self.logUUID: p.setNotifyValue(true, for: ch)
             case Self.gpsUUID: gpsChar = ch
             case Self.setUUID:
                 setChar = ch
@@ -113,6 +114,10 @@ extension BleCentral: CBPeripheralDelegate {
             case Self.ownUUID: model.applyOwn(d)
             case Self.tgtUUID: model.applyTarget(d)
             case Self.setUUID: model.applySettings(d)
+            case Self.logUUID:
+                if let s = String(data: d, encoding: .ascii) ?? String(data: d, encoding: .utf8) {
+                    model.appendLog(s)
+                }
             default: break
             }
         }

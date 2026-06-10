@@ -49,7 +49,11 @@ static void daisyPoll() {
         char c = (char)Serial2.read();
         g_daisyBytes++;
         if (c == '\n') {
-            if (g_len > 0) { g_line[g_len] = '\0'; g_daisyLines++; feed(g_line); }
+            if (g_len > 0) {
+                g_line[g_len] = '\0'; g_daisyLines++;
+                feed(g_line);
+                ble::logLine(g_line);        // stream raw to the app + heartbeat
+            }
             g_len = 0;
         } else if (c != '\r' && g_len < (int)sizeof(g_line) - 1) {
             g_line[g_len++] = c;

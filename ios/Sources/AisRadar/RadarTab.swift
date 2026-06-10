@@ -36,6 +36,11 @@ struct RadarTab: View {
                 HStack(spacing: 8) {
                     Circle().fill(model.connected ? .green : .orange).frame(width: 10, height: 10)
                     Text(model.status).font(.caption)
+                    Image(systemName: model.own.daisyAlive
+                          ? "antenna.radiowaves.left.and.right"
+                          : "antenna.radiowaves.left.and.right.slash")
+                        .font(.caption2)
+                        .foregroundStyle(model.own.daisyAlive ? .green : .secondary)
                     Spacer()
                     if let b = model.own.batteryPct {
                         HStack(spacing: 3) {

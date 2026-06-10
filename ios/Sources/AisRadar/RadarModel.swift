@@ -11,6 +11,7 @@ struct OwnShip {
     var threat: Int = 0          // 0=none 1=safe 2=alert 3=danger (from device)
     var targetCount: Int = 0
     var batteryPct: Int?         // ESP battery %, nil = unknown / on USB
+    var daisyAlive: Bool = false // dAISy data seen recently (the AIS heartbeat)
     var hasPosition: Bool { lat != nil && lon != nil }
 }
 
@@ -48,6 +49,12 @@ final class RadarModel: ObservableObject {
     @Published var status: String = "Starting…"
     @Published var connected = false
     @Published var settings = DeviceSettings()
+    @Published var log: [String] = []          // raw dAISy lines (newest last)
+
+    func appendLog(_ s: String) {
+        log.append(s)
+        if log.count > 300 { log.removeFirst(log.count - 300) }
+    }
 
     // Set by the app — writes a 4-byte BleSettings to the device.
     var onWriteSettings: ((Data) -> Void)?
@@ -99,6 +106,7 @@ final class RadarModel: ObservableObject {
         let flags = d.u8(12)
         own.hasFix = (flags & 0x01) != 0
         own.threat = Int((flags >> 1) & 0x03)
+        own.daisyAlive = (flags & 0x08) != 0
         own.targetCount = Int(d.u8(13))
         if d.count >= 15 { let b = d.u8(14); own.batteryPct = (b == 255) ? nil : Int(b) }
     }

@@ -9,6 +9,8 @@ struct RootView: View {
         TabView {
             RadarTab(model: model)
                 .tabItem { Label("Radar", systemImage: "dot.radiowaves.left.and.right") }
+            LogTab(model: model)
+                .tabItem { Label("Log", systemImage: "list.bullet.rectangle") }
             SettingsTab(model: model)
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }

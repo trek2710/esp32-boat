@@ -30,4 +30,8 @@ void publish(AisTargetStore& store, double ownLat, double ownLon,
 
 bool connected();
 
+// Notify a raw dAISy NMEA line to the central (for the in-app log), and stamp
+// the heartbeat used by the own-ship "dAISy alive" flag.
+void logLine(const char* s);
+
 }  // namespace ble

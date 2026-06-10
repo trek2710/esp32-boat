@@ -12,26 +12,44 @@ struct ChartFeature {
 }
 
 final class ChartStore {
-    private var cellId: UInt32 = .max
-    private var cache: [ChartFeature] = []
+    private var loaded: [UInt32: [ChartFeature]] = [:]
+    private var lastKey = ""
+    private var merged: [ChartFeature] = []
 
-    // CM93 scale-C cell index — matches tools/chart-transcode cell_index().
-    static func cellIndexC(_ lat: Double, _ lon: Double) -> UInt32 {
-        let dval = 12.0
+    // Own cell + any neighbour within ~0.6° of an edge (matches the device), so
+    // the chart stays continuous across the 4° tile boundaries.
+    static func neededCells(_ lat: Double, _ lon: Double) -> [UInt32] {
+        let dv = 12.0
         var lon1 = (lon + 360.0) * 3.0
         while lon1 >= 1080.0 { lon1 -= 1080.0 }
-        let lon3 = Int((lon1 / dval).rounded(.down)) * 12
-        let lat1 = lat * 3.0 + 270.0 - 30.0
-        let lat3 = Int((lat1 / dval).rounded(.down)) * 12
-        return UInt32((lat3 + 30) * 10000 + lon3)
+        let lon3 = Int((lon1 / dv).rounded(.down)) * 12
+        let lat1 = lat * 3.0 + 240.0
+        let lat3 = Int((lat1 / dv).rounded(.down)) * 12
+        let flat = (lat1 - Double(lat3)) / 3.0, flon = (lon1 - Double(lon3)) / 3.0
+        let m = 0.6
+        var dlas = [0]; if flat < m { dlas.append(-12) } else if flat > 4 - m { dlas.append(12) }
+        var dlos = [0]; if flon < m { dlos.append(-12) } else if flon > 4 - m { dlos.append(12) }
+        var out: [UInt32] = []
+        for a in dlas { for b in dlos {
+            let la = lat3 + a
+            var lo = lon3 + b
+            while lo < 0 { lo += 1080 }
+            while lo >= 1080 { lo -= 1080 }
+            out.append(UInt32((la + 30) * 10000 + lo))
+        }}
+        return out
     }
 
     func features(forLat lat: Double, lon: Double) -> [ChartFeature] {
-        let id = Self.cellIndexC(lat, lon)
-        if id == cellId { return cache }
-        cellId = id
-        cache = Self.load(cellId: id)
-        return cache
+        let need = Self.neededCells(lat, lon)
+        let key = need.sorted().map(String.init).joined(separator: ",")
+        if key == lastKey { return merged }
+        lastKey = key
+        for id in need where loaded[id] == nil { loaded[id] = Self.load(cellId: id) }
+        let needSet = Set(need)
+        for id in Array(loaded.keys) where !needSet.contains(id) { loaded[id] = nil }
+        merged = need.flatMap { loaded[$0] ?? [] }
+        return merged
     }
 
     private static func load(cellId: UInt32) -> [ChartFeature] {
